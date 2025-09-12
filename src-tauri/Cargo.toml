@@ -74,7 +74,7 @@ xml-rs = { version = "0.8", optional = true }       # XML document parsing
 quick-xml = { version = "0.36", optional = true }   # Fast XML parser
 html5ever = { version = "0.27", optional = true }   # HTML parsing
 markup5ever = { version = "0.12", optional = true } # Markup utilities
-scraper = { version = "0.20", optional = true }     # HTML scraping
+# scraper = { version = "0.20", optional = true }     # HTML scraping - removed due to fxhash security advisory
 pulldown-cmark = { version = "0.11", optional = true } # Markdown parsing
 comrak = { version = "0.26", optional = true }      # CommonMark + GFM
 yaml-rust = { version = "0.4", optional = true }    # YAML file parsing
@@ -87,7 +87,7 @@ image = { version = "0.25", features = ["jpeg", "png", "gif", "webp", "tiff", "b
 imageproc = { version = "0.25", optional = true }   # Advanced image processing
 fast_image_resize = { version = "4.2", optional = true } # High-performance resizing (updated)
 webp = { version = "0.3", optional = true }         # WebP format support
-avif-decode = { version = "0.2", optional = true }  # AVIF support
+# avif-decode = { version = "0.2", optional = true }  # AVIF support - removed due to security advisory in owning_ref
 kamadak-exif = { version = "0.5", optional = true } # EXIF metadata extraction
 rexif = { version = "0.7", optional = true }        # Alternative EXIF parser
 tesseract = { version = "0.15", optional = true }   # OCR - optional for Windows
@@ -151,14 +151,14 @@ rusqlite-init = []  # Alternative rusqlite initialization method
 documents = [
     "pdf-extract", "lopdf", "docx-rs", "rtf-parser",
     "calamine", "csv", "xml-rs", "quick-xml", "html5ever", "markup5ever",
-    "scraper", "pulldown-cmark", "comrak", "yaml-rust", "toml", "serde_yaml", "json5"
+    "pulldown-cmark", "comrak", "yaml-rust", "toml", "serde_yaml", "json5"
 ]
 documents-core = ["pdf-extract", "docx-rs", "calamine", "csv"]  # Essential document formats
 ocr = ["tesseract", "leptess"]  # OCR support (requires system dependencies)
 ocr-advanced = ["ocr", "tesseract", "leptess"]  # Enhanced OCR with multiple engines
 
 # Image processing features  
-images = ["imageproc", "fast_image_resize", "webp", "avif-decode", "kamadak-exif", "rexif"]
+images = ["imageproc", "fast_image_resize", "webp", "kamadak-exif", "rexif"]
 images-core = ["kamadak-exif"]  # Basic image metadata
 vision = []  # Vision AI features (implemented via Ollama)
 
