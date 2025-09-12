@@ -1,6 +1,6 @@
 use crate::{error::Result, state::AppState, utils::security::{validate_and_sanitize_path_legacy as validate_and_sanitize_path, is_path_allowed}};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use sysinfo::{Disks, System};
 use tauri::{AppHandle, Manager, State};
 use tracing::info;
@@ -673,7 +673,7 @@ async fn calculate_dir_size_with_depth(dir: &PathBuf, current_depth: u32, max_de
     Ok(size)
 }
 
-async fn calculate_database_size(app_dir: &PathBuf) -> Result<u64> {
+async fn calculate_database_size(app_dir: &Path) -> Result<u64> {
     let db_file = app_dir.join("stratosort.db");
     if db_file.exists() {
         let metadata = tokio::fs::metadata(&db_file).await?;

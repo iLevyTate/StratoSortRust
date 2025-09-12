@@ -14,7 +14,7 @@ async fn test_smart_folder_creation_and_organization() -> Result<(), Box<dyn std
     let base_path = temp_dir.path().to_path_buf();
 
     // Initialize the database with the temp directory
-    let db = Database::new_test(&base_path.join("test.db")).await?;
+    let _db = Database::new_test(&base_path.join("test.db")).await?;
 
     // Test creating a smart folder for 3D printing files
     let print_3d_folder = SmartFolder {
@@ -65,7 +65,7 @@ async fn test_smart_folder_creation_and_organization() -> Result<(), Box<dyn std
 async fn test_document_smart_folder() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let base_path = temp_dir.path().to_path_buf();
-    let db = Database::new_test(&base_path.join("test.db")).await?;
+    let _db = Database::new_test(&base_path.join("test.db")).await?;
 
     let documents_folder = SmartFolder {
         id: "documents_folder".to_string(),

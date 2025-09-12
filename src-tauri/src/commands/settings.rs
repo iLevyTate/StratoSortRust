@@ -32,17 +32,17 @@ pub async fn reset_settings(
     state: State<'_, std::sync::Arc<AppState>>,
     app: AppHandle,
 ) -> Result<Config> {
-    let mut config = Config::default();
-    
-    // Set default paths
-    config.default_smart_folder_location = app.path()
-        .document_dir()
-        .map_err(|e| crate::error::AppError::ConfigError {
-            message: format!("Failed to get documents directory: {}", e),
-        })?
-        .join("StratoSort")
-        .display()
-        .to_string();
+    let config = Config {
+        default_smart_folder_location: app.path()
+            .document_dir()
+            .map_err(|e| crate::error::AppError::ConfigError {
+                message: format!("Failed to get documents directory: {}", e),
+            })?
+            .join("StratoSort")
+            .display()
+            .to_string(),
+        ..Config::default()
+    };
     
     // Update state
     state.update_config(config.clone()).await?;

@@ -1,7 +1,6 @@
 /// Comprehensive Database Testing Suite
 /// Tests all aspects of database functionality including embeddings, vector search, and sqlite-vec extension
 /// Tests with all 27 dummy files to ensure production readiness
-
 use stratosort::storage::Database;
 use stratosort::ai::{FileAnalysis, embeddings::generate_simple_embeddings};
 use stratosort::commands::organization::SmartFolder;
@@ -22,6 +21,7 @@ use serde_json::json;
 const TEST_DATA_DIR: &str = "./tests/fixtures/data/sample_demo_files";
 const EMBEDDING_DIM: usize = 384;
 const CONCURRENT_OPERATIONS: usize = 10;
+#[allow(dead_code)]
 const STRESS_TEST_FILE_COUNT: usize = 100;
 
 #[derive(Debug, Clone)]
@@ -35,6 +35,7 @@ struct TestResult {
 
 struct DatabaseTestSuite {
     db: Arc<Database>,
+    #[allow(dead_code)]
     test_files: Vec<PathBuf>,
     results: Arc<RwLock<Vec<TestResult>>>,
 }
@@ -672,7 +673,7 @@ impl DatabaseTestSuite {
         let mut correct_matches = 0;
         let mut total_tests = 0;
         
-        for (content, category, should_match, expected_folder_idx) in test_files {
+        for (content, category, should_match, _expected_folder_idx) in test_files {
             total_tests += 1;
             let path = format!("/test/smartfolder_{}.txt", total_tests);
             

@@ -43,7 +43,13 @@
       "Bash(./test_diagnostics.exe)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git check-ignore:*)"
+      "Bash(git check-ignore:*)",
+      "Bash(timeout 180 cargo test --lib)",
+      "Bash(timeout 60 cargo clippy --lib -- -D warnings)",
+      "Bash(timeout 120 cargo clippy --all-targets --no-default-features --features \"default\" -- -D warnings)",
+      "Bash(timeout 120 cargo test --lib)",
+      "Bash(timeout 120 cargo clippy --all-targets --features \"standard\" -- -D warnings)",
+      "Bash(timeout 120 cargo clippy --all-targets --features \"documents,images,archives,multimedia\" -- -D warnings)"
     ],
     "deny": [],
     "ask": []

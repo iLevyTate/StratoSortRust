@@ -595,7 +595,7 @@ async fn handle_enhanced_file_event(
 }
 
 /// Enhanced file filtering with watch mode configuration
-fn should_ignore_file_enhanced(path: &PathBuf, config: &WatchModeConfig) -> bool {
+fn should_ignore_file_enhanced(path: &Path, config: &WatchModeConfig) -> bool {
     let path_str = path.to_string_lossy().to_lowercase();
     
     // Check excluded extensions

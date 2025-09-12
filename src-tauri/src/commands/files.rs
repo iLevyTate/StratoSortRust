@@ -12,6 +12,9 @@ use tokio::fs;
 use tokio::io::{AsyncReadExt, BufReader};
 use walkdir::WalkDir;
 
+// Type alias for complex future return type
+type DirectorySizeResult<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(u64, usize, usize)>> + Send + 'a>>;
+
 // Global memory and concurrency protection
 static CONCURRENT_READS: AtomicUsize = AtomicUsize::new(0);
 static TOTAL_MEMORY_USAGE: AtomicUsize = AtomicUsize::new(0);
@@ -1734,7 +1737,7 @@ async fn calculate_directory_size(dir: &std::path::Path) -> Result<(u64, usize, 
     fn calculate_recursive(
         dir: &std::path::Path,
         current_depth: usize,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(u64, usize, usize)>> + Send + '_>> {
+    ) -> DirectorySizeResult<'_> {
         Box::pin(async move {
             if current_depth > MAX_DEPTH {
                 return Ok((0, 0, 0));
@@ -1774,7 +1777,7 @@ async fn calculate_directory_size(dir: &std::path::Path) -> Result<(u64, usize, 
 
 // IDOR Protection: Validate user has permission to access specific file
 async fn validate_file_access(
-    path: &std::path::PathBuf,
+    path: &Path,
     user_id: &Option<String>,
     state: &State<'_, std::sync::Arc<AppState>>,
 ) -> Result<bool> {

@@ -3,7 +3,7 @@ use std::path::Path;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DocumentMetadata {
     pub title: Option<String>,
     pub author: Option<String>,
@@ -474,6 +474,12 @@ pub struct DocumentProcessorManager {
     processors: Vec<Box<dyn DocumentProcessor + Send + Sync>>,
 }
 
+impl Default for DocumentProcessorManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DocumentProcessorManager {
     pub fn new() -> Self {
         let processors: Vec<Box<dyn DocumentProcessor + Send + Sync>> = vec![
@@ -518,21 +524,6 @@ impl DocumentProcessorManager {
     }
 }
 
-impl Default for DocumentMetadata {
-    fn default() -> Self {
-        Self {
-            title: None,
-            author: None,
-            subject: None,
-            creator: None,
-            creation_date: None,
-            modified_date: None,
-            page_count: None,
-            word_count: None,
-            language: None,
-        }
-    }
-}
 
 // Helper functions
 fn count_words(text: &str) -> u32 {
@@ -542,8 +533,8 @@ fn count_words(text: &str) -> u32 {
 fn extract_first_heading(markdown: &str) -> Option<String> {
     for line in markdown.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("# ") {
-            return Some(trimmed[2..].trim().to_string());
+        if let Some(stripped) = trimmed.strip_prefix("# ") {
+            return Some(stripped.trim().to_string());
         }
     }
     None

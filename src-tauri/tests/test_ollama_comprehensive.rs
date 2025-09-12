@@ -516,7 +516,7 @@ async fn test_smart_folder_matching_logic() {
     println!("\n=== Testing Smart Folder Matching Logic ===");
     
     // Define smart folder descriptions
-    let smart_folders = [("Research", "Topics related to LLM, VLM and AI Research"),
+    let _smart_folders = [("Research", "Topics related to LLM, VLM and AI Research"),
         ("Logos/Graphic Art", "Any images that show a brand or logo like image"),
         ("3D Print", "Any file related to 3D printing"),
         ("Finance", "Documents related to financial topics")];
