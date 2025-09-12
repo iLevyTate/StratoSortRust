@@ -42,7 +42,8 @@
       "Bash(.test_diagnostics.exe)",
       "Bash(./test_diagnostics.exe)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(git check-ignore:*)"
     ],
     "deny": [],
     "ask": []
