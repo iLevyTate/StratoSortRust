@@ -333,7 +333,7 @@ pub async fn get_runtime_config(
         cache_size: config.cache_size,
         watch_folders: config.watch_folders,
         features: RuntimeFeatures {
-            ocr_enabled: cfg!(feature = "ocr"),
+            ocr_enabled: false, // OCR features disabled due to system dependencies
             vision_enabled: cfg!(feature = "vision"),
             gpu_enabled: config.enable_gpu,
             telemetry_enabled: config.enable_telemetry,
@@ -371,7 +371,7 @@ pub struct RuntimeFeatures {
 fn get_enabled_features() -> Vec<String> {
     let mut features = Vec::new();
     
-    if cfg!(feature = "ocr") {
+    if false { // OCR features disabled
         features.push("ocr".to_string());
     }
     if cfg!(feature = "vision") {

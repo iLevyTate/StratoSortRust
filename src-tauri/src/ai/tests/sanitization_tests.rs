@@ -4,7 +4,7 @@ use crate::ai::ollama::sanitize_prompt_content;
 fn test_basic_sanitization() {
     let input = "This is a normal file with some content.";
     let result = sanitize_prompt_content(input);
-    assert_eq!(result, input);
+    assert_eq!(result.unwrap(), input);
 }
 
 #[test]
@@ -20,7 +20,7 @@ fn test_injection_attempt_blocking() {
     ];
     
     for input in malicious_inputs {
-        let result = sanitize_prompt_content(input);
+        let result = sanitize_prompt_content(input).unwrap();
         assert!(result.contains("[FILTERED]"), 
                 "Failed to filter: {}", input);
         assert!(!result.to_lowercase().contains("ignore"));
@@ -40,7 +40,7 @@ fn test_code_injection_blocking() {
     ];
     
     for input in code_inputs {
-        let result = sanitize_prompt_content(input);
+        let result = sanitize_prompt_content(input).unwrap();
         assert!(result.contains("[FILTERED]"), 
                 "Failed to filter code injection: {}", input);
     }
@@ -61,7 +61,7 @@ fn test_legitimate_content_preservation() {
     ];
     
     for input in legitimate_inputs {
-        let result = sanitize_prompt_content(input);
+        let result = sanitize_prompt_content(input).unwrap();
         
         // Should not contain [FILTERED]
         assert!(!result.contains("[FILTERED]"), 
@@ -78,13 +78,13 @@ fn test_legitimate_content_preservation() {
 fn test_length_limits() {
     // Test truncation
     let long_input = "a".repeat(3000);
-    let result = sanitize_prompt_content(&long_input);
+    let result = sanitize_prompt_content(&long_input).unwrap();
     assert!(result.len() <= 1800, "Result should be truncated to max length");
     assert!(result.len() > 0, "Result should not be empty");
     
     // Test that truncation doesn't break on character boundaries
     let unicode_input = "Hello 🦀 world! This is a test with unicode.".repeat(10);
-    let result = sanitize_prompt_content(&unicode_input);
+    let result = sanitize_prompt_content(&unicode_input).unwrap();
     // Should not panic and should handle unicode properly
     assert!(result.len() > 0, "Unicode result should not be empty: '{}'", result);
     // Should contain at least some of the basic text
@@ -95,7 +95,7 @@ fn test_length_limits() {
 #[test]
 fn test_null_byte_removal() {
     let input = "Normal text\0with null bytes\0here";
-    let result = sanitize_prompt_content(input);
+    let result = sanitize_prompt_content(input).unwrap();
     assert!(!result.contains('\0'));
     assert!(result.contains("Normal text"));
     assert!(result.contains("with null bytes"));
@@ -104,7 +104,7 @@ fn test_null_byte_removal() {
 #[test]
 fn test_newline_normalization() {
     let input = "Line 1\r\nLine 2\nLine 3\n\n\nLine 4\n\n\nLine 5";
-    let result = sanitize_prompt_content(input);
+    let result = sanitize_prompt_content(input).unwrap();
     
     // Should not have carriage returns
     assert!(!result.contains('\r'));
@@ -119,7 +119,7 @@ fn test_newline_normalization() {
 #[test]
 fn test_character_filtering() {
     let input = "Normal text with <brackets> {braces} @symbols #hashtags $money %percent";
-    let result = sanitize_prompt_content(input);
+    let result = sanitize_prompt_content(input).unwrap();
     
     // These should be preserved in the improved sanitizer
     assert!(result.contains('<'));
@@ -135,15 +135,15 @@ fn test_character_filtering() {
 #[test]
 fn test_edge_cases() {
     // Empty string
-    assert_eq!(sanitize_prompt_content(""), "");
+    assert_eq!(sanitize_prompt_content("").unwrap(), "");
     
     // Only whitespace
-    let result = sanitize_prompt_content("   \n\t  ");
+    let result = sanitize_prompt_content("   \n\t  ").unwrap();
     assert!(!result.is_empty());
     assert!(result.trim().is_empty() || result == "     "); // tabs converted to spaces
     
     // Only special characters
-    let result = sanitize_prompt_content("!@#$%^&*()");
+    let result = sanitize_prompt_content("!@#$%^&*()").unwrap();
     assert!(!result.is_empty());
 }
 
@@ -157,7 +157,7 @@ fn test_case_insensitive_filtering() {
     ];
     
     for input in variations {
-        let result = sanitize_prompt_content(input);
+        let result = sanitize_prompt_content(input).unwrap();
         assert!(result.contains("[FILTERED]"), 
                 "Case insensitive filtering failed for: {}", input);
     }
