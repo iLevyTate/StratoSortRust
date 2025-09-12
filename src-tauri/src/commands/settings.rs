@@ -3,9 +3,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 #[tauri::command]
-pub async fn get_settings(
-    state: State<'_, std::sync::Arc<AppState>>,
-) -> Result<Config> {
+pub async fn get_settings(state: State<'_, std::sync::Arc<AppState>>) -> Result<Config> {
     Ok(state.config.read().clone())
 }
 
@@ -17,13 +15,13 @@ pub async fn update_settings(
 ) -> Result<()> {
     // Validate settings
     settings.validate()?;
-    
+
     // Update state
     state.update_config(settings.clone()).await?;
-    
+
     // Emit settings updated event
     app.emit("settings-updated", &settings)?;
-    
+
     Ok(())
 }
 
@@ -33,7 +31,8 @@ pub async fn reset_settings(
     app: AppHandle,
 ) -> Result<Config> {
     let config = Config {
-        default_smart_folder_location: app.path()
+        default_smart_folder_location: app
+            .path()
             .document_dir()
             .map_err(|e| crate::error::AppError::ConfigError {
                 message: format!("Failed to get documents directory: {}", e),
@@ -43,20 +42,18 @@ pub async fn reset_settings(
             .to_string(),
         ..Config::default()
     };
-    
+
     // Update state
     state.update_config(config.clone()).await?;
-    
+
     // Emit event
     app.emit("settings-reset", &config)?;
-    
+
     Ok(config)
 }
 
 #[tauri::command]
-pub async fn export_settings(
-    state: State<'_, std::sync::Arc<AppState>>,
-) -> Result<String> {
+pub async fn export_settings(state: State<'_, std::sync::Arc<AppState>>) -> Result<String> {
     let config = state.config.read().clone();
     Ok(config.export())
 }
@@ -68,13 +65,13 @@ pub async fn import_settings(
     app: AppHandle,
 ) -> Result<Config> {
     let config = Config::import(&json)?;
-    
+
     // Update state
     state.update_config(config.clone()).await?;
-    
+
     // Emit event
     app.emit("settings-imported", &config)?;
-    
+
     Ok(config)
 }
 
@@ -84,7 +81,7 @@ pub async fn get_setting_value(
     state: State<'_, std::sync::Arc<AppState>>,
 ) -> Result<serde_json::Value> {
     let config = state.config.read();
-    
+
     let value = match key.as_str() {
         "ai_provider" => serde_json::json!(config.ai_provider),
         "ollama_host" => serde_json::json!(config.ollama_host),
@@ -94,11 +91,13 @@ pub async fn get_setting_value(
         "max_file_size" => serde_json::json!(config.max_file_size),
         "enable_gpu" => serde_json::json!(config.enable_gpu),
         "debug_mode" => serde_json::json!(config.debug_mode),
-        _ => return Err(crate::error::AppError::InvalidInput {
-            message: format!("Unknown setting key: {}", key),
-        }),
+        _ => {
+            return Err(crate::error::AppError::InvalidInput {
+                message: format!("Unknown setting key: {}", key),
+            })
+        }
     };
-    
+
     Ok(value)
 }
 
@@ -110,59 +109,71 @@ pub async fn set_setting_value(
     app: AppHandle,
 ) -> Result<()> {
     let mut config = state.config.read().clone();
-    
+
     match key.as_str() {
         "ai_provider" => {
-            config.ai_provider = value.as_str()
+            config.ai_provider = value
+                .as_str()
                 .ok_or_else(|| crate::error::AppError::InvalidInput {
                     message: "Invalid value for ai_provider".to_string(),
                 })?
                 .to_string();
         }
         "ollama_host" => {
-            config.ollama_host = value.as_str()
+            config.ollama_host = value
+                .as_str()
                 .ok_or_else(|| crate::error::AppError::InvalidInput {
                     message: "Invalid value for ollama_host".to_string(),
                 })?
                 .to_string();
         }
         "ollama_model" => {
-            config.ollama_model = value.as_str()
+            config.ollama_model = value
+                .as_str()
                 .ok_or_else(|| crate::error::AppError::InvalidInput {
                     message: "Invalid value for ollama_model".to_string(),
                 })?
                 .to_string();
         }
         "watch_folders" => {
-            config.watch_folders = value.as_bool()
-                .ok_or_else(|| crate::error::AppError::InvalidInput {
-                    message: "Invalid value for watch_folders".to_string(),
-                })?;
+            config.watch_folders =
+                value
+                    .as_bool()
+                    .ok_or_else(|| crate::error::AppError::InvalidInput {
+                        message: "Invalid value for watch_folders".to_string(),
+                    })?;
         }
         "theme" => {
-            config.theme = value.as_str()
+            config.theme = value
+                .as_str()
                 .ok_or_else(|| crate::error::AppError::InvalidInput {
                     message: "Invalid value for theme".to_string(),
                 })?
                 .to_string();
         }
         "max_file_size" => {
-            config.max_file_size = value.as_u64()
-                .ok_or_else(|| crate::error::AppError::InvalidInput {
-                    message: "Invalid value for max_file_size".to_string(),
-                })?;
+            config.max_file_size =
+                value
+                    .as_u64()
+                    .ok_or_else(|| crate::error::AppError::InvalidInput {
+                        message: "Invalid value for max_file_size".to_string(),
+                    })?;
         }
         "enable_gpu" => {
-            config.enable_gpu = value.as_bool()
-                .ok_or_else(|| crate::error::AppError::InvalidInput {
-                    message: "Invalid value for enable_gpu".to_string(),
-                })?;
+            config.enable_gpu =
+                value
+                    .as_bool()
+                    .ok_or_else(|| crate::error::AppError::InvalidInput {
+                        message: "Invalid value for enable_gpu".to_string(),
+                    })?;
         }
         "debug_mode" => {
-            config.debug_mode = value.as_bool()
-                .ok_or_else(|| crate::error::AppError::InvalidInput {
-                    message: "Invalid value for debug_mode".to_string(),
-                })?;
+            config.debug_mode =
+                value
+                    .as_bool()
+                    .ok_or_else(|| crate::error::AppError::InvalidInput {
+                        message: "Invalid value for debug_mode".to_string(),
+                    })?;
         }
         _ => {
             return Err(crate::error::AppError::InvalidInput {
@@ -170,17 +181,20 @@ pub async fn set_setting_value(
             });
         }
     }
-    
+
     // Validate and save
     config.validate()?;
     state.update_config(config.clone()).await?;
-    
+
     // Emit event for specific setting
-    app.emit("setting-changed", serde_json::json!({
-        "key": key,
-        "value": value
-    }))?;
-    
+    app.emit(
+        "setting-changed",
+        serde_json::json!({
+            "key": key,
+            "value": value
+        }),
+    )?;
+
     Ok(())
 }
 
@@ -191,11 +205,11 @@ pub async fn add_watch_path(
     app: AppHandle,
 ) -> Result<()> {
     let mut config = state.config.read().clone();
-    
+
     if !config.watch_paths.contains(&path) {
         config.watch_paths.push(path.clone());
         state.update_config(config).await?;
-        
+
         // Also start watching the new path at runtime
         {
             let path_clone = path.clone();
@@ -203,17 +217,17 @@ pub async fn add_watch_path(
                 let watcher_guard = state.file_watcher.read();
                 watcher_guard.as_ref().map(std::sync::Arc::clone)
             };
-            
+
             if let Some(watcher_arc) = watcher_arc {
                 if let Err(e) = watcher_arc.add_watch_path(&path_clone).await {
                     tracing::warn!("Failed to add runtime watch path {}: {}", path_clone, e);
                 }
             }
         }
-        
+
         app.emit("watch-path-added", &path)?;
     }
-    
+
     Ok(())
 }
 
@@ -224,10 +238,10 @@ pub async fn remove_watch_path(
     app: AppHandle,
 ) -> Result<()> {
     let mut config = state.config.read().clone();
-    
+
     config.watch_paths.retain(|p| p != &path);
     state.update_config(config).await?;
-    
+
     // Also stop watching the path at runtime
     {
         let path_clone = path.clone();
@@ -235,30 +249,26 @@ pub async fn remove_watch_path(
             let watcher_guard = state.file_watcher.read();
             watcher_guard.as_ref().map(std::sync::Arc::clone)
         };
-        
+
         if let Some(watcher_arc) = watcher_arc {
             if let Err(e) = watcher_arc.remove_watch_path(&path_clone).await {
                 tracing::warn!("Failed to remove runtime watch path {}: {}", path_clone, e);
             }
         }
     }
-    
+
     app.emit("watch-path-removed", &path)?;
-    
+
     Ok(())
 }
 
 #[tauri::command]
-pub async fn get_watch_paths(
-    state: State<'_, std::sync::Arc<AppState>>,
-) -> Result<Vec<String>> {
+pub async fn get_watch_paths(state: State<'_, std::sync::Arc<AppState>>) -> Result<Vec<String>> {
     Ok(state.config.read().watch_paths.clone())
 }
 
 #[tauri::command]
-pub async fn validate_settings(
-    settings: Config,
-) -> Result<ValidationResult> {
+pub async fn validate_settings(settings: Config) -> Result<ValidationResult> {
     match settings.validate() {
         Ok(_) => Ok(ValidationResult {
             valid: true,
@@ -289,7 +299,7 @@ pub async fn get_settings_by_category(
     state: State<'_, std::sync::Arc<AppState>>,
 ) -> Result<serde_json::Value> {
     let config = state.config.read().clone();
-    
+
     let settings = match category.as_str() {
         "general" => serde_json::json!({
             "theme": config.theme,
@@ -336,11 +346,13 @@ pub async fn get_settings_by_category(
             "history_retention": config.history_retention,
             "undo_history_size": config.undo_history_size
         }),
-        _ => return Err(crate::error::AppError::InvalidInput {
-            message: format!("Unknown settings category: {}", category),
-        }),
+        _ => {
+            return Err(crate::error::AppError::InvalidInput {
+                message: format!("Unknown settings category: {}", category),
+            })
+        }
     };
-    
+
     Ok(settings)
 }
 
@@ -349,7 +361,7 @@ pub async fn get_all_settings_categories(
     state: State<'_, std::sync::Arc<AppState>>,
 ) -> Result<Vec<SettingsCategory>> {
     let config = state.config.read().clone();
-    
+
     let categories = vec![
         SettingsCategory {
             name: "general".to_string(),
@@ -415,7 +427,7 @@ pub async fn get_all_settings_categories(
             }),
         },
     ];
-    
+
     Ok(categories)
 }
 
@@ -427,7 +439,7 @@ pub async fn update_category_settings(
     app: AppHandle,
 ) -> Result<()> {
     let mut config = state.config.read().clone();
-    
+
     match category.as_str() {
         "general" => {
             if let Some(theme) = settings.get("theme").and_then(|v| v.as_str()) {
@@ -436,19 +448,33 @@ pub async fn update_category_settings(
             if let Some(language) = settings.get("language").and_then(|v| v.as_str()) {
                 config.language = language.to_string();
             }
-            if let Some(show_notifications) = settings.get("show_notifications").and_then(|v| v.as_bool()) {
+            if let Some(show_notifications) =
+                settings.get("show_notifications").and_then(|v| v.as_bool())
+            {
                 config.show_notifications = show_notifications;
             }
-            if let Some(notification_duration) = settings.get("notification_duration").and_then(|v| v.as_u64()) {
+            if let Some(notification_duration) = settings
+                .get("notification_duration")
+                .and_then(|v| v.as_u64())
+            {
                 config.notification_duration = notification_duration;
             }
-            if let Some(confirm_before_delete) = settings.get("confirm_before_delete").and_then(|v| v.as_bool()) {
+            if let Some(confirm_before_delete) = settings
+                .get("confirm_before_delete")
+                .and_then(|v| v.as_bool())
+            {
                 config.confirm_before_delete = confirm_before_delete;
             }
-            if let Some(confirm_before_move) = settings.get("confirm_before_move").and_then(|v| v.as_bool()) {
+            if let Some(confirm_before_move) = settings
+                .get("confirm_before_move")
+                .and_then(|v| v.as_bool())
+            {
                 config.confirm_before_move = confirm_before_move;
             }
-            if let Some(preserve_file_timestamps) = settings.get("preserve_file_timestamps").and_then(|v| v.as_bool()) {
+            if let Some(preserve_file_timestamps) = settings
+                .get("preserve_file_timestamps")
+                .and_then(|v| v.as_bool())
+            {
                 config.preserve_file_timestamps = preserve_file_timestamps;
             }
         }
@@ -462,10 +488,15 @@ pub async fn update_category_settings(
             if let Some(ollama_model) = settings.get("ollama_model").and_then(|v| v.as_str()) {
                 config.ollama_model = ollama_model.to_string();
             }
-            if let Some(ollama_vision_model) = settings.get("ollama_vision_model").and_then(|v| v.as_str()) {
+            if let Some(ollama_vision_model) =
+                settings.get("ollama_vision_model").and_then(|v| v.as_str())
+            {
                 config.ollama_vision_model = ollama_vision_model.to_string();
             }
-            if let Some(ollama_embedding_model) = settings.get("ollama_embedding_model").and_then(|v| v.as_str()) {
+            if let Some(ollama_embedding_model) = settings
+                .get("ollama_embedding_model")
+                .and_then(|v| v.as_str())
+            {
                 config.ollama_embedding_model = ollama_embedding_model.to_string();
             }
         }
@@ -473,16 +504,23 @@ pub async fn update_category_settings(
             if let Some(watch_folders) = settings.get("watch_folders").and_then(|v| v.as_bool()) {
                 config.watch_folders = watch_folders;
             }
-            if let Some(watch_paths_array) = settings.get("watch_paths").and_then(|v| v.as_array()) {
+            if let Some(watch_paths_array) = settings.get("watch_paths").and_then(|v| v.as_array())
+            {
                 config.watch_paths = watch_paths_array
                     .iter()
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect();
             }
-            if let Some(default_location) = settings.get("default_smart_folder_location").and_then(|v| v.as_str()) {
+            if let Some(default_location) = settings
+                .get("default_smart_folder_location")
+                .and_then(|v| v.as_str())
+            {
                 config.default_smart_folder_location = default_location.to_string();
             }
-            if let Some(ignore_array) = settings.get("file_extensions_to_ignore").and_then(|v| v.as_array()) {
+            if let Some(ignore_array) = settings
+                .get("file_extensions_to_ignore")
+                .and_then(|v| v.as_array())
+            {
                 config.file_extensions_to_ignore = ignore_array
                     .iter()
                     .filter_map(|v| v.as_str().map(String::from))
@@ -491,24 +529,42 @@ pub async fn update_category_settings(
             if let Some(max_file_size) = settings.get("max_file_size").and_then(|v| v.as_u64()) {
                 config.max_file_size = max_file_size;
             }
-            if let Some(max_single_file_mb) = settings.get("max_single_file_size_mb").and_then(|v| v.as_u64()) {
+            if let Some(max_single_file_mb) = settings
+                .get("max_single_file_size_mb")
+                .and_then(|v| v.as_u64())
+            {
                 config.max_single_file_size_mb = max_single_file_mb as usize;
             }
-            if let Some(max_depth) = settings.get("max_directory_scan_depth").and_then(|v| v.as_u64()) {
+            if let Some(max_depth) = settings
+                .get("max_directory_scan_depth")
+                .and_then(|v| v.as_u64())
+            {
                 config.max_directory_scan_depth = max_depth as usize;
             }
-            if let Some(auto_analyze) = settings.get("auto_analyze_on_add").and_then(|v| v.as_bool()) {
+            if let Some(auto_analyze) = settings
+                .get("auto_analyze_on_add")
+                .and_then(|v| v.as_bool())
+            {
                 config.auto_analyze_on_add = auto_analyze;
             }
         }
         "performance" => {
-            if let Some(max_analysis) = settings.get("max_concurrent_analysis").and_then(|v| v.as_u64()) {
+            if let Some(max_analysis) = settings
+                .get("max_concurrent_analysis")
+                .and_then(|v| v.as_u64())
+            {
                 config.max_concurrent_analysis = max_analysis as usize;
             }
-            if let Some(max_ops) = settings.get("max_concurrent_operations").and_then(|v| v.as_u64()) {
+            if let Some(max_ops) = settings
+                .get("max_concurrent_operations")
+                .and_then(|v| v.as_u64())
+            {
                 config.max_concurrent_operations = max_ops as usize;
             }
-            if let Some(max_reads) = settings.get("max_concurrent_reads").and_then(|v| v.as_u64()) {
+            if let Some(max_reads) = settings
+                .get("max_concurrent_reads")
+                .and_then(|v| v.as_u64())
+            {
                 config.max_concurrent_reads = max_reads as usize;
             }
             if let Some(cache_size) = settings.get("cache_size").and_then(|v| v.as_u64()) {
@@ -522,13 +578,20 @@ pub async fn update_category_settings(
             }
         }
         "privacy" => {
-            if let Some(enable_telemetry) = settings.get("enable_telemetry").and_then(|v| v.as_bool()) {
+            if let Some(enable_telemetry) =
+                settings.get("enable_telemetry").and_then(|v| v.as_bool())
+            {
                 config.enable_telemetry = enable_telemetry;
             }
-            if let Some(enable_crash_reports) = settings.get("enable_crash_reports").and_then(|v| v.as_bool()) {
+            if let Some(enable_crash_reports) = settings
+                .get("enable_crash_reports")
+                .and_then(|v| v.as_bool())
+            {
                 config.enable_crash_reports = enable_crash_reports;
             }
-            if let Some(enable_analytics) = settings.get("enable_analytics").and_then(|v| v.as_bool()) {
+            if let Some(enable_analytics) =
+                settings.get("enable_analytics").and_then(|v| v.as_bool())
+            {
                 config.enable_analytics = enable_analytics;
             }
         }
@@ -539,28 +602,35 @@ pub async fn update_category_settings(
             if let Some(log_level) = settings.get("log_level").and_then(|v| v.as_str()) {
                 config.log_level = log_level.to_string();
             }
-            if let Some(history_retention) = settings.get("history_retention").and_then(|v| v.as_u64()) {
+            if let Some(history_retention) =
+                settings.get("history_retention").and_then(|v| v.as_u64())
+            {
                 config.history_retention = history_retention;
             }
             if let Some(undo_size) = settings.get("undo_history_size").and_then(|v| v.as_u64()) {
                 config.undo_history_size = undo_size as usize;
             }
         }
-        _ => return Err(crate::error::AppError::InvalidInput {
-            message: format!("Unknown settings category: {}", category),
-        }),
+        _ => {
+            return Err(crate::error::AppError::InvalidInput {
+                message: format!("Unknown settings category: {}", category),
+            })
+        }
     }
-    
+
     // Validate and save
     config.validate()?;
     state.update_config(config.clone()).await?;
-    
+
     // Emit category-specific update event
-    app.emit("settings-category-updated", serde_json::json!({
-        "category": category,
-        "settings": settings
-    }))?;
-    
+    app.emit(
+        "settings-category-updated",
+        serde_json::json!({
+            "category": category,
+            "settings": settings
+        }),
+    )?;
+
     Ok(())
 }
 
@@ -572,7 +642,7 @@ pub async fn test_ai_connection(
         let config = state.config.read();
         config.ollama_host.clone()
     };
-    
+
     // Try to connect to the configured Ollama host
     match state.ai_service.reconnect_ollama(&host).await {
         Ok(status) => {
@@ -583,10 +653,10 @@ pub async fn test_ai_connection(
                 "provider": status.provider,
                 "models_available": status.models_available,
                 "capabilities": status.capabilities,
-                "message": if status.ollama_connected { 
-                    "Successfully connected to Ollama" 
-                } else { 
-                    "Connected to Ollama but no models available" 
+                "message": if status.ollama_connected {
+                    "Successfully connected to Ollama"
+                } else {
+                    "Connected to Ollama but no models available"
                 },
                 "error": status.last_error
             });

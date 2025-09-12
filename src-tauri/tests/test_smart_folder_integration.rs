@@ -1,11 +1,11 @@
-use tempfile::TempDir;
 use stratosort::{
     commands::organization::{
-        OrganizationRule, RuleType, RuleCondition, ConditionOperator, 
-        RuleAction, ActionType, SmartFolder
+        ActionType, ConditionOperator, OrganizationRule, RuleAction, RuleCondition, RuleType,
+        SmartFolder,
     },
     storage::Database,
 };
+use tempfile::TempDir;
 
 #[tokio::test]
 async fn test_smart_folder_creation_and_organization() -> Result<(), Box<dyn std::error::Error>> {
@@ -21,25 +21,23 @@ async fn test_smart_folder_creation_and_organization() -> Result<(), Box<dyn std
         id: "3d_print_folder".to_string(),
         name: "3D Print".to_string(),
         description: Some("Smart folder for 3D printing files".to_string()),
-        rules: vec![
-            OrganizationRule {
-                id: "3d_rule_1".to_string(),
-                rule_type: RuleType::FileExtension,
-                condition: RuleCondition {
-                    field: "extension".to_string(),
-                    operator: ConditionOperator::Equals,
-                    value: "stl".to_string(),
-                    case_sensitive: Some(false),
-                },
-                action: RuleAction {
-                    action_type: ActionType::Move,
-                    target_folder: "stl_files".to_string(),
-                    rename_pattern: None,
-                },
-                priority: 1,
-                enabled: true,
+        rules: vec![OrganizationRule {
+            id: "3d_rule_1".to_string(),
+            rule_type: RuleType::FileExtension,
+            condition: RuleCondition {
+                field: "extension".to_string(),
+                operator: ConditionOperator::Equals,
+                value: "stl".to_string(),
+                case_sensitive: Some(false),
             },
-        ],
+            action: RuleAction {
+                action_type: ActionType::Move,
+                target_folder: "stl_files".to_string(),
+                rename_pattern: None,
+            },
+            priority: 1,
+            enabled: true,
+        }],
         target_path: "/organized/3d_print".to_string(),
         enabled: true,
         created_at: chrono::Utc::now(),
@@ -113,7 +111,10 @@ async fn test_document_smart_folder() -> Result<(), Box<dyn std::error::Error>> 
         updated_at: chrono::Utc::now(),
     };
 
-    println!("Created documents folder with {} rules", documents_folder.rules.len());
+    println!(
+        "Created documents folder with {} rules",
+        documents_folder.rules.len()
+    );
     assert_eq!(documents_folder.rules.len(), 2);
 
     Ok(())

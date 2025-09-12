@@ -29,15 +29,15 @@ pub async fn undo(
     app: AppHandle,
 ) -> Result<UndoResult> {
     let operation = state.undo_redo.undo().await?;
-    
+
     if let Some(op) = operation {
         // Perform the undo operation
         let success = perform_undo_operation(&op, &state).await?;
-        
+
         if success {
             app.emit("operation-undone", &op)?;
         }
-        
+
         Ok(UndoResult {
             success,
             operation: Some(op),
@@ -58,15 +58,15 @@ pub async fn redo(
     app: AppHandle,
 ) -> Result<RedoResult> {
     let operation = state.undo_redo.redo().await?;
-    
+
     if let Some(op) = operation {
         // Perform the redo operation
         let success = perform_redo_operation(&op, &state).await?;
-        
+
         if success {
             app.emit("operation-redone", &op)?;
         }
-        
+
         Ok(RedoResult {
             success,
             operation: Some(op),
@@ -86,8 +86,11 @@ pub async fn get_history(
     limit: Option<usize>,
     state: State<'_, std::sync::Arc<AppState>>,
 ) -> Result<Vec<HistoryEntry>> {
-    let operations = state.database.get_recent_operations(limit.unwrap_or(50)).await?;
-    
+    let operations = state
+        .database
+        .get_recent_operations(limit.unwrap_or(50))
+        .await?;
+
     let entries: Vec<HistoryEntry> = operations
         .into_iter()
         .map(|op| HistoryEntry {
@@ -100,7 +103,7 @@ pub async fn get_history(
             metadata: op.metadata,
         })
         .collect();
-    
+
     Ok(entries)
 }
 
@@ -110,16 +113,14 @@ pub async fn clear_history(
     app: AppHandle,
 ) -> Result<()> {
     state.undo_redo.clear().await?;
-    
+
     app.emit("history-cleared", ())?;
-    
+
     Ok(())
 }
 
 #[tauri::command]
-pub async fn get_history_state(
-    state: State<'_, std::sync::Arc<AppState>>,
-) -> Result<HistoryState> {
+pub async fn get_history_state(state: State<'_, std::sync::Arc<AppState>>) -> Result<HistoryState> {
     get_history_state_internal(&state).await
 }
 
@@ -132,7 +133,7 @@ pub async fn batch_undo(
     let mut successful = 0;
     let mut failed = 0;
     let mut operations = Vec::new();
-    
+
     for _ in 0..count {
         match state.undo_redo.undo().await {
             Ok(Some(op)) => {
@@ -151,14 +152,17 @@ pub async fn batch_undo(
             }
         }
     }
-    
+
     if successful > 0 {
-        app.emit("batch-undo", serde_json::json!({
-            "count": successful,
-            "operations": operations,
-        }))?;
+        app.emit(
+            "batch-undo",
+            serde_json::json!({
+                "count": successful,
+                "operations": operations,
+            }),
+        )?;
     }
-    
+
     Ok(BatchUndoResult {
         successful,
         failed,
@@ -176,7 +180,7 @@ pub async fn batch_redo(
     let mut successful = 0;
     let mut failed = 0;
     let mut operations = Vec::new();
-    
+
     for _ in 0..count {
         match state.undo_redo.redo().await {
             Ok(Some(op)) => {
@@ -195,14 +199,17 @@ pub async fn batch_redo(
             }
         }
     }
-    
+
     if successful > 0 {
-        app.emit("batch-redo", serde_json::json!({
-            "count": successful,
-            "operations": operations,
-        }))?;
+        app.emit(
+            "batch-redo",
+            serde_json::json!({
+                "count": successful,
+                "operations": operations,
+            }),
+        )?;
     }
-    
+
     Ok(BatchRedoResult {
         successful,
         failed,
@@ -218,7 +225,7 @@ pub async fn jump_to_history(
     app: AppHandle,
 ) -> Result<JumpToHistoryResult> {
     let target_operation = state.database.get_operation_by_id(&operation_id).await?;
-    
+
     if target_operation.is_none() {
         return Ok(JumpToHistoryResult {
             success: false,
@@ -228,17 +235,15 @@ pub async fn jump_to_history(
             state: get_history_state_internal(&state).await?,
         });
     }
-    
-    let target_op = target_operation.ok_or_else(|| {
-        crate::error::AppError::NotFound {
-            message: "Target operation not found".to_string(),
-        }
+
+    let target_op = target_operation.ok_or_else(|| crate::error::AppError::NotFound {
+        message: "Target operation not found".to_string(),
     })?;
     let current_history = state.database.get_recent_operations(100).await?;
-    
+
     // Find the position of the target operation in history
     let target_position = current_history.iter().position(|op| op.id == operation_id);
-    
+
     if target_position.is_none() {
         return Ok(JumpToHistoryResult {
             success: false,
@@ -248,20 +253,18 @@ pub async fn jump_to_history(
             state: get_history_state_internal(&state).await?,
         });
     }
-    
-    let target_pos = target_position.ok_or_else(|| {
-        crate::error::AppError::NotFound {
-            message: "Operation not found in recent history".to_string(),
-        }
+
+    let target_pos = target_position.ok_or_else(|| crate::error::AppError::NotFound {
+        message: "Operation not found in recent history".to_string(),
     })?;
     let current_undo_count = state.undo_redo.undo_count().await;
     let operations_to_restore = target_pos;
-    
+
     let mut undone = 0;
     let mut redone = 0;
     let mut success = true;
     let mut error_msg = None;
-    
+
     // If we need to undo operations (target is older than current position)
     if operations_to_restore < current_undo_count {
         let undo_count = current_undo_count - operations_to_restore;
@@ -272,7 +275,8 @@ pub async fn jump_to_history(
                         undone += 1;
                     } else {
                         success = false;
-                        error_msg = Some(format!("Failed to undo operation: {}", op.operation_type));
+                        error_msg =
+                            Some(format!("Failed to undo operation: {}", op.operation_type));
                         break;
                     }
                 }
@@ -295,7 +299,8 @@ pub async fn jump_to_history(
                         redone += 1;
                     } else {
                         success = false;
-                        error_msg = Some(format!("Failed to redo operation: {}", op.operation_type));
+                        error_msg =
+                            Some(format!("Failed to redo operation: {}", op.operation_type));
                         break;
                     }
                 }
@@ -308,16 +313,19 @@ pub async fn jump_to_history(
             }
         }
     }
-    
+
     if success {
-        app.emit("jumped-to-history", serde_json::json!({
-            "operation_id": operation_id,
-            "target_operation": target_op,
-            "undone": undone,
-            "redone": redone,
-        }))?;
+        app.emit(
+            "jumped-to-history",
+            serde_json::json!({
+                "operation_id": operation_id,
+                "target_operation": target_op,
+                "undone": undone,
+                "redone": redone,
+            }),
+        )?;
     }
-    
+
     Ok(JumpToHistoryResult {
         success,
         error: error_msg,
@@ -338,13 +346,16 @@ async fn perform_undo_operation(
             if let Some(destination) = &operation.destination {
                 let source_path = std::path::PathBuf::from(&operation.source);
                 let dest_path = std::path::PathBuf::from(destination);
-                
+
                 // Validate that the destination file exists
                 if !dest_path.exists() {
-                    tracing::warn!("Cannot undo move: destination file does not exist: {}", destination);
+                    tracing::warn!(
+                        "Cannot undo move: destination file does not exist: {}",
+                        destination
+                    );
                     return Ok(false);
                 }
-                
+
                 // Check if source directory exists
                 if let Some(parent) = source_path.parent() {
                     if !parent.exists() {
@@ -354,27 +365,36 @@ async fn perform_undo_operation(
                         }
                     }
                 }
-                
+
                 // Move file back
                 match tokio::fs::rename(&dest_path, &source_path).await {
                     Ok(_) => {
-                        tracing::info!("Successfully undid move: {} -> {}", destination, operation.source);
+                        tracing::info!(
+                            "Successfully undid move: {} -> {}",
+                            destination,
+                            operation.source
+                        );
                         Ok(true)
-                    },
+                    }
                     Err(e) => {
                         tracing::warn!("Failed to rename during undo, trying copy+delete: {}", e);
                         // Try copy + delete
                         match tokio::fs::copy(&dest_path, &source_path).await {
-                            Ok(_) => {
-                                match tokio::fs::remove_file(&dest_path).await {
-                                    Ok(_) => {
-                                        tracing::info!("Successfully undid move via copy+delete: {} -> {}", destination, operation.source);
-                                        Ok(true)
-                                    },
-                                    Err(e) => {
-                                        tracing::error!("Failed to remove original after copy during undo: {}", e);
-                                        Ok(false)
-                                    }
+                            Ok(_) => match tokio::fs::remove_file(&dest_path).await {
+                                Ok(_) => {
+                                    tracing::info!(
+                                        "Successfully undid move via copy+delete: {} -> {}",
+                                        destination,
+                                        operation.source
+                                    );
+                                    Ok(true)
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to remove original after copy during undo: {}",
+                                        e
+                                    );
+                                    Ok(false)
                                 }
                             },
                             Err(e) => {
@@ -398,7 +418,7 @@ async fn perform_undo_operation(
                         Ok(_) => {
                             tracing::info!("Successfully undid copy by removing: {}", destination);
                             Ok(true)
-                        },
+                        }
                         Err(e) => {
                             tracing::error!("Failed to remove copied file during undo: {}", e);
                             Ok(false)
@@ -425,17 +445,23 @@ async fn perform_undo_operation(
                                 if let Some(parent) = source_path.parent() {
                                     if !parent.exists() {
                                         if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                                            tracing::error!("Failed to create directory for undo delete: {}", e);
+                                            tracing::error!(
+                                                "Failed to create directory for undo delete: {}",
+                                                e
+                                            );
                                             return Ok(false);
                                         }
                                     }
                                 }
-                                
+
                                 match tokio::fs::write(&operation.source, backup_content).await {
                                     Ok(_) => {
-                                        tracing::info!("Successfully restored deleted file: {}", operation.source);
+                                        tracing::info!(
+                                            "Successfully restored deleted file: {}",
+                                            operation.source
+                                        );
                                         Ok(true)
-                                    },
+                                    }
                                     Err(e) => {
                                         tracing::error!("Failed to restore deleted file: {}", e);
                                         Ok(false)
@@ -452,11 +478,17 @@ async fn perform_undo_operation(
                         Ok(false)
                     }
                 } else {
-                    tracing::warn!("Cannot undo delete: no backup content available for {}", operation.source);
+                    tracing::warn!(
+                        "Cannot undo delete: no backup content available for {}",
+                        operation.source
+                    );
                     Ok(false)
                 }
             } else {
-                tracing::warn!("Cannot undo delete: no metadata available for {}", operation.source);
+                tracing::warn!(
+                    "Cannot undo delete: no metadata available for {}",
+                    operation.source
+                );
                 Ok(false)
             }
         }
@@ -466,16 +498,22 @@ async fn perform_undo_operation(
             if source_path.exists() {
                 match tokio::fs::remove_file(&operation.source).await {
                     Ok(_) => {
-                        tracing::info!("Successfully undid create by removing: {}", operation.source);
+                        tracing::info!(
+                            "Successfully undid create by removing: {}",
+                            operation.source
+                        );
                         Ok(true)
-                    },
+                    }
                     Err(e) => {
                         tracing::error!("Failed to remove created file during undo: {}", e);
                         Ok(false)
                     }
                 }
             } else {
-                tracing::warn!("Cannot undo create: file does not exist: {}", operation.source);
+                tracing::warn!(
+                    "Cannot undo create: file does not exist: {}",
+                    operation.source
+                );
                 Ok(false)
             }
         }
@@ -484,12 +522,15 @@ async fn perform_undo_operation(
             if let Some(destination) = &operation.destination {
                 let dest_path = std::path::PathBuf::from(destination);
                 let source_path = std::path::PathBuf::from(&operation.source);
-                
+
                 if !dest_path.exists() {
-                    tracing::warn!("Cannot undo rename: renamed file does not exist: {}", destination);
+                    tracing::warn!(
+                        "Cannot undo rename: renamed file does not exist: {}",
+                        destination
+                    );
                     return Ok(false);
                 }
-                
+
                 // Check if source directory exists
                 if let Some(parent) = source_path.parent() {
                     if !parent.exists() {
@@ -499,12 +540,16 @@ async fn perform_undo_operation(
                         }
                     }
                 }
-                
+
                 match tokio::fs::rename(destination, &operation.source).await {
                     Ok(_) => {
-                        tracing::info!("Successfully undid rename: {} -> {}", destination, operation.source);
+                        tracing::info!(
+                            "Successfully undid rename: {} -> {}",
+                            destination,
+                            operation.source
+                        );
                         Ok(true)
-                    },
+                    }
                     Err(e) => {
                         tracing::error!("Failed to undo rename: {}", e);
                         Ok(false)
@@ -528,41 +573,60 @@ async fn perform_redo_operation(
             if let Some(destination) = &operation.destination {
                 let source_path = std::path::PathBuf::from(&operation.source);
                 let dest_path = std::path::PathBuf::from(destination);
-                
+
                 // Validate source exists
                 if !source_path.exists() {
-                    tracing::warn!("Cannot redo {}: source file does not exist: {}", operation.operation_type, operation.source);
+                    tracing::warn!(
+                        "Cannot redo {}: source file does not exist: {}",
+                        operation.operation_type,
+                        operation.source
+                    );
                     return Ok(false);
                 }
-                
+
                 // Ensure destination directory exists
                 if let Some(parent) = dest_path.parent() {
                     if !parent.exists() {
                         if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                            tracing::error!("Failed to create directory for redo {}: {}", operation.operation_type, e);
+                            tracing::error!(
+                                "Failed to create directory for redo {}: {}",
+                                operation.operation_type,
+                                e
+                            );
                             return Ok(false);
                         }
                     }
                 }
-                
+
                 match tokio::fs::rename(&source_path, &dest_path).await {
                     Ok(_) => {
-                        tracing::info!("Successfully redid {}: {} -> {}", operation.operation_type, operation.source, destination);
+                        tracing::info!(
+                            "Successfully redid {}: {} -> {}",
+                            operation.operation_type,
+                            operation.source,
+                            destination
+                        );
                         Ok(true)
-                    },
+                    }
                     Err(e) => {
                         tracing::warn!("Failed to rename during redo, trying copy+delete: {}", e);
                         match tokio::fs::copy(&source_path, &dest_path).await {
-                            Ok(_) => {
-                                match tokio::fs::remove_file(&source_path).await {
-                                    Ok(_) => {
-                                        tracing::info!("Successfully redid {} via copy+delete: {} -> {}", operation.operation_type, operation.source, destination);
-                                        Ok(true)
-                                    },
-                                    Err(e) => {
-                                        tracing::error!("Failed to remove source after copy during redo: {}", e);
-                                        Ok(false)
-                                    }
+                            Ok(_) => match tokio::fs::remove_file(&source_path).await {
+                                Ok(_) => {
+                                    tracing::info!(
+                                        "Successfully redid {} via copy+delete: {} -> {}",
+                                        operation.operation_type,
+                                        operation.source,
+                                        destination
+                                    );
+                                    Ok(true)
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to remove source after copy during redo: {}",
+                                        e
+                                    );
+                                    Ok(false)
                                 }
                             },
                             Err(e) => {
@@ -573,7 +637,10 @@ async fn perform_redo_operation(
                     }
                 }
             } else {
-                tracing::error!("Cannot redo {}: missing destination path", operation.operation_type);
+                tracing::error!(
+                    "Cannot redo {}: missing destination path",
+                    operation.operation_type
+                );
                 Ok(false)
             }
         }
@@ -581,13 +648,16 @@ async fn perform_redo_operation(
             if let Some(destination) = &operation.destination {
                 let source_path = std::path::PathBuf::from(&operation.source);
                 let dest_path = std::path::PathBuf::from(destination);
-                
+
                 // Validate source exists
                 if !source_path.exists() {
-                    tracing::warn!("Cannot redo copy: source file does not exist: {}", operation.source);
+                    tracing::warn!(
+                        "Cannot redo copy: source file does not exist: {}",
+                        operation.source
+                    );
                     return Ok(false);
                 }
-                
+
                 // Ensure destination directory exists
                 if let Some(parent) = dest_path.parent() {
                     if !parent.exists() {
@@ -597,12 +667,16 @@ async fn perform_redo_operation(
                         }
                     }
                 }
-                
+
                 match tokio::fs::copy(&operation.source, destination).await {
                     Ok(_) => {
-                        tracing::info!("Successfully redid copy: {} -> {}", operation.source, destination);
+                        tracing::info!(
+                            "Successfully redid copy: {} -> {}",
+                            operation.source,
+                            destination
+                        );
                         Ok(true)
-                    },
+                    }
                     Err(e) => {
                         tracing::error!("Failed to redo copy: {}", e);
                         Ok(false)
@@ -615,17 +689,20 @@ async fn perform_redo_operation(
         }
         "delete" => {
             let source_path = std::path::PathBuf::from(&operation.source);
-            
+
             if !source_path.exists() {
-                tracing::warn!("Cannot redo delete: file does not exist: {}", operation.source);
+                tracing::warn!(
+                    "Cannot redo delete: file does not exist: {}",
+                    operation.source
+                );
                 return Ok(false);
             }
-            
+
             match tokio::fs::remove_file(&operation.source).await {
                 Ok(_) => {
                     tracing::info!("Successfully redid delete: {}", operation.source);
                     Ok(true)
-                },
+                }
                 Err(e) => {
                     tracing::error!("Failed to redo delete: {}", e);
                     Ok(false)
@@ -636,12 +713,15 @@ async fn perform_redo_operation(
             // Redo create - this is tricky as we need original content
             // For now, we'll create an empty file if it doesn't exist
             let source_path = std::path::PathBuf::from(&operation.source);
-            
+
             if source_path.exists() {
-                tracing::warn!("Cannot redo create: file already exists: {}", operation.source);
+                tracing::warn!(
+                    "Cannot redo create: file already exists: {}",
+                    operation.source
+                );
                 return Ok(false);
             }
-            
+
             // Ensure directory exists
             if let Some(parent) = source_path.parent() {
                 if !parent.exists() {
@@ -651,7 +731,7 @@ async fn perform_redo_operation(
                     }
                 }
             }
-            
+
             // Try to restore original content if available in metadata
             let content = if let Some(metadata) = &operation.metadata {
                 if let Some(original_content_b64) = metadata.get("original_content") {
@@ -666,12 +746,12 @@ async fn perform_redo_operation(
             } else {
                 Vec::new()
             };
-            
+
             match tokio::fs::write(&operation.source, content).await {
                 Ok(_) => {
                     tracing::info!("Successfully redid create: {}", operation.source);
                     Ok(true)
-                },
+                }
                 Err(e) => {
                     tracing::error!("Failed to redo create: {}", e);
                     Ok(false)
@@ -679,7 +759,10 @@ async fn perform_redo_operation(
             }
         }
         _ => {
-            tracing::warn!("Unknown operation type for redo: {}", operation.operation_type);
+            tracing::warn!(
+                "Unknown operation type for redo: {}",
+                operation.operation_type
+            );
             Ok(false)
         }
     }
@@ -690,7 +773,7 @@ async fn get_history_state_internal(state: &AppState) -> Result<HistoryState> {
     let can_redo = state.undo_redo.can_redo().await;
     let undo_count = state.undo_redo.undo_count().await;
     let redo_count = state.undo_redo.redo_count().await;
-    
+
     Ok(HistoryState {
         can_undo,
         can_redo,

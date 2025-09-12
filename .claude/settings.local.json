@@ -50,7 +50,11 @@
       "Bash(timeout 120 cargo test --lib)",
       "Bash(timeout 120 cargo clippy --all-targets --features \"standard\" -- -D warnings)",
       "Bash(timeout 120 cargo clippy --all-targets --features \"documents,images,archives,multimedia\" -- -D warnings)",
-      "Bash(timeout 60 cargo test --lib)"
+      "Bash(timeout 60 cargo test --lib)",
+      "Bash(rustup component add:*)",
+      "Bash(del fix_whitespace.py)",
+      "Bash(rustup component list:*)",
+      "Bash(set TEST_MODE=true)"
     ],
     "deny": [],
     "ask": []

@@ -1,6 +1,6 @@
 use crate::error::Result;
-use serde::{Deserialize, Serialize};
 use reqwest;
+use serde::{Deserialize, Serialize};
 use tokio::time::Duration;
 
 /// Request structure for Ollama embedding API
@@ -18,7 +18,11 @@ struct EmbeddingResponse {
 
 /// Generates high-quality embeddings using Ollama embedding models
 /// Falls back to simple embeddings if Ollama is unavailable
-pub async fn generate_embeddings_with_ollama(text: &str, ollama_host: &str, model: &str) -> Result<Vec<f32>> {
+pub async fn generate_embeddings_with_ollama(
+    text: &str,
+    ollama_host: &str,
+    model: &str,
+) -> Result<Vec<f32>> {
     // Try Ollama first for high-quality embeddings
     match generate_ollama_embeddings(text, ollama_host, model).await {
         Ok(embeddings) => Ok(embeddings),
@@ -30,7 +34,11 @@ pub async fn generate_embeddings_with_ollama(text: &str, ollama_host: &str, mode
 }
 
 /// Generates embeddings using Ollama embedding models
-async fn generate_ollama_embeddings(text: &str, ollama_host: &str, model: &str) -> Result<Vec<f32>> {
+async fn generate_ollama_embeddings(
+    text: &str,
+    ollama_host: &str,
+    model: &str,
+) -> Result<Vec<f32>> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()?;
@@ -53,9 +61,10 @@ async fn generate_ollama_embeddings(text: &str, ollama_host: &str, model: &str) 
     }
 
     let embedding_response: EmbeddingResponse = response.json().await?;
-    
+
     // Convert f64 to f32 for consistency
-    let embeddings: Vec<f32> = embedding_response.embedding
+    let embeddings: Vec<f32> = embedding_response
+        .embedding
         .into_iter()
         .map(|x| x as f32)
         .collect();
@@ -68,7 +77,7 @@ async fn generate_ollama_embeddings(text: &str, ollama_host: &str, model: &str) 
 pub fn generate_simple_embeddings(text: &str) -> Result<Vec<f32>> {
     let mut embeddings = vec![0.0f32; 384];
     let words: Vec<&str> = text.split_whitespace().collect();
-    
+
     for (i, word) in words.iter().enumerate() {
         let hash = hash_string(word);
         for j in 0..4 {
@@ -76,7 +85,7 @@ pub fn generate_simple_embeddings(text: &str) -> Result<Vec<f32>> {
             embeddings[idx] += 1.0 / (i + 1) as f32;
         }
     }
-    
+
     normalize_vector(&mut embeddings);
     Ok(embeddings)
 }
@@ -93,7 +102,7 @@ fn hash_string(s: &str) -> u64 {
 /// Normalizes a vector to unit length
 fn normalize_vector(vec: &mut [f32]) {
     let magnitude: f32 = vec.iter().map(|x| x * x).sum::<f32>().sqrt();
-    
+
     // Use epsilon comparison to avoid division by zero and handle floating point precision
     if magnitude > f32::EPSILON {
         for v in vec.iter_mut() {

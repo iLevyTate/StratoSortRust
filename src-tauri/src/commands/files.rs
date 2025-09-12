@@ -1,7 +1,9 @@
 use crate::{
-    error::Result, 
+    error::Result,
     state::AppState,
-    utils::security::{validate_and_sanitize_path_legacy as validate_and_sanitize_path, is_path_allowed}
+    utils::security::{
+        is_path_allowed, validate_and_sanitize_path_legacy as validate_and_sanitize_path,
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -13,7 +15,8 @@ use tokio::io::{AsyncReadExt, BufReader};
 use walkdir::WalkDir;
 
 // Type alias for complex future return type
-type DirectorySizeResult<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(u64, usize, usize)>> + Send + 'a>>;
+type DirectorySizeResult<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(u64, usize, usize)>> + Send + 'a>>;
 
 // Global memory and concurrency protection
 static CONCURRENT_READS: AtomicUsize = AtomicUsize::new(0);
@@ -49,20 +52,17 @@ struct MemoryGuard {
 impl ReadGuard {
     fn new(state: &AppState) -> Result<Self> {
         let max_reads = get_max_concurrent_reads(state);
-        
+
         // Use fetch_update for atomic check-and-increment - fixes race condition
-        let result = CONCURRENT_READS.fetch_update(
-            Ordering::AcqRel,
-            Ordering::Acquire,
-            |current| {
+        let result =
+            CONCURRENT_READS.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 if current >= max_reads {
                     None // Reject the update - too many concurrent reads
                 } else {
                     Some(current + 1) // Accept and increment
                 }
-            }
-        );
-        
+            });
+
         match result {
             Ok(_) => Ok(ReadGuard),
             Err(_) => {
@@ -88,25 +88,25 @@ impl Drop for ReadGuard {
 impl MemoryGuard {
     fn new(size: usize, state: &AppState) -> Result<Self> {
         let max_memory = get_max_total_memory(state);
-        
+
         // Use compare-and-swap loop to atomically check and reserve memory
         loop {
             let current_memory = TOTAL_MEMORY_USAGE.load(Ordering::Acquire);
-            
+
             if current_memory + size > max_memory {
                 return Err(crate::error::AppError::ResourceLimitExceeded {
                     message: format!("Memory limit exceeded. Current: {} bytes, Requested: {} bytes, Limit: {} bytes. Increase max_total_memory_mb in settings if needed.", 
                         current_memory, size, max_memory),
                 });
             }
-            
+
             // Attempt to atomically update memory usage if it hasn't changed
             let new_total = current_memory + size;
             match TOTAL_MEMORY_USAGE.compare_exchange_weak(
-                current_memory, 
-                new_total, 
-                Ordering::AcqRel, 
-                Ordering::Acquire
+                current_memory,
+                new_total,
+                Ordering::AcqRel,
+                Ordering::Acquire,
             ) {
                 Ok(_) => {
                     // Successfully reserved memory
@@ -148,29 +148,29 @@ pub async fn scan_directory(
 ) -> Result<Vec<FileInfo>> {
     // Validate and sanitize path to prevent path traversal
     let sanitized_path = validate_and_sanitize_path(&path, &app)?;
-    
+
     // Validate path exists
     if !sanitized_path.exists() {
         return Err(crate::error::AppError::FileNotFound {
             path: sanitized_path.display().to_string(),
         });
     }
-    
+
     // Ensure path is within allowed directories
     if !is_path_allowed(&sanitized_path, &app)? {
         return Err(crate::error::AppError::SecurityError {
             message: "Access to this directory is not allowed".to_string(),
         });
     }
-    
+
     let mut files = Vec::new();
-    
+
     // Start progress tracking for scanning
     let operation_id = state.start_operation(
         crate::state::OperationType::FileAnalysis,
-        format!("Scanning directory: {}", path)
+        format!("Scanning directory: {}", path),
     );
-    
+
     if recursive {
         // First pass: count total entries for progress calculation
         let max_depth = get_max_scan_depth(&state);
@@ -179,13 +179,13 @@ pub async fn scan_directory(
             .into_iter()
             .filter_map(|e| e.ok())
             .count();
-        
+
         state.update_progress(
-            operation_id, 
-            0.1, 
-            format!("Found {} items to scan", total_entries)
+            operation_id,
+            0.1,
+            format!("Found {} items to scan", total_entries),
         );
-        
+
         // Second pass: process entries with progress updates
         let mut processed = 0;
         for entry in WalkDir::new(&sanitized_path)
@@ -200,50 +200,50 @@ pub async fn scan_directory(
                     return Err(crate::error::AppError::Cancelled);
                 }
             }
-            
+
             if let Ok(info) = get_file_info(entry.path()).await {
                 files.push(info);
             }
-            
+
             processed += 1;
-            
+
             // Update progress every 50 files or when done
             if processed % 50 == 0 || processed == total_entries {
                 let progress = 0.1 + (0.9 * processed as f32 / total_entries as f32);
                 state.update_progress(
-                    operation_id, 
-                    progress, 
-                    format!("Scanned {} of {} items", processed, total_entries)
+                    operation_id,
+                    progress,
+                    format!("Scanned {} of {} items", processed, total_entries),
                 );
             }
         }
     } else {
         state.update_progress(operation_id, 0.1, "Reading directory entries".to_string());
-        
+
         let mut entries = fs::read_dir(&sanitized_path).await?;
         let mut processed = 0;
-        
+
         while let Some(entry) = entries.next_entry().await? {
             if let Ok(info) = get_file_info(&entry.path()).await {
                 files.push(info);
             }
-            
+
             processed += 1;
-            
+
             // Update progress every 25 files for non-recursive scans
             if processed % 25 == 0 {
-                state.update_progress(
-                    operation_id, 
-                    0.5, 
-                    format!("Scanned {} items", processed)
-                );
+                state.update_progress(operation_id, 0.5, format!("Scanned {} items", processed));
             }
         }
     }
-    
-    state.update_progress(operation_id, 1.0, format!("Scan complete: {} items found", files.len()));
+
+    state.update_progress(
+        operation_id,
+        1.0,
+        format!("Scan complete: {} items found", files.len()),
+    );
     state.complete_operation(operation_id);
-    
+
     Ok(files)
 }
 
@@ -259,13 +259,13 @@ pub async fn analyze_files(
             message: "No paths provided for analysis".to_string(),
         });
     }
-    
+
     if paths.len() > 1000 {
         return Err(crate::error::AppError::SecurityError {
             message: "Too many files requested for analysis (max 1000)".to_string(),
         });
     }
-    
+
     // Validate all input paths before processing to prevent path traversal
     for path in &paths {
         if path.is_empty() {
@@ -275,23 +275,30 @@ pub async fn analyze_files(
         }
         validate_and_sanitize_path(path, &app)?;
     }
-    
+
     let mut results = Vec::new();
     let operation_id = state.start_operation(
         crate::state::OperationType::FileAnalysis,
-        format!("Analyzing {} files", paths.len())
+        format!("Analyzing {} files", paths.len()),
     );
-    
+
     for (index, path) in paths.iter().enumerate() {
         // Update progress
         let progress = index as f32 / paths.len() as f32;
         state.update_progress(
-            operation_id, 
-            progress, 
-            format!("Analyzing file {} of {}: {}", index + 1, paths.len(), 
-                Path::new(path).file_name().unwrap_or_default().to_string_lossy())
+            operation_id,
+            progress,
+            format!(
+                "Analyzing file {} of {}: {}",
+                index + 1,
+                paths.len(),
+                Path::new(path)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+            ),
         );
-        
+
         // Check for cancellation
         if let Some(op) = state.active_operations.get(&operation_id) {
             if op.cancellation_token.is_cancelled() {
@@ -299,7 +306,7 @@ pub async fn analyze_files(
                 return Err(crate::error::AppError::Cancelled);
             }
         }
-        
+
         // Read file content (limited) with error context
         let content = match read_file_preview(path, 10000).await {
             Ok(content) => content,
@@ -308,44 +315,63 @@ pub async fn analyze_files(
                 continue; // Skip this file and continue with next
             }
         };
-        
-        let mime_type = mime_guess::from_path(path).first_or_octet_stream().to_string();
-        
+
+        let mime_type = mime_guess::from_path(path)
+            .first_or_octet_stream()
+            .to_string();
+
         // Analyze with AI with enhanced error handling
         match state.ai_service.analyze_file(&content, &mime_type).await {
             Ok(mut analysis) => {
                 analysis.path = path.clone();
-                
+
                 // Cache the analysis with error handling
                 if let Err(e) = state.database.save_analysis(&analysis).await {
                     tracing::error!("Failed to save analysis for {}: {}", path, e);
                     // Continue anyway as analysis was successful
                 }
                 // Generate and save embeddings (best effort)
-                match state.ai_service.generate_embeddings(&format!("{} {}", analysis.summary, analysis.tags.join(" "))).await {
+                match state
+                    .ai_service
+                    .generate_embeddings(&format!(
+                        "{} {}",
+                        analysis.summary,
+                        analysis.tags.join(" ")
+                    ))
+                    .await
+                {
                     Ok(embedding) => {
                         let model_name = state.config.read().ollama_embedding_model.clone();
-                        if let Err(e) = state.database.save_embedding(&analysis.path, &embedding, Some(&model_name)).await {
+                        if let Err(e) = state
+                            .database
+                            .save_embedding(&analysis.path, &embedding, Some(&model_name))
+                            .await
+                        {
                             tracing::warn!("Failed to save embedding for {}: {}", analysis.path, e);
                         }
                     }
-                    Err(e) => tracing::warn!("Embedding generation failed for {}: {}", analysis.path, e),
+                    Err(e) => {
+                        tracing::warn!("Embedding generation failed for {}: {}", analysis.path, e)
+                    }
                 }
-                
+
                 results.push(analysis);
                 tracing::debug!("Successfully analyzed {}", path);
             }
             Err(e) => {
                 tracing::warn!("Failed to analyze {}: {}", path, e);
                 // Emit error event to frontend for user feedback
-                let _ = app.emit("analysis-failed", serde_json::json!({
-                    "path": path,
-                    "error": e.to_string(),
-                    "error_type": e.error_type(),
-                    "recoverable": e.is_recoverable(),
-                    "timestamp": chrono::Utc::now().timestamp(),
-                }));
-                
+                let _ = app.emit(
+                    "analysis-failed",
+                    serde_json::json!({
+                        "path": path,
+                        "error": e.to_string(),
+                        "error_type": e.error_type(),
+                        "recoverable": e.is_recoverable(),
+                        "timestamp": chrono::Utc::now().timestamp(),
+                    }),
+                );
+
                 // Emit general notification for user awareness
                 let _ = app.emit("notification", serde_json::json!({
                     "type": "error",
@@ -356,16 +382,19 @@ pub async fn analyze_files(
             }
         }
     }
-    
+
     // Complete the operation
     state.complete_operation(operation_id);
-    
+
     // Emit completion event (legacy)
-    app.emit("analysis-complete", serde_json::json!({
-        "count": results.len(),
-        "paths": paths,
-    }))?;
-    
+    app.emit(
+        "analysis-complete",
+        serde_json::json!({
+            "count": results.len(),
+            "paths": paths,
+        }),
+    )?;
+
     Ok(results)
 }
 
@@ -378,44 +407,48 @@ pub async fn get_file_content(
 ) -> Result<String> {
     // Validate and sanitize path to prevent path traversal
     let sanitized_path = validate_and_sanitize_path(&path, &app)?;
-    
+
     // Ensure path is within allowed directories
     if !is_path_allowed(&sanitized_path, &app)? {
         return Err(crate::error::AppError::SecurityError {
             message: "Access to this file is not allowed".to_string(),
         });
     }
-    
+
     // IDOR Protection: Validate user has permission to access this specific file
     if !validate_file_access(&sanitized_path, &user_id, &state).await? {
         return Err(crate::error::AppError::SecurityError {
             message: "Insufficient permissions to access this file".to_string(),
         });
     }
-    
+
     let path_str = sanitized_path.display().to_string();
-    
+
     // Check cache first
     if let Some(cached) = state.file_cache.get(&path_str) {
         return Ok(String::from_utf8_lossy(&cached.content).to_string());
     }
-    
+
     // Acquire guard to limit concurrent reads (automatically releases on drop)
     let _guard = ReadGuard::new(&state)?;
-    
+
     // Validate file size before reading (prevent memory exhaustion)
     let metadata = fs::metadata(&sanitized_path).await?;
-    
+
     let max_file_size = get_max_file_size(&state);
     if metadata.len() > max_file_size {
         return Err(crate::error::AppError::SecurityError {
-            message: format!("File too large ({} bytes). Maximum allowed: {} bytes", metadata.len(), max_file_size),
+            message: format!(
+                "File too large ({} bytes). Maximum allowed: {} bytes",
+                metadata.len(),
+                max_file_size
+            ),
         });
     }
-    
+
     // Reserve memory for this file read
     let _memory_guard = MemoryGuard::new(metadata.len() as usize, &state)?;
-    
+
     // Read file with streaming for large files
     let content = if metadata.len() > STREAM_THRESHOLD {
         // Stream large files to avoid memory exhaustion
@@ -423,17 +456,17 @@ pub async fn get_file_content(
         let mut reader = BufReader::new(file);
         // NEVER pre-allocate based on untrusted file size
         let mut content = String::new();
-        
+
         // Read in smaller, fixed chunks for security
         let mut buffer = vec![0; 8192]; // Fixed 8KB chunks
         let mut total_read = 0u64;
-        
+
         loop {
             let bytes_read = reader.read(&mut buffer).await?;
             if bytes_read == 0 {
                 break;
             }
-            
+
             total_read += bytes_read as u64;
             let max_file_size = get_max_file_size(&state);
             if total_read > max_file_size {
@@ -441,7 +474,7 @@ pub async fn get_file_content(
                     message: "File size exceeded limit during read".to_string(),
                 });
             }
-            
+
             // Convert bytes to string and append
             match std::str::from_utf8(&buffer[..bytes_read]) {
                 Ok(s) => content.push_str(s),
@@ -451,13 +484,13 @@ pub async fn get_file_content(
                 }
             }
         }
-        
+
         content
     } else {
         // Small files - read all at once
         fs::read_to_string(&sanitized_path).await?
     };
-    
+
     // Cache for future use
     let file_info = get_file_info(&sanitized_path).await?;
     state.file_cache.insert(
@@ -470,7 +503,7 @@ pub async fn get_file_content(
             accessed: chrono::Utc::now(),
         },
     );
-    
+
     Ok(content)
 }
 
@@ -486,13 +519,13 @@ pub async fn move_files(
             message: "No move operations provided".to_string(),
         });
     }
-    
+
     if operations.len() > 500 {
         return Err(crate::error::AppError::SecurityError {
             message: "Too many move operations requested (max 500)".to_string(),
         });
     }
-    
+
     // Validate all source and destination paths before processing
     for op in &operations {
         if op.source.is_empty() || op.destination.is_empty() {
@@ -500,35 +533,47 @@ pub async fn move_files(
                 message: "Empty source or destination path in move operation".to_string(),
             });
         }
-        
+
         if op.source == op.destination {
             return Err(crate::error::AppError::InvalidPath {
                 message: "Source and destination paths cannot be the same".to_string(),
             });
         }
-        
+
         validate_and_sanitize_path(&op.source, &app)?;
         validate_and_sanitize_path(&op.destination, &app)?;
     }
-    
+
     let mut results = Vec::new();
-    let operation_id = state.start_operation(crate::state::OperationType::BulkOperation, "Bulk file operation".to_string());
-    
+    let operation_id = state.start_operation(
+        crate::state::OperationType::BulkOperation,
+        "Bulk file operation".to_string(),
+    );
+
     for (index, op) in operations.iter().enumerate() {
         // Update progress
         let progress = (index as f32 / operations.len() as f32) * 100.0;
         state.update_operation(
             operation_id,
             progress,
-            format!("Moving: {}", Path::new(&op.source).file_name().unwrap_or_default().to_string_lossy()),
+            format!(
+                "Moving: {}",
+                Path::new(&op.source)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+            ),
         );
-        
+
         // Perform move
         match perform_move(op).await {
             Ok(_) => {
                 // Record for undo
-                state.undo_redo.record_move(&op.source, &op.destination).await?;
-                
+                state
+                    .undo_redo
+                    .record_move(&op.source, &op.destination)
+                    .await?;
+
                 results.push(MoveResult {
                     source: op.source.clone(),
                     destination: op.destination.clone(),
@@ -546,9 +591,9 @@ pub async fn move_files(
             }
         }
     }
-    
+
     state.complete_operation(operation_id);
-    
+
     Ok(results)
 }
 
@@ -564,18 +609,18 @@ pub async fn get_file_preview(
             message: "Path cannot be empty".to_string(),
         });
     }
-    
+
     if max_size == 0 || max_size > 100 * 1024 * 1024 {
         return Err(crate::error::AppError::SecurityError {
             message: "Invalid max_size parameter (must be between 1 and 100MB)".to_string(),
         });
     }
-    
+
     // Validate and sanitize path to prevent path traversal
     let sanitized_path = validate_and_sanitize_path(&path, &app)?;
-    
+
     let metadata = fs::metadata(&sanitized_path).await?;
-    
+
     if metadata.len() > max_size as u64 {
         // Return partial content
         let content = read_file_preview(&sanitized_path.display().to_string(), max_size).await?;
@@ -597,31 +642,35 @@ pub async fn get_file_preview(
 async fn get_file_info(path: impl AsRef<Path>) -> Result<FileInfo> {
     let path = path.as_ref();
     let metadata = fs::metadata(path).await?;
-    
-    let modified_at = metadata.modified()
+
+    let modified_at = metadata
+        .modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    let created_at = metadata.created()
+    let created_at = metadata
+        .created()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    
-    let extension = path.extension()
+
+    let extension = path
+        .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_string();
-    
+
     let mime_type = mime_guess::from_path(path)
         .first_or_octet_stream()
         .to_string();
-    
+
     Ok(FileInfo {
         path: path.display().to_string(),
-        name: path.file_name()
+        name: path
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .to_string(),
@@ -636,24 +685,28 @@ async fn get_file_info(path: impl AsRef<Path>) -> Result<FileInfo> {
 
 async fn read_file_preview(path: &str, max_bytes: usize) -> Result<String> {
     use tokio::io::{AsyncReadExt, BufReader};
-    
+
     // Validate file size before opening to prevent DoS
     let metadata = fs::metadata(path).await?;
     const MAX_PREVIEW_FILE_SIZE: u64 = 100 * 1024 * 1024; // 100MB limit for preview
-    
+
     if metadata.len() > MAX_PREVIEW_FILE_SIZE {
         return Err(crate::error::AppError::SecurityError {
-            message: format!("File too large for preview ({} bytes). Maximum allowed: {} bytes", metadata.len(), MAX_PREVIEW_FILE_SIZE),
+            message: format!(
+                "File too large for preview ({} bytes). Maximum allowed: {} bytes",
+                metadata.len(),
+                MAX_PREVIEW_FILE_SIZE
+            ),
         });
     }
-    
+
     let file = tokio::fs::File::open(path).await?;
     let mut reader = BufReader::new(file);
     let mut buffer = vec![0u8; max_bytes];
-    
+
     let bytes_read = reader.read(&mut buffer).await?;
     buffer.truncate(bytes_read);
-    
+
     // Try to convert to string, handling encoding
     match String::from_utf8(buffer.clone()) {
         Ok(s) => Ok(s),
@@ -668,38 +721,38 @@ async fn read_file_preview(path: &str, max_bytes: usize) -> Result<String> {
 async fn perform_move(op: &MoveOperation) -> Result<()> {
     let source = Path::new(&op.source);
     let destination = Path::new(&op.destination);
-    
+
     // Validate source exists
     if !source.exists() {
         return Err(crate::error::AppError::FileNotFound {
             path: source.display().to_string(),
         });
     }
-    
+
     // Validate destination doesn't already exist to prevent accidental overwrites
     if destination.exists() {
         return Err(crate::error::AppError::InvalidPath {
             message: format!("Destination already exists: {}", destination.display()),
         });
     }
-    
+
     // Ensure destination directory exists
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent).await?;
     }
-    
+
     // Check if we're trying to move a directory into itself
     if source.is_dir() && destination.starts_with(source) {
         return Err(crate::error::AppError::InvalidPath {
             message: "Cannot move directory into itself".to_string(),
         });
     }
-    
+
     // Try rename first (fast if same filesystem)
     if fs::rename(&source, &destination).await.is_ok() {
         return Ok(());
     }
-    
+
     // Fall back to copy + delete, handling both files and directories
     if source.is_dir() {
         // Validate directory is not empty in a reasonable way
@@ -713,7 +766,7 @@ async fn perform_move(op: &MoveOperation) -> Result<()> {
                 });
             }
         }
-        
+
         // Recursively copy directory
         copy_dir_recursively(source, destination).await?;
         fs::remove_dir_all(&source).await?;
@@ -721,31 +774,35 @@ async fn perform_move(op: &MoveOperation) -> Result<()> {
         fs::copy(&source, &destination).await?;
         fs::remove_file(&source).await?;
     }
-    
+
     Ok(())
 }
 
 // Helper function to recursively copy directories
-fn copy_dir_recursively<'a>(source: &'a Path, destination: &'a Path) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+fn copy_dir_recursively<'a>(
+    source: &'a Path,
+    destination: &'a Path,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
     Box::pin(async move {
         fs::create_dir_all(destination).await?;
-        
+
         let mut entries = fs::read_dir(source).await?;
         while let Some(entry) = entries.next_entry().await? {
             let entry_path = entry.path();
-            let relative_path = entry_path.strip_prefix(source)
-                .map_err(|_| crate::error::AppError::InvalidPath {
+            let relative_path = entry_path.strip_prefix(source).map_err(|_| {
+                crate::error::AppError::InvalidPath {
                     message: "Failed to get relative path during copy".to_string(),
-                })?;
+                }
+            })?;
             let dest_path = destination.join(relative_path);
-            
+
             if entry_path.is_dir() {
                 copy_dir_recursively(&entry_path, &dest_path).await?;
             } else {
                 fs::copy(&entry_path, &dest_path).await?;
             }
         }
-        
+
         Ok(())
     })
 }
@@ -772,19 +829,17 @@ pub struct FilePreview {
 }
 
 #[tauri::command]
-pub async fn get_recent_files(
-    state: State<'_, std::sync::Arc<AppState>>,
-) -> Result<Vec<FileInfo>> {
+pub async fn get_recent_files(state: State<'_, std::sync::Arc<AppState>>) -> Result<Vec<FileInfo>> {
     // Get recent files from database (last 20 analyzed files)
     let recent_files = state.database.get_recent_analyses(20).await?;
-    
+
     let mut files = Vec::new();
     for path in recent_files {
         if let Ok(info) = get_file_info(&path).await {
             files.push(info);
         }
     }
-    
+
     Ok(files)
 }
 
@@ -797,24 +852,22 @@ pub async fn rename_file(
 ) -> Result<bool> {
     let sanitized_old = validate_and_sanitize_path(&old_path, &app)?;
     let sanitized_new = validate_and_sanitize_path(&new_path, &app)?;
-    
+
     if !sanitized_old.exists() {
-        return Err(crate::error::AppError::FileNotFound {
-            path: old_path,
-        });
+        return Err(crate::error::AppError::FileNotFound { path: old_path });
     }
-    
+
     if sanitized_new.exists() {
         return Err(crate::error::AppError::InvalidPath {
             message: "Destination already exists".to_string(),
         });
     }
-    
+
     fs::rename(&sanitized_old, &sanitized_new).await?;
-    
+
     // Record for undo
     state.undo_redo.record_move(&old_path, &new_path).await?;
-    
+
     Ok(true)
 }
 
@@ -827,33 +880,31 @@ pub async fn copy_file(
 ) -> Result<bool> {
     let sanitized_source = validate_and_sanitize_path(&source_path, &app)?;
     let sanitized_dest = validate_and_sanitize_path(&destination_path, &app)?;
-    
+
     if !sanitized_source.exists() {
-        return Err(crate::error::AppError::FileNotFound {
-            path: source_path,
-        });
+        return Err(crate::error::AppError::FileNotFound { path: source_path });
     }
-    
+
     if sanitized_dest.exists() {
         return Err(crate::error::AppError::InvalidPath {
             message: "Destination already exists".to_string(),
         });
     }
-    
+
     // Ensure destination directory exists
     if let Some(parent) = sanitized_dest.parent() {
         fs::create_dir_all(parent).await?;
     }
-    
+
     if sanitized_source.is_dir() {
         copy_dir_recursively(&sanitized_source, &sanitized_dest).await?;
     } else {
         fs::copy(&sanitized_source, &sanitized_dest).await?;
     }
-    
+
     // Record for undo (copy creates new file, so record as creation)
     state.undo_redo.record_create(&destination_path).await?;
-    
+
     Ok(true)
 }
 
@@ -865,78 +916,63 @@ pub async fn delete_file(
     app: AppHandle,
 ) -> Result<bool> {
     let sanitized_path = validate_and_sanitize_path(&path, &app)?;
-    
+
     if !sanitized_path.exists() {
-        return Err(crate::error::AppError::FileNotFound {
-            path,
-        });
+        return Err(crate::error::AppError::FileNotFound { path });
     }
-    
+
     // Read file content for potential recovery if not permanent
     let backup_content = if !permanent && sanitized_path.is_file() {
         (fs::read(&sanitized_path).await).ok()
     } else {
         None
     };
-    
+
     if sanitized_path.is_dir() {
         fs::remove_dir_all(&sanitized_path).await?;
     } else {
         fs::remove_file(&sanitized_path).await?;
     }
-    
+
     // Record for undo with backup content
     state.undo_redo.record_delete(&path, backup_content).await?;
-    
+
     Ok(true)
 }
 
 #[tauri::command]
-pub async fn create_directory(
-    path: String,
-    recursive: bool,
-    app: AppHandle,
-) -> Result<bool> {
+pub async fn create_directory(path: String, recursive: bool, app: AppHandle) -> Result<bool> {
     let sanitized_path = validate_and_sanitize_path(&path, &app)?;
-    
+
     if sanitized_path.exists() {
         return Err(crate::error::AppError::InvalidPath {
             message: "Directory already exists".to_string(),
         });
     }
-    
+
     if recursive {
         fs::create_dir_all(&sanitized_path).await?;
     } else {
         fs::create_dir(&sanitized_path).await?;
     }
-    
+
     Ok(true)
 }
 
 #[tauri::command]
-pub async fn get_file_info_command(
-    path: String,
-    app: AppHandle,
-) -> Result<FileInfo> {
+pub async fn get_file_info_command(path: String, app: AppHandle) -> Result<FileInfo> {
     let sanitized_path = validate_and_sanitize_path(&path, &app)?;
     get_file_info(&sanitized_path).await
 }
 
 #[tauri::command]
-pub async fn set_file_permissions(
-    path: String,
-    permissions: u32,
-    app: AppHandle,
-) -> Result<bool> {
+pub async fn set_file_permissions(path: String, permissions: u32, app: AppHandle) -> Result<bool> {
     let sanitized_path = validate_and_sanitize_path(&path, &app)?;
-    
+
     if !sanitized_path.exists() {
-        return Err(crate::error::AppError::FileNotFound {
-            path,
-        });
+        return Err(crate::error::AppError::FileNotFound { path });
     }
-    
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -945,7 +981,7 @@ pub async fn set_file_permissions(
         perms.set_mode(permissions);
         fs::set_permissions(&sanitized_path, perms).await?;
     }
-    
+
     #[cfg(windows)]
     {
         // Windows permissions are more complex, implement basic read-only toggle
@@ -954,7 +990,7 @@ pub async fn set_file_permissions(
         perms.set_readonly(permissions & 0o200 == 0);
         fs::set_permissions(&sanitized_path, perms).await?;
     }
-    
+
     Ok(true)
 }
 
@@ -969,41 +1005,83 @@ pub async fn batch_file_operations(
             message: "Too many batch operations (max 1000)".to_string(),
         });
     }
-    
+
     let mut results = Vec::new();
     let operation_id = state.start_operation(
         crate::state::OperationType::BulkOperation,
-        format!("Batch operations: {}", operations.len())
+        format!("Batch operations: {}", operations.len()),
     );
-    
+
     for (index, op) in operations.iter().enumerate() {
         let progress = index as f32 / operations.len() as f32;
-        state.update_progress(operation_id, progress, format!("Operation {}/{}", index + 1, operations.len()));
-        
+        state.update_progress(
+            operation_id,
+            progress,
+            format!("Operation {}/{}", index + 1, operations.len()),
+        );
+
         let result = match &op.operation_type {
             BatchOperationType::Move => {
-                match rename_file(op.source.clone(), op.destination.clone().unwrap_or_default(), state.clone(), app.clone()).await {
-                    Ok(_) => BatchResult { success: true, error: None, path: op.source.clone() },
-                    Err(e) => BatchResult { success: false, error: Some(e.to_string()), path: op.source.clone() },
+                match rename_file(
+                    op.source.clone(),
+                    op.destination.clone().unwrap_or_default(),
+                    state.clone(),
+                    app.clone(),
+                )
+                .await
+                {
+                    Ok(_) => BatchResult {
+                        success: true,
+                        error: None,
+                        path: op.source.clone(),
+                    },
+                    Err(e) => BatchResult {
+                        success: false,
+                        error: Some(e.to_string()),
+                        path: op.source.clone(),
+                    },
                 }
             }
             BatchOperationType::Copy => {
-                match copy_file(op.source.clone(), op.destination.clone().unwrap_or_default(), state.clone(), app.clone()).await {
-                    Ok(_) => BatchResult { success: true, error: None, path: op.source.clone() },
-                    Err(e) => BatchResult { success: false, error: Some(e.to_string()), path: op.source.clone() },
+                match copy_file(
+                    op.source.clone(),
+                    op.destination.clone().unwrap_or_default(),
+                    state.clone(),
+                    app.clone(),
+                )
+                .await
+                {
+                    Ok(_) => BatchResult {
+                        success: true,
+                        error: None,
+                        path: op.source.clone(),
+                    },
+                    Err(e) => BatchResult {
+                        success: false,
+                        error: Some(e.to_string()),
+                        path: op.source.clone(),
+                    },
                 }
             }
             BatchOperationType::Delete => {
                 match delete_file(op.source.clone(), false, state.clone(), app.clone()).await {
-                    Ok(_) => BatchResult { success: true, error: None, path: op.source.clone() },
-                    Err(e) => BatchResult { success: false, error: Some(e.to_string()), path: op.source.clone() },
+                    Ok(_) => BatchResult {
+                        success: true,
+                        error: None,
+                        path: op.source.clone(),
+                    },
+                    Err(e) => BatchResult {
+                        success: false,
+                        error: Some(e.to_string()),
+                        path: op.source.clone(),
+                    },
                 }
             }
         };
-        
+
         results.push(result);
     }
-    
+
     state.complete_operation(operation_id);
     Ok(results)
 }
@@ -1038,29 +1116,30 @@ pub async fn move_file(
 ) -> Result<bool> {
     let sanitized_source = validate_and_sanitize_path(&source_path, &app)?;
     let sanitized_dest = validate_and_sanitize_path(&destination_path, &app)?;
-    
+
     if !sanitized_source.exists() {
-        return Err(crate::error::AppError::FileNotFound {
-            path: source_path,
-        });
+        return Err(crate::error::AppError::FileNotFound { path: source_path });
     }
-    
+
     if sanitized_dest.exists() {
         return Err(crate::error::AppError::InvalidPath {
             message: "Destination already exists".to_string(),
         });
     }
-    
+
     let operation = MoveOperation {
         source: source_path.clone(),
         destination: destination_path.clone(),
     };
-    
+
     perform_move(&operation).await?;
-    
+
     // Record for undo
-    state.undo_redo.record_move(&source_path, &destination_path).await?;
-    
+    state
+        .undo_redo
+        .record_move(&source_path, &destination_path)
+        .await?;
+
     Ok(true)
 }
 
@@ -1075,37 +1154,48 @@ pub async fn rename_files(
             message: "No rename operations provided".to_string(),
         });
     }
-    
+
     if operations.len() > 500 {
         return Err(crate::error::AppError::SecurityError {
             message: "Too many rename operations requested (max 500)".to_string(),
         });
     }
-    
+
     let mut results = Vec::new();
     let operation_id = state.start_operation(
         crate::state::OperationType::BulkOperation,
-        format!("Renaming {} files", operations.len())
+        format!("Renaming {} files", operations.len()),
     );
-    
+
     for (index, op) in operations.iter().enumerate() {
         let progress = index as f32 / operations.len() as f32;
         state.update_progress(
             operation_id,
             progress,
-            format!("Renaming: {}", Path::new(&op.file_path).file_name().unwrap_or_default().to_string_lossy()),
+            format!(
+                "Renaming: {}",
+                Path::new(&op.file_path)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+            ),
         );
-        
+
         let sanitized_path = validate_and_sanitize_path(&op.file_path, &app)?;
-        let parent = sanitized_path.parent()
-            .ok_or_else(|| crate::error::AppError::InvalidPath {
-                message: "Cannot get parent directory".to_string(),
-            })?;
+        let parent =
+            sanitized_path
+                .parent()
+                .ok_or_else(|| crate::error::AppError::InvalidPath {
+                    message: "Cannot get parent directory".to_string(),
+                })?;
         let new_path = parent.join(&op.new_name);
-        
+
         match fs::rename(&sanitized_path, &new_path).await {
             Ok(_) => {
-                state.undo_redo.record_move(&op.file_path, &new_path.display().to_string()).await?;
+                state
+                    .undo_redo
+                    .record_move(&op.file_path, &new_path.display().to_string())
+                    .await?;
                 results.push(RenameResult {
                     original_path: op.file_path.clone(),
                     new_path: new_path.display().to_string(),
@@ -1123,16 +1213,13 @@ pub async fn rename_files(
             }
         }
     }
-    
+
     state.complete_operation(operation_id);
     Ok(results)
 }
 
 #[tauri::command]
-pub async fn file_exists(
-    path: String,
-    app: AppHandle,
-) -> Result<FileExistsResult> {
+pub async fn file_exists(path: String, app: AppHandle) -> Result<FileExistsResult> {
     if path.is_empty() {
         return Ok(FileExistsResult {
             exists: false,
@@ -1142,7 +1229,7 @@ pub async fn file_exists(
             error: Some("Empty path provided".to_string()),
         });
     }
-    
+
     // Validate and sanitize path
     let sanitized_path = match validate_and_sanitize_path(&path, &app) {
         Ok(path) => path,
@@ -1156,21 +1243,19 @@ pub async fn file_exists(
             });
         }
     };
-    
+
     // Check if path is allowed
     let is_accessible = is_path_allowed(&sanitized_path, &app).unwrap_or(false);
-    
+
     // Check if path exists and get metadata
     match fs::metadata(&sanitized_path).await {
-        Ok(metadata) => {
-            Ok(FileExistsResult {
-                exists: true,
-                is_file: metadata.is_file(),
-                is_directory: metadata.is_dir(),
-                is_accessible,
-                error: None,
-            })
-        }
+        Ok(metadata) => Ok(FileExistsResult {
+            exists: true,
+            is_file: metadata.is_file(),
+            is_directory: metadata.is_dir(),
+            is_accessible,
+            error: None,
+        }),
         Err(e) => {
             // Check if the error is due to permissions vs non-existence
             let error_kind = e.kind();
@@ -1179,7 +1264,7 @@ pub async fn file_exists(
                 std::io::ErrorKind::PermissionDenied => true, // File exists but no permission
                 _ => false,
             };
-            
+
             Ok(FileExistsResult {
                 exists,
                 is_file: false,
@@ -1192,49 +1277,49 @@ pub async fn file_exists(
 }
 
 #[tauri::command]
-pub async fn get_file_properties(
-    path: String,
-    app: AppHandle,
-) -> Result<FileProperties> {
+pub async fn get_file_properties(path: String, app: AppHandle) -> Result<FileProperties> {
     let sanitized_path = validate_and_sanitize_path(&path, &app)?;
-    
+
     if !sanitized_path.exists() {
         return Err(crate::error::AppError::FileNotFound { path });
     }
-    
+
     let metadata = fs::metadata(&sanitized_path).await?;
-    
-    let modified_at = metadata.modified()
+
+    let modified_at = metadata
+        .modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    let created_at = metadata.created()
+    let created_at = metadata
+        .created()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    let accessed_at = metadata.accessed()
+    let accessed_at = metadata
+        .accessed()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    
+
     #[cfg(unix)]
     let permissions = {
         use std::os::unix::fs::PermissionsExt;
         format!("{:o}", metadata.permissions().mode() & 0o777)
     };
-    
+
     #[cfg(windows)]
     let permissions = if metadata.permissions().readonly() {
         "readonly".to_string()
     } else {
         "readwrite".to_string()
     };
-    
+
     Ok(FileProperties {
         path: sanitized_path.display().to_string(),
         size: metadata.len(),
@@ -1297,28 +1382,25 @@ pub struct FileSizeInfo {
 }
 
 #[tauri::command]
-pub async fn get_file_size_info(
-    path: String,
-    app: AppHandle,
-) -> Result<FileSizeInfo> {
+pub async fn get_file_size_info(path: String, app: AppHandle) -> Result<FileSizeInfo> {
     let sanitized_path = validate_and_sanitize_path(&path, &app)?;
-    
+
     if !sanitized_path.exists() {
         return Err(crate::error::AppError::FileNotFound { path });
     }
-    
+
     if !is_path_allowed(&sanitized_path, &app)? {
         return Err(crate::error::AppError::SecurityError {
             message: "Access to this path is not allowed".to_string(),
         });
     }
-    
+
     let metadata = fs::metadata(&sanitized_path).await?;
     let size_bytes = metadata.len();
-    
+
     // Calculate human-readable size
     let (size_value, size_unit) = format_file_size(size_bytes);
-    
+
     // For directories, calculate total size
     let (total_size, file_count, directory_count) = if metadata.is_dir() {
         match calculate_directory_size(&sanitized_path).await {
@@ -1328,9 +1410,9 @@ pub async fn get_file_size_info(
     } else {
         (size_bytes, 1, 0)
     };
-    
+
     let (total_size_value, total_size_unit) = format_file_size(total_size);
-    
+
     Ok(FileSizeInfo {
         path: sanitized_path.display().to_string(),
         size_bytes,
@@ -1352,7 +1434,7 @@ pub async fn browse_files(
     app: AppHandle,
 ) -> Result<Vec<String>> {
     tracing::info!("Opening file selection dialog (multiple: {})", multiple);
-    
+
     // Validate input parameters
     if let Some(ref filter_list) = filters {
         if filter_list.len() > 50 {
@@ -1361,9 +1443,9 @@ pub async fn browse_files(
             });
         }
     }
-    
+
     let mut dialog_builder = app.dialog().file();
-    
+
     // Apply filters if provided
     if let Some(filter_list) = filters {
         for filter in filter_list {
@@ -1380,7 +1462,7 @@ pub async fn browse_files(
             }
         }
     }
-    
+
     let selected_paths = if multiple {
         dialog_builder.blocking_pick_files().unwrap_or_default()
     } else {
@@ -1396,7 +1478,7 @@ pub async fn browse_files(
     }
 
     let mut validated_paths = Vec::new();
-    
+
     // Security: Validate each selected path
     for path in selected_paths {
         let path_str = match path.as_path() {
@@ -1407,13 +1489,13 @@ pub async fn browse_files(
                 });
             }
         };
-        
+
         // Validate path length to prevent memory exhaustion
         if path_str.len() > 4096 {
             tracing::warn!("Path too long, skipping: {}", path_str);
             continue;
         }
-        
+
         match validate_and_sanitize_path(&path_str, &app) {
             Ok(validated_path) => {
                 // Additional security check: ensure path is allowed
@@ -1430,39 +1512,38 @@ pub async fn browse_files(
             }
         }
     }
-    
+
     // Log selection results
     tracing::info!("User selected {} valid files", validated_paths.len());
-    
+
     // Emit selection event for frontend tracking
-    let _ = app.emit("files-selected", serde_json::json!({
-        "count": validated_paths.len(),
-        "paths": validated_paths,
-        "timestamp": chrono::Utc::now().timestamp(),
-    }));
-    
+    let _ = app.emit(
+        "files-selected",
+        serde_json::json!({
+            "count": validated_paths.len(),
+            "paths": validated_paths,
+            "timestamp": chrono::Utc::now().timestamp(),
+        }),
+    );
+
     Ok(validated_paths)
 }
 
 #[tauri::command]
-pub async fn browse_folder(
-    title: Option<String>,
-    app: AppHandle,
-) -> Result<String> {
+pub async fn browse_folder(title: Option<String>, app: AppHandle) -> Result<String> {
     let dialog_title = title.unwrap_or_else(|| "Select Folder".to_string());
-    
+
     // Validate title to prevent injection attacks
     if dialog_title.len() > 200 {
         return Err(crate::error::AppError::SecurityError {
             message: "Dialog title too long".to_string(),
         });
     }
-    
+
     tracing::info!("Opening folder selection dialog: {}", dialog_title);
-    
-    let dialog_builder = app.dialog().file()
-        .set_title(&dialog_title);
-    
+
+    let dialog_builder = app.dialog().file().set_title(&dialog_title);
+
     match dialog_builder.blocking_pick_folder() {
         Some(folder_path) => {
             let path_str = match folder_path.as_path() {
@@ -1473,34 +1554,37 @@ pub async fn browse_folder(
                     });
                 }
             };
-            
+
             // Validate path length
             if path_str.len() > 4096 {
                 return Err(crate::error::AppError::SecurityError {
                     message: "Selected path too long".to_string(),
                 });
             }
-            
+
             // Validate and sanitize the selected folder path
             let validated_path = validate_and_sanitize_path(&path_str, &app)?;
-            
+
             // Additional security check: ensure path is allowed
             if !is_path_allowed(&validated_path, &app)? {
                 return Err(crate::error::AppError::SecurityError {
                     message: "Selected folder is not accessible".to_string(),
                 });
             }
-            
+
             let final_path = validated_path.display().to_string();
-            
+
             tracing::info!("User selected folder: {}", final_path);
-            
+
             // Emit folder selection event for frontend tracking
-            let _ = app.emit("folder-selected", serde_json::json!({
-                "path": final_path,
-                "timestamp": chrono::Utc::now().timestamp(),
-            }));
-            
+            let _ = app.emit(
+                "folder-selected",
+                serde_json::json!({
+                    "path": final_path,
+                    "timestamp": chrono::Utc::now().timestamp(),
+                }),
+            );
+
             Ok(final_path)
         }
         None => {
@@ -1522,35 +1606,35 @@ pub async fn process_dropped_paths(
             message: "No paths provided for processing".to_string(),
         });
     }
-    
+
     if dropped_paths.len() > 1000 {
         return Err(crate::error::AppError::SecurityError {
             message: "Too many dropped paths (max 1000)".to_string(),
         });
     }
-    
+
     tracing::info!("Processing {} dropped paths", dropped_paths.len());
-    
+
     let mut valid_files = Vec::new();
     let mut valid_folders = Vec::new();
     let mut invalid_paths = Vec::new();
     let mut total_size = 0u64;
-    
+
     // Start progress tracking for processing
     let operation_id = state.start_operation(
         crate::state::OperationType::FileAnalysis,
-        format!("Processing {} dropped items", dropped_paths.len())
+        format!("Processing {} dropped items", dropped_paths.len()),
     );
-    
+
     for (index, path_str) in dropped_paths.iter().enumerate() {
         // Update progress
         let progress = index as f32 / dropped_paths.len() as f32;
         state.update_progress(
-            operation_id, 
-            progress, 
-            format!("Validating path {} of {}", index + 1, dropped_paths.len())
+            operation_id,
+            progress,
+            format!("Validating path {} of {}", index + 1, dropped_paths.len()),
         );
-        
+
         // Check for cancellation
         if let Some(op) = state.active_operations.get(&operation_id) {
             if op.cancellation_token.is_cancelled() {
@@ -1558,7 +1642,7 @@ pub async fn process_dropped_paths(
                 return Err(crate::error::AppError::Cancelled);
             }
         }
-        
+
         // Validate path length
         if path_str.is_empty() || path_str.len() > 4096 {
             invalid_paths.push(InvalidPath {
@@ -1567,7 +1651,7 @@ pub async fn process_dropped_paths(
             });
             continue;
         }
-        
+
         // Validate and sanitize path
         let validated_path = match validate_and_sanitize_path(path_str, &app) {
             Ok(path) => path,
@@ -1579,7 +1663,7 @@ pub async fn process_dropped_paths(
                 continue;
             }
         };
-        
+
         // Check if path is allowed
         if !is_path_allowed(&validated_path, &app)? {
             invalid_paths.push(InvalidPath {
@@ -1588,7 +1672,7 @@ pub async fn process_dropped_paths(
             });
             continue;
         }
-        
+
         // Check if path exists
         if !validated_path.exists() {
             invalid_paths.push(InvalidPath {
@@ -1597,20 +1681,23 @@ pub async fn process_dropped_paths(
             });
             continue;
         }
-        
+
         // Get file info and categorize
         match get_file_info(&validated_path).await {
             Ok(file_info) => {
                 total_size = total_size.saturating_add(file_info.size);
-                
+
                 // Check total size limit to prevent memory exhaustion
                 const MAX_TOTAL_SIZE: u64 = 10 * 1024 * 1024 * 1024; // 10GB
                 if total_size > MAX_TOTAL_SIZE {
                     return Err(crate::error::AppError::ResourceLimitExceeded {
-                        message: format!("Total size of dropped files exceeds limit ({} bytes)", MAX_TOTAL_SIZE),
+                        message: format!(
+                            "Total size of dropped files exceeds limit ({} bytes)",
+                            MAX_TOTAL_SIZE
+                        ),
                     });
                 }
-                
+
                 if file_info.is_directory {
                     valid_folders.push(file_info);
                 } else {
@@ -1625,9 +1712,9 @@ pub async fn process_dropped_paths(
             }
         }
     }
-    
+
     state.complete_operation(operation_id);
-    
+
     let result = ProcessedDropResult {
         valid_files: valid_files.clone(),
         valid_folders: valid_folders.clone(),
@@ -1636,25 +1723,28 @@ pub async fn process_dropped_paths(
         total_valid: valid_files.len() + valid_folders.len(),
         total_invalid: invalid_paths.len(),
     };
-    
+
     // Log processing results
     tracing::info!(
-        "Processed drop: {} files, {} folders, {} invalid paths, total size: {} bytes", 
-        valid_files.len(), 
-        valid_folders.len(), 
+        "Processed drop: {} files, {} folders, {} invalid paths, total size: {} bytes",
+        valid_files.len(),
+        valid_folders.len(),
         invalid_paths.len(),
         total_size
     );
-    
+
     // Emit processing event for frontend tracking
-    let _ = app.emit("paths-processed", serde_json::json!({
-        "files_count": valid_files.len(),
-        "folders_count": valid_folders.len(),
-        "invalid_count": invalid_paths.len(),
-        "total_size": total_size,
-        "timestamp": chrono::Utc::now().timestamp(),
-    }));
-    
+    let _ = app.emit(
+        "paths-processed",
+        serde_json::json!({
+            "files_count": valid_files.len(),
+            "folders_count": valid_folders.len(),
+            "invalid_count": invalid_paths.len(),
+            "total_size": total_size,
+            "timestamp": chrono::Utc::now().timestamp(),
+        }),
+    );
+
     Ok(result)
 }
 
@@ -1685,7 +1775,7 @@ pub struct InvalidPath {
 pub fn is_rename_operation(source: &str, destination: &str) -> bool {
     let source_path = Path::new(source);
     let dest_path = Path::new(destination);
-    
+
     // Same parent directory means it's a rename
     source_path.parent() == dest_path.parent()
 }
@@ -1693,7 +1783,7 @@ pub fn is_rename_operation(source: &str, destination: &str) -> bool {
 pub fn is_move_operation(source: &str, destination: &str) -> bool {
     let source_path = Path::new(source);
     let dest_path = Path::new(destination);
-    
+
     // Different parent directories means it's a move
     source_path.parent() != dest_path.parent()
 }
@@ -1701,31 +1791,30 @@ pub fn is_move_operation(source: &str, destination: &str) -> bool {
 pub fn is_move_with_rename(source: &str, destination: &str) -> bool {
     let source_path = Path::new(source);
     let dest_path = Path::new(destination);
-    
+
     // Different parent directory AND different filename
-    source_path.parent() != dest_path.parent() &&
-    source_path.file_name() != dest_path.file_name()
+    source_path.parent() != dest_path.parent() && source_path.file_name() != dest_path.file_name()
 }
 
 // Helper function to format file size in human-readable format
 fn format_file_size(bytes: u64) -> (f64, String) {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB", "PB"];
     const THRESHOLD: f64 = 1024.0;
-    
+
     if bytes == 0 {
         return (0.0, "B".to_string());
     }
-    
+
     let bytes_f64 = bytes as f64;
     let unit_index = (bytes_f64.log10() / THRESHOLD.log10()).floor() as usize;
     let unit_index = unit_index.min(UNITS.len() - 1);
-    
+
     let value = bytes_f64 / THRESHOLD.powi(unit_index as i32);
     let unit = UNITS[unit_index].to_string();
-    
+
     // Round to 2 decimal places
     let rounded_value = (value * 100.0).round() / 100.0;
-    
+
     (rounded_value, unit)
 }
 
@@ -1733,45 +1822,42 @@ fn format_file_size(bytes: u64) -> (f64, String) {
 async fn calculate_directory_size(dir: &std::path::Path) -> Result<(u64, usize, usize)> {
     // Use a bounded depth to prevent infinite recursion
     const MAX_DEPTH: usize = 20;
-    
-    fn calculate_recursive(
-        dir: &std::path::Path,
-        current_depth: usize,
-    ) -> DirectorySizeResult<'_> {
+
+    fn calculate_recursive(dir: &std::path::Path, current_depth: usize) -> DirectorySizeResult<'_> {
         Box::pin(async move {
             if current_depth > MAX_DEPTH {
                 return Ok((0, 0, 0));
             }
-            
+
             let mut total_size = 0u64;
             let mut file_count = 0usize;
             let mut directory_count = 0usize;
-            
+
             let mut entries = tokio::fs::read_dir(dir).await?;
-            
+
             while let Some(entry) = entries.next_entry().await? {
                 let metadata = entry.metadata().await?;
-                
+
                 if metadata.is_file() {
                     total_size += metadata.len();
                     file_count += 1;
                 } else if metadata.is_dir() {
                     directory_count += 1;
-                    
+
                     // Recursively calculate subdirectory size
-                    let (sub_size, sub_files, sub_dirs) = 
+                    let (sub_size, sub_files, sub_dirs) =
                         calculate_recursive(&entry.path(), current_depth + 1).await?;
-                    
+
                     total_size += sub_size;
                     file_count += sub_files;
                     directory_count += sub_dirs;
                 }
             }
-            
+
             Ok((total_size, file_count, directory_count))
         })
     }
-    
+
     calculate_recursive(dir, 0).await
 }
 
@@ -1783,10 +1869,10 @@ async fn validate_file_access(
 ) -> Result<bool> {
     // For single-user desktop application, we can use a simplified permission model
     // In a multi-user environment, this would check database permissions
-    
+
     // Get the canonical path as string for database queries
     let path_str = path.display().to_string();
-    
+
     // Check if file has been explicitly granted to user or is in user's allowed directories
     if let Some(uid) = user_id {
         // Check database for explicit file permissions (if implemented)
@@ -1802,7 +1888,7 @@ async fn validate_file_access(
             }
         }
     }
-    
+
     // For desktop app, default to allowing access if path validation passed
     // In production multi-user environment, this should be more restrictive
     Ok(true)

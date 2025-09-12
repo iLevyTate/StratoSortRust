@@ -1,14 +1,11 @@
-use std::process::Command;
-use std::path::Path;
 use std::fs;
+use std::path::Path;
+use std::process::Command;
 
 fn main() {
     // Clean up lock files that might cause issues on Windows
-    let lock_paths = vec![
-        "target/debug/.cargo-lock",
-        "target/release/.cargo-lock",
-    ];
-    
+    let lock_paths = vec!["target/debug/.cargo-lock", "target/release/.cargo-lock"];
+
     for lock_path in lock_paths {
         if Path::new(lock_path).exists() {
             let _ = fs::remove_file(lock_path);
@@ -29,7 +26,7 @@ fn main() {
                     stderr: vec![],
                 })
         });
-    
+
     let build_date = String::from_utf8_lossy(&output.stdout).trim().to_string();
     println!("cargo:rustc-env=BUILD_DATE={}", build_date);
 
@@ -43,7 +40,7 @@ fn main() {
 
     // Tell Cargo to rerun this script if anything changes
     println!("cargo:rerun-if-changed=build.rs");
-    
+
     // Call Tauri's build process
     tauri_build::build()
 }

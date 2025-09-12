@@ -11,9 +11,9 @@ pub mod setup;
 pub mod system;
 pub mod watch_mode;
 
-use tauri::State;
 use crate::state::AppState;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use tauri::State;
 
 #[tauri::command]
 pub async fn cancel_operation(
@@ -21,8 +21,9 @@ pub async fn cancel_operation(
     state: State<'_, std::sync::Arc<AppState>>,
 ) -> Result<bool, crate::error::AppError> {
     use uuid::Uuid;
-    let uuid = Uuid::parse_str(&id)
-        .map_err(|_| crate::error::AppError::InvalidInput { message: "Invalid UUID".into() })?;
+    let uuid = Uuid::parse_str(&id).map_err(|_| crate::error::AppError::InvalidInput {
+        message: "Invalid UUID".into(),
+    })?;
     Ok(state.cancel_operation(uuid))
 }
 
@@ -31,7 +32,9 @@ pub async fn cancel_operation(
 pub async fn get_active_operations(
     state: State<'_, std::sync::Arc<AppState>>,
 ) -> Result<Vec<ActiveOperationInfo>, crate::error::AppError> {
-    let operations = state.active_operations.iter()
+    let operations = state
+        .active_operations
+        .iter()
         .map(|entry| {
             let (id, status) = entry.pair();
             ActiveOperationInfo {
@@ -44,7 +47,7 @@ pub async fn get_active_operations(
             }
         })
         .collect();
-    
+
     Ok(operations)
 }
 
@@ -52,7 +55,9 @@ pub async fn get_active_operations(
 pub async fn get_active_operations_internal(
     state: &AppState,
 ) -> Result<Vec<ActiveOperationInfo>, crate::error::AppError> {
-    let operations = state.active_operations.iter()
+    let operations = state
+        .active_operations
+        .iter()
         .map(|entry| {
             let (id, status) = entry.pair();
             ActiveOperationInfo {
@@ -65,7 +70,7 @@ pub async fn get_active_operations_internal(
             }
         })
         .collect();
-    
+
     Ok(operations)
 }
 
@@ -76,9 +81,10 @@ pub async fn get_operation_progress(
     state: State<'_, std::sync::Arc<AppState>>,
 ) -> Result<Option<ActiveOperationInfo>, crate::error::AppError> {
     use uuid::Uuid;
-    let uuid = Uuid::parse_str(&id)
-        .map_err(|_| crate::error::AppError::InvalidInput { message: "Invalid UUID".into() })?;
-    
+    let uuid = Uuid::parse_str(&id).map_err(|_| crate::error::AppError::InvalidInput {
+        message: "Invalid UUID".into(),
+    })?;
+
     if let Some(status) = state.active_operations.get(&uuid) {
         Ok(Some(ActiveOperationInfo {
             id,

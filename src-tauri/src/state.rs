@@ -40,7 +40,7 @@ impl AppState {
         let undo_redo = Arc::new(UndoRedoManager::new(database.clone()));
         let file_cache = Arc::new(FileCache::new());
         let monitoring_service = Arc::new(crate::services::MonitoringService::new());
-        
+
         Ok(Self {
             handle,
             config: config_arc,
@@ -56,20 +56,20 @@ impl AppState {
             monitoring_service,
         })
     }
-    
+
     /// Updates configuration
     pub async fn update_config(&self, config: Config) -> Result<()> {
         *self.config.write() = config.clone();
-        
+
         // Reinitialize services that depend on config
         self.ai_service.update_config(&config).await?;
-        
+
         // Save to disk
         config.save(&self.handle)?;
-        
+
         Ok(())
     }
-    
+
     /// Starts a new operation (internal)
     fn start_operation_internal(&self, operation_type: OperationType) -> Uuid {
         let id = Uuid::new_v4();
@@ -81,20 +81,20 @@ impl AppState {
             cancellation_token: tokio_util::sync::CancellationToken::new(),
             started_at: chrono::Utc::now(),
         };
-        
+
         self.active_operations.insert(id, status);
         id
     }
-    
+
     /// Updates operation progress (deprecated - use update_progress instead)
     pub fn update_operation(&self, id: Uuid, progress: f32, message: String) {
         self.update_progress(id, progress, message);
     }
-    
+
     /// Graceful shutdown of all services
     pub async fn shutdown(&self) -> Result<()> {
         tracing::info!("Starting graceful shutdown of application services");
-        
+
         // 1. Stop file watcher first to prevent new operations
         {
             let watcher = self.file_watcher.read().clone();
@@ -106,55 +106,60 @@ impl AppState {
                 }
             }
         }
-        
+
         // 2. Cancel all active operations
-        let active_operations: Vec<Uuid> = self.active_operations.iter()
+        let active_operations: Vec<Uuid> = self
+            .active_operations
+            .iter()
             .map(|entry| *entry.key())
             .collect();
-        
+
         tracing::info!("Cancelling {} active operations", active_operations.len());
         for operation_id in active_operations {
             self.cancel_operation(operation_id);
         }
-        
+
         // 3. Wait a moment for operations to cancel gracefully
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        
+
         // 4. Force cancel any remaining operations
         let remaining = self.active_operations.len();
         if remaining > 0 {
             tracing::warn!("Force stopping {} remaining operations", remaining);
             self.active_operations.clear();
         }
-        
+
         // 5. Clear file cache
         {
             let cache_size = self.file_cache.entries.len();
             self.file_cache.entries.clear();
             tracing::info!("Cleared file cache ({} items)", cache_size);
         }
-        
+
         // 6. Perform final database operations
         if let Err(e) = self.database.close_connections().await {
             tracing::warn!("Error closing database connections: {}", e);
         } else {
             tracing::info!("Database connections closed successfully");
         }
-        
+
         // 7. Stop monitoring service
         self.monitoring_service.shutdown().await;
-        
+
         tracing::info!("Graceful shutdown completed");
         Ok(())
     }
-    
+
     /// Get current resource usage statistics
     pub async fn get_resource_usage(&self) -> ResourceUsage {
         let cache_size = self.file_cache.entries.len();
-        let cache_memory = self.file_cache.entries.iter()
+        let cache_memory = self
+            .file_cache
+            .entries
+            .iter()
             .map(|entry| entry.value().content.len())
             .sum::<usize>();
-        
+
         ResourceUsage {
             active_operations: self.active_operations.len(),
             cache_items: cache_size,
@@ -163,7 +168,7 @@ impl AppState {
             ai_service_available: false, // Would need async check
         }
     }
-    
+
     /// Cancels an operation
     pub fn cancel_operation(&self, id: Uuid) -> bool {
         if let Some((_, status)) = self.active_operations.remove(&id) {
@@ -173,7 +178,7 @@ impl AppState {
             false
         }
     }
-    
+
     /// Completes an operation
     pub fn complete_operation(&self, id: Uuid) {
         // Emit completion event before removing
@@ -184,20 +189,20 @@ impl AppState {
             message: "Operation completed".to_string(),
             completed: true,
         };
-        
+
         if let Err(e) = self.handle.emit("operation_progress", &progress_event) {
             tracing::error!("Failed to emit completion event: {}", e);
         }
-        
+
         self.active_operations.remove(&id);
     }
-    
+
     /// Updates operation progress and emits event to frontend
     pub fn update_progress(&self, id: Uuid, progress: f32, message: String) {
         if let Some(mut status) = self.active_operations.get_mut(&id) {
             status.progress = progress.clamp(0.0, 1.0);
             status.message = message.clone();
-            
+
             let progress_event = ProgressEvent {
                 id: id.to_string(),
                 operation_type: status.operation_type.clone(),
@@ -205,17 +210,17 @@ impl AppState {
                 message,
                 completed: false,
             };
-            
+
             if let Err(e) = self.handle.emit("operation_progress", &progress_event) {
                 tracing::error!("Failed to emit progress event: {}", e);
             }
         }
     }
-    
+
     /// Starts a new operation and emits initial event
     pub fn start_operation(&self, operation_type: OperationType, message: String) -> Uuid {
         let id = self.start_operation_internal(operation_type.clone());
-        
+
         let progress_event = ProgressEvent {
             id: id.to_string(),
             operation_type,
@@ -223,32 +228,32 @@ impl AppState {
             message,
             completed: false,
         };
-        
+
         if let Err(e) = self.handle.emit("operation_progress", &progress_event) {
             tracing::error!("Failed to emit start event: {}", e);
         }
-        
+
         id
     }
-    
+
     /// Cleans up old cache entries
     pub async fn cleanup_cache(&self) -> Result<()> {
         self.file_cache.cleanup_old_entries().await;
         self.database.vacuum().await?;
         Ok(())
     }
-    
+
     /// Saves application state
     pub async fn save_state(&self) -> Result<()> {
         // Save configuration
         self.config.read().save(&self.handle)?;
-        
+
         // Save smart folders
         self.smart_folders.save_all().await?;
-        
+
         // Flush database
         self.database.flush().await?;
-        
+
         Ok(())
     }
 }
@@ -272,75 +277,84 @@ impl FileCache {
             max_size: 100 * 1024 * 1024, // 100MB
         }
     }
-    
+
     pub fn get(&self, path: &str) -> Option<CachedFile> {
         self.entries.get(path).map(|e| e.clone())
     }
-    
+
     pub fn insert(&self, path: String, file: CachedFile) {
         // Don't insert if file itself is larger than max cache size
         if file.size > self.max_size {
-            tracing::warn!("File {} ({} bytes) is larger than max cache size ({} bytes), skipping cache", 
-                          path, file.size, self.max_size);
+            tracing::warn!(
+                "File {} ({} bytes) is larger than max cache size ({} bytes), skipping cache",
+                path,
+                file.size,
+                self.max_size
+            );
             return;
         }
-        
+
         // Calculate total entry size including metadata overhead
-        let entry_overhead = path.len() + std::mem::size_of::<CachedFile>() + std::mem::size_of::<String>();
+        let entry_overhead =
+            path.len() + std::mem::size_of::<CachedFile>() + std::mem::size_of::<String>();
         let total_entry_size = file.size + entry_overhead;
-        
+
         // Enforce cache size limits before insertion
         while self.current_size() + total_entry_size > self.max_size && !self.entries.is_empty() {
             self.evict_oldest();
         }
-        
+
         self.entries.insert(path, file);
     }
-    
+
     pub async fn cleanup_old_entries(&self) {
         let now = chrono::Utc::now();
         let mut to_remove = Vec::new();
-        
+
         for entry in self.entries.iter() {
-            if now.signed_duration_since(entry.accessed)
-                > chrono::Duration::hours(24)
-            {
+            if now.signed_duration_since(entry.accessed) > chrono::Duration::hours(24) {
                 to_remove.push(entry.key().clone());
             }
         }
-        
+
         for key in to_remove {
             self.entries.remove(&key);
         }
     }
-    
+
     pub fn current_size(&self) -> usize {
-        self.entries.iter().map(|entry| {
-            let key_size = entry.key().len();
-            let file_size = entry.value().size;
-            let metadata_size = std::mem::size_of::<CachedFile>() + std::mem::size_of::<String>();
-            key_size + file_size + metadata_size
-        }).sum()
+        self.entries
+            .iter()
+            .map(|entry| {
+                let key_size = entry.key().len();
+                let file_size = entry.value().size;
+                let metadata_size =
+                    std::mem::size_of::<CachedFile>() + std::mem::size_of::<String>();
+                key_size + file_size + metadata_size
+            })
+            .sum()
     }
-    
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
-    
+
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
-    
+
     pub fn clear(&self) {
         self.entries.clear();
     }
-    
+
     fn evict_oldest(&self) {
         // Find oldest entry key first
-        let oldest_key = self.entries.iter()
+        let oldest_key = self
+            .entries
+            .iter()
             .min_by_key(|entry| entry.accessed)
             .map(|entry| entry.key().clone());
-        
+
         // Remove the oldest entry if found
         if let Some(key) = oldest_key {
             self.entries.remove(&key);

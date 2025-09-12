@@ -1,8 +1,8 @@
+use crate::error::{AppError, Result};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, Semaphore};
 use tracing::{debug, error, info, warn};
-use crate::error::{AppError, Result};
 
 /// Connection pool for managing Ollama API connections
 pub struct ConnectionPool {
@@ -40,9 +40,9 @@ pub struct CircuitBreaker {
 
 #[derive(Debug, Clone, PartialEq)]
 enum CircuitState {
-    Closed,     // Normal operation
-    Open,       // Failing, reject requests
-    HalfOpen,   // Testing if service recovered
+    Closed,   // Normal operation
+    Open,     // Failing, reject requests
+    HalfOpen, // Testing if service recovered
 }
 
 impl Default for CircuitBreaker {
@@ -69,13 +69,13 @@ impl ConnectionPool {
             circuit_breaker: Arc::new(RwLock::new(CircuitBreaker::default())),
         }
     }
-    
+
     /// Acquire a connection permit
     pub async fn acquire(&self) -> Result<ConnectionPermit> {
         // Check circuit breaker
         let mut breaker = self.circuit_breaker.write().await;
         breaker.check_state();
-        
+
         match breaker.state {
             CircuitState::Open => {
                 return Err(AppError::AiError {
@@ -92,14 +92,16 @@ impl ConnectionPool {
             }
             CircuitState::Closed => {}
         }
-        
+
         drop(breaker);
-        
+
         // Try to acquire permit with timeout
         let permit = match tokio::time::timeout(
             Duration::from_secs(5),
-            self.semaphore.clone().acquire_owned()
-        ).await {
+            self.semaphore.clone().acquire_owned(),
+        )
+        .await
+        {
             Ok(Ok(permit)) => permit,
             Ok(Err(_)) => {
                 return Err(AppError::AiError {
@@ -112,52 +114,52 @@ impl ConnectionPool {
                 });
             }
         };
-        
+
         let start_time = Instant::now();
         let mut stats = self.stats.write().await;
         stats.total_requests += 1;
         stats.last_request_time = Some(start_time);
         drop(stats);
-        
+
         Ok(ConnectionPermit {
             _permit: permit,
             pool: self.clone(),
             start_time,
         })
     }
-    
+
     /// Record successful request
     pub async fn record_success(&self, latency: Duration) {
         let mut stats = self.stats.write().await;
         stats.successful_requests += 1;
         stats.total_latency_ms += latency.as_millis() as u64;
         drop(stats);
-        
+
         let mut breaker = self.circuit_breaker.write().await;
         breaker.on_success();
     }
-    
+
     /// Record failed request
     pub async fn record_failure(&self) {
         let mut stats = self.stats.write().await;
         stats.failed_requests += 1;
         drop(stats);
-        
+
         let mut breaker = self.circuit_breaker.write().await;
         breaker.on_failure();
     }
-    
+
     /// Get connection statistics
     pub async fn get_stats(&self) -> ConnectionPoolStats {
         let stats = self.stats.read().await;
         let breaker = self.circuit_breaker.read().await;
-        
+
         let avg_latency_ms = if stats.successful_requests > 0 {
             stats.total_latency_ms / stats.successful_requests
         } else {
             0
         };
-        
+
         ConnectionPoolStats {
             total_requests: stats.total_requests,
             successful_requests: stats.successful_requests,
@@ -194,25 +196,27 @@ impl CircuitBreaker {
             }
         }
     }
-    
+
     /// Record successful request
     fn on_success(&mut self) {
         self.consecutive_failures = 0;
         self.consecutive_successes += 1;
-        
-        if self.state == CircuitState::HalfOpen && self.consecutive_successes >= self.success_threshold {
+
+        if self.state == CircuitState::HalfOpen
+            && self.consecutive_successes >= self.success_threshold
+        {
             info!("Circuit breaker closing - service recovered");
             self.state = CircuitState::Closed;
             self.half_open_requests = 0;
         }
     }
-    
+
     /// Record failed request
     fn on_failure(&mut self) {
         self.consecutive_successes = 0;
         self.consecutive_failures += 1;
         self.last_failure_time = Some(Instant::now());
-        
+
         match self.state {
             CircuitState::Closed => {
                 if self.consecutive_failures >= self.failure_threshold {
@@ -244,7 +248,7 @@ impl ConnectionPermit {
         self.pool.record_success(latency).await;
         debug!("Request completed successfully in {:?}", latency);
     }
-    
+
     /// Mark the request as failed
     pub async fn failure(self) {
         self.pool.record_failure().await;
@@ -266,23 +270,22 @@ pub struct ConnectionPoolStats {
 /// Health check for Ollama server
 pub async fn check_ollama_health(host: &str, port: u16) -> Result<bool> {
     use std::net::{TcpStream, ToSocketAddrs};
-    
+
     let addr = format!("{}:{}", host, port);
-    
+
     // Try to connect with timeout
-    let result = tokio::task::spawn_blocking(move || {
-        match addr.to_socket_addrs() {
-            Ok(mut addrs) => {
-                if let Some(socket_addr) = addrs.next() {
-                    TcpStream::connect_timeout(&socket_addr, Duration::from_secs(2)).is_ok()
-                } else {
-                    false
-                }
+    let result = tokio::task::spawn_blocking(move || match addr.to_socket_addrs() {
+        Ok(mut addrs) => {
+            if let Some(socket_addr) = addrs.next() {
+                TcpStream::connect_timeout(&socket_addr, Duration::from_secs(2)).is_ok()
+            } else {
+                false
             }
-            Err(_) => false,
         }
-    }).await;
-    
+        Err(_) => false,
+    })
+    .await;
+
     match result {
         Ok(is_connected) => Ok(is_connected),
         Err(_) => Ok(false),

@@ -1,7 +1,7 @@
 use crate::error::{AppError, Result};
-use std::path::Path;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DocumentMetadata {
@@ -44,7 +44,7 @@ impl DocumentProcessor for PdfProcessor {
             }
         }
     }
-    
+
     fn supported_extensions(&self) -> Vec<&'static str> {
         vec!["pdf"]
     }
@@ -55,9 +55,12 @@ impl PdfProcessor {
         #[cfg(feature = "pdf-extract")]
         {
             let file_bytes = tokio::fs::read(file_path).await?;
-            let text = pdf_extract::extract_text_from_mem(&file_bytes)
-                .map_err(|e| AppError::ProcessingError { message: format!("PDF extraction failed: {}", e) })?;
-            
+            let text = pdf_extract::extract_text_from_mem(&file_bytes).map_err(|e| {
+                AppError::ProcessingError {
+                    message: format!("PDF extraction failed: {}", e),
+                }
+            })?;
+
             Ok(ProcessedDocument {
                 text_content: text,
                 metadata: DocumentMetadata {
@@ -77,23 +80,24 @@ impl PdfProcessor {
         }
         #[cfg(not(feature = "pdf-extract"))]
         {
-            Err(AppError::ProcessingError { 
-                message: "PDF processing not enabled. Enable 'pdf-extract' feature".to_string() 
+            Err(AppError::ProcessingError {
+                message: "PDF processing not enabled. Enable 'pdf-extract' feature".to_string(),
             })
         }
     }
-    
+
     async fn extract_with_lopdf(&self, _file_path: &Path) -> Result<ProcessedDocument> {
         #[cfg(feature = "lopdf")]
         {
             use lopdf::Document;
-            
-            let doc = Document::load(file_path)
-                .map_err(|e| AppError::ProcessingError { message: format!("Failed to load PDF: {}", e) })?;
-            
+
+            let doc = Document::load(file_path).map_err(|e| AppError::ProcessingError {
+                message: format!("Failed to load PDF: {}", e),
+            })?;
+
             let mut text_content = String::new();
             let page_count = doc.get_pages().len() as u32;
-            
+
             // Extract text from all pages
             for (page_num, _) in doc.get_pages() {
                 if let Ok(page_text) = doc.extract_text(&[page_num]) {
@@ -101,7 +105,7 @@ impl PdfProcessor {
                     text_content.push('\n');
                 }
             }
-            
+
             // Extract metadata
             let mut metadata = DocumentMetadata {
                 title: None,
@@ -114,7 +118,7 @@ impl PdfProcessor {
                 word_count: Some(count_words(&text_content)),
                 language: None,
             };
-            
+
             // Try to extract document info
             if let Ok(info_dict) = doc.trailer.get(b"Info") {
                 if let Ok(info_dict) = info_dict.as_dict() {
@@ -132,7 +136,7 @@ impl PdfProcessor {
                     }
                 }
             }
-            
+
             Ok(ProcessedDocument {
                 text_content,
                 metadata,
@@ -142,8 +146,8 @@ impl PdfProcessor {
         }
         #[cfg(not(feature = "lopdf"))]
         {
-            Err(AppError::ProcessingError { 
-                message: "Advanced PDF processing not enabled. Enable 'lopdf' feature".to_string() 
+            Err(AppError::ProcessingError {
+                message: "Advanced PDF processing not enabled. Enable 'lopdf' feature".to_string(),
             })
         }
     }
@@ -157,13 +161,13 @@ impl DocumentProcessor for DocxProcessor {
         #[cfg(feature = "docx-rs")]
         {
             use docx_rs::*;
-            
+
             let file_bytes = tokio::fs::read(file_path).await?;
-            
+
             match read_docx(&file_bytes) {
                 Ok(docx) => {
                     let mut text_content = String::new();
-                    
+
                     // Extract text content from document
                     for child in &docx.document.children {
                         match child {
@@ -182,7 +186,7 @@ impl DocumentProcessor for DocxProcessor {
                             _ => {}
                         }
                     }
-                    
+
                     // Extract metadata from core properties
                     let mut metadata = DocumentMetadata {
                         title: docx.doc_props.core.title.clone(),
@@ -195,7 +199,7 @@ impl DocumentProcessor for DocxProcessor {
                         word_count: Some(count_words(&text_content)),
                         language: docx.doc_props.core.language.clone(),
                     };
-                    
+
                     Ok(ProcessedDocument {
                         text_content,
                         metadata,
@@ -208,18 +212,18 @@ impl DocumentProcessor for DocxProcessor {
                     metadata: DocumentMetadata::default(),
                     file_type: "DOCX".to_string(),
                     processing_error: Some(format!("DOCX parsing failed: {}", e)),
-                })
+                }),
             }
         }
         #[cfg(not(feature = "docx-rs"))]
         {
             let _ = file_path;
-            Err(AppError::ProcessingError { 
-                message: "DOCX processing not enabled. Enable 'docx-rs' feature".to_string() 
+            Err(AppError::ProcessingError {
+                message: "DOCX processing not enabled. Enable 'docx-rs' feature".to_string(),
             })
         }
     }
-    
+
     fn supported_extensions(&self) -> Vec<&'static str> {
         vec!["docx"]
     }
@@ -232,27 +236,30 @@ impl DocumentProcessor for ExcelProcessor {
     async fn process(&self, file_path: &Path) -> Result<ProcessedDocument> {
         #[cfg(feature = "calamine")]
         {
-            use calamine::{Reader, Xlsx, open_workbook, DataType};
-            
-            let mut workbook: Xlsx<_> = open_workbook(file_path)
-                .map_err(|e| AppError::ProcessingError { message: format!("Failed to open Excel file: {}", e) })?;
-            
+            use calamine::{open_workbook, DataType, Reader, Xlsx};
+
+            let mut workbook: Xlsx<_> =
+                open_workbook(file_path).map_err(|e| AppError::ProcessingError {
+                    message: format!("Failed to open Excel file: {}", e),
+                })?;
+
             let mut text_content = String::new();
             let mut total_rows = 0;
-            
+
             // Get all worksheet names
             let sheet_names = workbook.sheet_names();
-            
+
             for sheet_name in sheet_names {
                 if let Ok(range) = workbook.worksheet_range(&sheet_name) {
                     text_content.push_str(&format!("=== Sheet: {} ===\n", sheet_name));
-                    
+
                     let (height, width) = range.get_size();
                     total_rows += height;
-                    
+
                     // Extract cell values as text
                     for row in range.rows() {
-                        let row_text: Vec<String> = row.iter()
+                        let row_text: Vec<String> = row
+                            .iter()
                             .map(|cell| match cell {
                                 DataType::Empty => "".to_string(),
                                 DataType::String(s) => s.clone(),
@@ -263,18 +270,21 @@ impl DocumentProcessor for ExcelProcessor {
                                 DataType::DateTime(dt) => format!("{:?}", dt),
                             })
                             .collect();
-                        
+
                         text_content.push_str(&row_text.join("\t"));
                         text_content.push('\n');
                     }
                     text_content.push('\n');
                 }
             }
-            
+
             Ok(ProcessedDocument {
                 text_content,
                 metadata: DocumentMetadata {
-                    title: file_path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()),
+                    title: file_path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .map(|s| s.to_string()),
                     author: None,
                     subject: None,
                     creator: None,
@@ -291,12 +301,12 @@ impl DocumentProcessor for ExcelProcessor {
         #[cfg(not(feature = "calamine"))]
         {
             let _ = file_path;
-            Err(AppError::ProcessingError { 
-                message: "Excel processing not enabled. Enable 'calamine' feature".to_string() 
+            Err(AppError::ProcessingError {
+                message: "Excel processing not enabled. Enable 'calamine' feature".to_string(),
             })
         }
     }
-    
+
     fn supported_extensions(&self) -> Vec<&'static str> {
         vec!["xlsx", "xls", "ods"]
     }
@@ -310,26 +320,27 @@ impl DocumentProcessor for CsvProcessor {
         #[cfg(feature = "csv")]
         {
             use csv::Reader;
-            
+
             let file_content = tokio::fs::read_to_string(file_path).await?;
             let mut reader = Reader::from_reader(file_content.as_bytes());
-            
+
             let mut text_content = String::new();
             let mut row_count = 0;
             let mut headers = Vec::new();
-            
+
             // Get headers
             if let Ok(header_record) = reader.headers() {
                 headers = header_record.iter().map(|h| h.to_string()).collect();
                 text_content.push_str(&headers.join("\t"));
                 text_content.push('\n');
             }
-            
+
             // Process records
             for result in reader.records() {
                 match result {
                     Ok(record) => {
-                        let row: Vec<String> = record.iter().map(|field| field.to_string()).collect();
+                        let row: Vec<String> =
+                            record.iter().map(|field| field.to_string()).collect();
                         text_content.push_str(&row.join("\t"));
                         text_content.push('\n');
                         row_count += 1;
@@ -339,11 +350,14 @@ impl DocumentProcessor for CsvProcessor {
                     }
                 }
             }
-            
+
             Ok(ProcessedDocument {
                 text_content,
                 metadata: DocumentMetadata {
-                    title: file_path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()),
+                    title: file_path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .map(|s| s.to_string()),
                     author: None,
                     subject: None,
                     creator: None,
@@ -360,12 +374,12 @@ impl DocumentProcessor for CsvProcessor {
         #[cfg(not(feature = "csv"))]
         {
             let _ = file_path;
-            Err(AppError::ProcessingError { 
-                message: "CSV processing not enabled. Enable 'csv' feature".to_string() 
+            Err(AppError::ProcessingError {
+                message: "CSV processing not enabled. Enable 'csv' feature".to_string(),
             })
         }
     }
-    
+
     fn supported_extensions(&self) -> Vec<&'static str> {
         vec!["csv"]
     }
@@ -377,21 +391,21 @@ pub struct MarkdownProcessor;
 impl DocumentProcessor for MarkdownProcessor {
     async fn process(&self, file_path: &Path) -> Result<ProcessedDocument> {
         let raw_content = tokio::fs::read_to_string(file_path).await?;
-        
+
         #[cfg(feature = "pulldown-cmark")]
         {
-            use pulldown_cmark::{Parser, html};
-            
+            use pulldown_cmark::{html, Parser};
+
             let parser = Parser::new(&raw_content);
             let mut html_content = String::new();
             html::push_html(&mut html_content, parser);
-            
+
             // For now, keep both raw markdown and HTML
             let text_content = format!("{}\n\n--- HTML ---\n{}", raw_content, html_content);
-            
+
             // Extract title from first h1
             let title = extract_first_heading(&raw_content);
-            
+
             Ok(ProcessedDocument {
                 text_content,
                 metadata: DocumentMetadata {
@@ -413,7 +427,7 @@ impl DocumentProcessor for MarkdownProcessor {
         {
             // Fallback: just use raw markdown
             let title = extract_first_heading(&raw_content);
-            
+
             Ok(ProcessedDocument {
                 text_content: raw_content.clone(),
                 metadata: DocumentMetadata {
@@ -432,7 +446,7 @@ impl DocumentProcessor for MarkdownProcessor {
             })
         }
     }
-    
+
     fn supported_extensions(&self) -> Vec<&'static str> {
         vec!["md", "markdown", "mdown", "mkd", "mkdown"]
     }
@@ -443,13 +457,20 @@ pub struct TextProcessor;
 #[async_trait]
 impl DocumentProcessor for TextProcessor {
     async fn process(&self, file_path: &Path) -> Result<ProcessedDocument> {
-        let text_content = tokio::fs::read_to_string(file_path).await
-            .map_err(|e| AppError::ProcessingError { message: format!("Failed to read text file: {}", e) })?;
-        
+        let text_content =
+            tokio::fs::read_to_string(file_path)
+                .await
+                .map_err(|e| AppError::ProcessingError {
+                    message: format!("Failed to read text file: {}", e),
+                })?;
+
         Ok(ProcessedDocument {
             text_content: text_content.clone(),
             metadata: DocumentMetadata {
-                title: file_path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()),
+                title: file_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string()),
                 author: None,
                 subject: None,
                 creator: None,
@@ -463,9 +484,22 @@ impl DocumentProcessor for TextProcessor {
             processing_error: None,
         })
     }
-    
+
     fn supported_extensions(&self) -> Vec<&'static str> {
-        vec!["txt", "text", "log", "cfg", "conf", "ini", "properties", "json", "xml", "yaml", "yml", "toml"]
+        vec![
+            "txt",
+            "text",
+            "log",
+            "cfg",
+            "conf",
+            "ini",
+            "properties",
+            "json",
+            "xml",
+            "yaml",
+            "yml",
+            "toml",
+        ]
     }
 }
 
@@ -490,40 +524,46 @@ impl DocumentProcessorManager {
             Box::new(MarkdownProcessor),
             Box::new(TextProcessor), // Should be last as it's the most generic
         ];
-        
+
         Self { processors }
     }
-    
+
     pub async fn process_document(&self, file_path: &Path) -> Result<ProcessedDocument> {
-        let extension = file_path.extension()
+        let extension = file_path
+            .extension()
             .and_then(|ext| ext.to_str())
             .unwrap_or("")
             .to_lowercase();
-        
+
         // Find appropriate processor
         for processor in &self.processors {
-            if processor.supported_extensions().contains(&extension.as_str()) {
+            if processor
+                .supported_extensions()
+                .contains(&extension.as_str())
+            {
                 return processor.process(file_path).await;
             }
         }
-        
-        Err(AppError::ProcessingError { 
-            message: format!("No processor found for file extension: {}", extension) 
+
+        Err(AppError::ProcessingError {
+            message: format!("No processor found for file extension: {}", extension),
         })
     }
-    
+
     pub fn is_supported(&self, file_path: &Path) -> bool {
-        let extension = file_path.extension()
+        let extension = file_path
+            .extension()
             .and_then(|ext| ext.to_str())
             .unwrap_or("")
             .to_lowercase();
-        
-        self.processors.iter().any(|processor| 
-            processor.supported_extensions().contains(&extension.as_str())
-        )
+
+        self.processors.iter().any(|processor| {
+            processor
+                .supported_extensions()
+                .contains(&extension.as_str())
+        })
     }
 }
-
 
 // Helper functions
 fn count_words(text: &str) -> u32 {
@@ -543,17 +583,17 @@ fn extract_first_heading(markdown: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
     use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[tokio::test]
     async fn test_text_processor() {
         let mut temp_file = NamedTempFile::new().unwrap();
         writeln!(temp_file, "Hello world\nThis is a test file.").unwrap();
-        
+
         let processor = TextProcessor;
         let result = processor.process(temp_file.path()).await.unwrap();
-        
+
         assert_eq!(result.file_type, "Text");
         assert!(result.text_content.contains("Hello world"));
         assert_eq!(result.metadata.word_count, Some(7));
@@ -563,10 +603,10 @@ mod tests {
     async fn test_markdown_processor() {
         let mut temp_file = NamedTempFile::new().unwrap();
         writeln!(temp_file, "# Test Document\n\nThis is a **markdown** file.").unwrap();
-        
+
         let processor = MarkdownProcessor;
         let result = processor.process(temp_file.path()).await.unwrap();
-        
+
         assert_eq!(result.file_type, "Markdown");
         assert_eq!(result.metadata.title, Some("Test Document".to_string()));
     }
@@ -574,7 +614,7 @@ mod tests {
     #[test]
     fn test_document_processor_manager() {
         let manager = DocumentProcessorManager::new();
-        
+
         assert!(manager.is_supported(Path::new("test.txt")));
         assert!(manager.is_supported(Path::new("test.md")));
         assert!(manager.is_supported(Path::new("test.pdf")));

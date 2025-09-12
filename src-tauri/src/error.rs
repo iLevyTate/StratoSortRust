@@ -4,82 +4,82 @@ use serde::Serialize;
 pub enum AppError {
     #[error("File not found: {path}")]
     FileNotFound { path: String },
-    
+
     #[error("Resource not found: {message}")]
     NotFound { message: String },
-    
+
     #[error("Access denied: {path}")]
     AccessDenied { path: String },
-    
+
     #[error("Invalid path: {message}")]
     InvalidPath { message: String },
-    
+
     #[error("AI service error: {message}")]
     AiError { message: String },
-    
+
     #[error("Database error: {message}")]
     DatabaseError { message: String },
-    
+
     #[error("Configuration error: {message}")]
     ConfigError { message: String },
-    
+
     #[error("Network error: {message}")]
     NetworkError { message: String },
-    
+
     #[error("Resource limit exceeded: {message}")]
     ResourceLimitExceeded { message: String },
-    
+
     #[error("Parse error: {message}")]
     ParseError { message: String },
-    
+
     #[error("Processing error: {message}")]
     ProcessingError { message: String },
-    
+
     #[error("Operation cancelled")]
     Cancelled,
-    
+
     #[error("Resource not available: {resource}")]
     ResourceNotAvailable { resource: String },
-    
+
     #[error("Invalid input: {message}")]
     InvalidInput { message: String },
-    
+
     #[error("Security error: {message}")]
     SecurityError { message: String },
-    
+
     #[error("System error: {message}")]
     SystemError { message: String },
-    
+
     #[error("Storage full")]
     StorageFull,
-    
+
     #[error("Model not found: {model}")]
     ModelNotFound { model: String },
-    
+
     #[error("Operation timed out: {message}")]
     Timeout { message: String },
-    
+
     #[error("Validation error for {field}: {message}")]
     ValidationError { field: String, message: String },
-    
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    
+
     #[error(transparent)]
     Tauri(#[from] tauri::Error),
-    
+
     #[error(transparent)]
     SqlxError(#[from] sqlx::Error),
-    
+
     #[error(transparent)]
     SerdeJson(#[from] serde_json::Error),
-    
+
     #[error(transparent)]
     NotifyError(#[from] notify::Error),
-    
+
     #[error(transparent)]
     ReqwestError(#[from] reqwest::Error),
-    
+
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -95,7 +95,7 @@ impl Serialize for AppError {
             message: self.user_message(),
             recoverable: self.is_recoverable(),
         };
-        
+
         error_response.serialize(serializer)
     }
 }
@@ -140,7 +140,7 @@ impl AppError {
             Self::ValidationError { field: _, message } => message.clone(),
         }
     }
-    
+
     /// Returns the error type for frontend handling
     pub fn error_type(&self) -> String {
         match self {
@@ -174,12 +174,15 @@ impl AppError {
         }
         .to_string()
     }
-    
+
     /// Indicates if the error is recoverable
     pub fn is_recoverable(&self) -> bool {
         !matches!(
             self,
-            Self::StorageFull | Self::AccessDenied { .. } | Self::ConfigError { .. } | Self::SecurityError { .. }
+            Self::StorageFull
+                | Self::AccessDenied { .. }
+                | Self::ConfigError { .. }
+                | Self::SecurityError { .. }
         )
     }
 }

@@ -8,38 +8,39 @@ pub mod state;
 pub mod storage;
 pub mod utils;
 
+use crate::storage::CURRENT_SCHEMA_VERSION;
+use crate::utils::{diagnostics::HealthChecker, memory::MemoryMonitor};
 use crate::{
     config::Config,
     services::{file_watcher::FileWatcher, notification::NotificationService},
     state::AppState,
 };
-use crate::utils::{diagnostics::HealthChecker, memory::MemoryMonitor};
 use std::sync::Arc;
-use tauri::{async_runtime, generate_context, generate_handler, Manager, Emitter};
+use tauri::{async_runtime, generate_context, generate_handler, Emitter, Manager};
 use tracing::{error, info, warn};
-use crate::storage::CURRENT_SCHEMA_VERSION;
 
 async fn initialize_app_state_with_retry(
     handle: tauri::AppHandle,
     config: Config,
 ) -> Result<AppState, crate::error::AppError> {
     const MAX_RETRIES: u32 = 3;
-    
+
     // Pre-create app data directory to avoid database initialization failures
     if let Ok(app_data_dir) = handle.path().app_data_dir() {
         if let Err(e) = tokio::fs::create_dir_all(&app_data_dir).await {
             warn!("Failed to pre-create app data directory: {}", e);
         }
     }
-    
+
     let mut retry_count = 0;
-    
+
     loop {
         let init_result = tokio::time::timeout(
             std::time::Duration::from_secs(30),
-            AppState::new(handle.clone(), config.clone())
-        ).await;
-        
+            AppState::new(handle.clone(), config.clone()),
+        )
+        .await;
+
         match init_result {
             Ok(Ok(state)) => {
                 info!("AppState initialized successfully");
@@ -47,8 +48,11 @@ async fn initialize_app_state_with_retry(
             }
             Ok(Err(e)) if retry_count < MAX_RETRIES => {
                 retry_count += 1;
-                error!("AppState initialization failed (attempt {}): {}", retry_count, e);
-                
+                error!(
+                    "AppState initialization failed (attempt {}): {}",
+                    retry_count, e
+                );
+
                 // For database errors, ensure directories exist before retry
                 if matches!(e, crate::error::AppError::DatabaseError { .. }) {
                     if let Ok(app_data_dir) = handle.path().app_data_dir() {
@@ -59,29 +63,38 @@ async fn initialize_app_state_with_retry(
                         .join("data");
                     let _ = tokio::fs::create_dir_all(&fallback_dir).await;
                 }
-                
+
                 // Exponential backoff: 1s, 2s, 4s
                 let backoff_ms = 1000 * (1 << (retry_count - 1));
                 tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
                 continue;
             }
             Ok(Err(e)) => {
-                error!("AppState initialization failed after {} retries: {}", MAX_RETRIES, e);
+                error!(
+                    "AppState initialization failed after {} retries: {}",
+                    MAX_RETRIES, e
+                );
                 return Err(e);
             }
             Err(_) if retry_count < MAX_RETRIES => {
                 retry_count += 1;
-                error!("AppState initialization timed out (attempt {})", retry_count);
-                
+                error!(
+                    "AppState initialization timed out (attempt {})",
+                    retry_count
+                );
+
                 // Shorter backoff for timeout errors
                 let backoff_ms = 500 * retry_count as u64;
                 tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
                 continue;
             }
             Err(_) => {
-                error!("AppState initialization timed out after {} retries", MAX_RETRIES);
+                error!(
+                    "AppState initialization timed out after {} retries",
+                    MAX_RETRIES
+                );
                 return Err(crate::error::AppError::Timeout {
-                    message: "AppState initialization timed out after retries".to_string()
+                    message: "AppState initialization timed out after retries".to_string(),
                 });
             }
         }
@@ -102,7 +115,10 @@ pub fn run() -> crate::error::Result<()> {
     // Initialize sqlite-vec extension early in the startup process
     info!("Initializing sqlite-vec extension...");
     if let Err(e) = crate::storage::initialize_sqlite_vec() {
-        warn!("sqlite-vec initialization failed: {}. Vector search will use fallback.", e);
+        warn!(
+            "sqlite-vec initialization failed: {}. Vector search will use fallback.",
+            e
+        );
         warn!("Please install sqlite-vec extension for optimal performance. Falling back to manual similarity calculations.");
         // Emit event to inform frontend about fallback mode
         info!("Vector search will continue using fallback similarity calculations.");
@@ -120,7 +136,7 @@ pub fn run() -> crate::error::Result<()> {
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             let handle = app.handle().clone();
-            
+
             // Initialize configuration
             let config = Config::load(&handle)?;
             info!(
@@ -129,37 +145,37 @@ pub fn run() -> crate::error::Result<()> {
                 schema_version = CURRENT_SCHEMA_VERSION,
                 "Configuration loaded"
             );
-            
+
             // Initialize app state asynchronously with proper retry logic
             // We must use block_on here because Tauri's setup is synchronous
             let state = Arc::new(async_runtime::block_on(async {
                 initialize_app_state_with_retry(handle.clone(), config.clone()).await
             })?);
             app.manage(state.clone());
-            
+
             // Setup system tray
             setup_system_tray(app)?;
-            
+
             // Setup global shortcuts
             setup_global_shortcuts(app)?;
-            
+
             // Initialize background services
             initialize_services(app, state.clone())?;
-            
+
             // Initialize file watcher with proper synchronization
             if config.watch_folders {
                 info!("Initializing file watcher...");
-                
+
                 // Create watcher with proper synchronization using a synchronization channel
                 let (watcher_ready_tx, watcher_ready_rx) = tokio::sync::oneshot::channel();
                 let state_for_watcher = state.clone();
-                
+
                 // Initialize the file watcher synchronously
                 {
                     let mut watcher_guard = state.file_watcher.write();
                     watcher_guard.replace(Arc::new(FileWatcher::new(state.clone())));
                 }
-                
+
                 // Start watcher in background with proper error handling and synchronization
                 async_runtime::spawn(async move {
                     // Get the watcher reference
@@ -167,11 +183,11 @@ pub fn run() -> crate::error::Result<()> {
                         let watcher_guard = state_for_watcher.file_watcher.read();
                         watcher_guard.as_ref().map(Arc::clone)
                     };
-                    
+
                     if let Some(watcher) = watcher_to_start {
                         // Wait for app to be fully initialized
                         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                        
+
                         match watcher.start().await {
                             Ok(_) => {
                                 info!("File watcher started successfully");
@@ -196,14 +212,14 @@ pub fn run() -> crate::error::Result<()> {
                         let _ = watcher_ready_tx.send(Err(error_msg.to_string()));
                     }
                 });
-                
+
                 // Optionally wait for watcher to be ready (with timeout) - do this in a background task
                 async_runtime::spawn(async move {
                     let _watcher_result = tokio::time::timeout(
                         tokio::time::Duration::from_secs(5),
                         watcher_ready_rx
                     ).await;
-                    
+
                     // Don't fail startup if watcher fails - just log and continue
                     match _watcher_result {
                         Ok(Ok(Ok(_))) => info!("File watcher initialized and ready"),
@@ -215,35 +231,35 @@ pub fn run() -> crate::error::Result<()> {
             } else {
                 info!("File watching disabled in configuration");
             }
-            
+
             // Try to connect to Ollama in background with retry logic
             let state_for_ollama = state.clone();
             async_runtime::spawn(async move {
                 // Give the app a moment to fully start
                 tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                
+
                 // Try multiple common Ollama hosts with retry
                 let ollama_hosts = vec![
                     "http://localhost:11434".to_string(),
                     "http://127.0.0.1:11434".to_string(),
                     state_for_ollama.config.read().ollama_host.clone(),
                 ];
-                
+
                 let mut connection_successful = false;
-                
+
                 for host in ollama_hosts {
                     if host.is_empty() {
                         continue;
                     }
-                    
+
                     info!("Attempting to connect to Ollama at: {}", host);
-                    
+
                     // Try to reconnect with this host
                     match state_for_ollama.ai_service.reconnect_ollama(&host).await {
                         Ok(status) => {
                             info!("Ollama connected successfully to {} - Status: {:?}", host, status);
                             connection_successful = true;
-                            
+
                             // Emit success event to frontend
                             let _ = state_for_ollama.handle.emit("ollama-connected", serde_json::json!({
                                 "host": host,
@@ -255,14 +271,14 @@ pub fn run() -> crate::error::Result<()> {
                             warn!("Failed to connect to Ollama at {}: {}", host, e);
                         }
                     }
-                    
+
                     // Small delay between attempts
                     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                 }
-                
+
                 if !connection_successful {
                     warn!("Ollama not available on any host. Switching to fallback AI mode.");
-                    
+
                     // Explicitly switch to fallback mode
                     let status = state_for_ollama.ai_service.use_fallback();
                     info!("Successfully switched to fallback AI mode: {:?}", status);
@@ -273,7 +289,7 @@ pub fn run() -> crate::error::Result<()> {
                     }));
                 }
             });
-            
+
             info!("StratoSort initialized successfully");
             Ok(())
         })
@@ -301,7 +317,7 @@ pub fn run() -> crate::error::Result<()> {
             commands::cancel_operation,
             commands::get_active_operations,
             commands::get_operation_progress,
-            
+
             // AI commands
             commands::ai::check_ollama_status,
             commands::ai::pull_model,
@@ -315,14 +331,14 @@ pub fn run() -> crate::error::Result<()> {
             commands::ai::clear_search_history,
             commands::ai::batch_analyze_files,
             commands::ai::get_analysis_history,
-            
+
             // AI Status commands
             commands::ai_status::get_ai_status,
             commands::ai_status::connect_ollama,
             commands::ai_status::use_fallback_ai,
             commands::ai_status::test_ai_analysis,
             commands::ai_status::get_ai_capabilities,
-            
+
             // Organization commands
             commands::organization::create_smart_folder,
             commands::organization::update_smart_folder,
@@ -337,7 +353,7 @@ pub fn run() -> crate::error::Result<()> {
             commands::organization::match_to_folders,
             commands::organization::validate_rule,
             commands::organization::test_rule_against_files,
-            
+
             // Settings commands
             commands::settings::get_settings,
             commands::settings::update_settings,
@@ -345,8 +361,8 @@ pub fn run() -> crate::error::Result<()> {
             commands::settings::get_all_settings_categories,
             commands::settings::update_category_settings,
             commands::settings::test_ai_connection,
-            
-            // Setup commands  
+
+            // Setup commands
             commands::setup::check_first_run_status,
             commands::setup::complete_first_run_setup,
             commands::setup::reset_to_first_run,
@@ -359,7 +375,7 @@ pub fn run() -> crate::error::Result<()> {
             commands::settings::remove_watch_path,
             commands::settings::get_watch_paths,
             commands::settings::validate_settings,
-            
+
             // System commands
             commands::system::frontend_ready,
             commands::system::get_basic_system_info,
@@ -374,7 +390,7 @@ pub fn run() -> crate::error::Result<()> {
             commands::system::shutdown_application,
             commands::system::get_resource_usage,
             commands::system::force_shutdown,
-            
+
             // Monitoring commands
             commands::monitoring::get_health_status,
             commands::monitoring::get_performance_metrics,
@@ -388,7 +404,7 @@ pub fn run() -> crate::error::Result<()> {
             commands::monitoring::get_system_status,
             commands::monitoring::enable_realtime_monitoring,
             commands::monitoring::refresh_all_status,
-            
+
             // Notification commands
             commands::notifications::emit_notification,
             commands::notifications::get_notifications,
@@ -397,7 +413,7 @@ pub fn run() -> crate::error::Result<()> {
             commands::notifications::emit_progress_notification,
             commands::notifications::emit_file_operation_status,
             commands::notifications::emit_system_status,
-            
+
             // Undo/Redo commands
             commands::history::undo,
             commands::history::redo,
@@ -408,7 +424,7 @@ pub fn run() -> crate::error::Result<()> {
             commands::history::batch_redo,
             commands::history::jump_to_history,
             commands::history::get_memory_stats,
-            
+
             // Watch Mode commands (LlamaFS-inspired)
             commands::watch_mode::get_watch_mode_status,
             commands::watch_mode::configure_watch_mode,
@@ -443,13 +459,13 @@ pub fn run() -> crate::error::Result<()> {
 fn setup_system_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     use tauri::{
         menu::{MenuBuilder, MenuItemBuilder},
-        tray::{TrayIconBuilder},
+        tray::TrayIconBuilder,
     };
 
     let quit = MenuItemBuilder::new("Quit").id("quit").build(app)?;
     let hide = MenuItemBuilder::new("Hide").id("hide").build(app)?;
     let show = MenuItemBuilder::new("Show").id("show").build(app)?;
-    
+
     let menu = MenuBuilder::new(app)
         .items(&[&show, &hide, &quit])
         .build()?;
@@ -474,7 +490,11 @@ fn setup_system_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>>
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
-            if let tauri::tray::TrayIconEvent::Click { button: tauri::tray::MouseButton::Left, .. } = event {
+            if let tauri::tray::TrayIconEvent::Click {
+                button: tauri::tray::MouseButton::Left,
+                ..
+            } = event
+            {
                 let app = tray.app_handle();
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.show();
@@ -491,37 +511,38 @@ fn setup_global_shortcuts(app: &tauri::App) -> Result<(), Box<dyn std::error::Er
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
     let shortcuts = app.global_shortcut();
-    
+
     // Try to register global shortcuts with fallback options
     let shortcut_options = [
-        "CommandOrControl+Shift+O",     // Primary choice
-        "CommandOrControl+Shift+S",     // Fallback 1: S for StratoSort
-        "CommandOrControl+Alt+O",       // Fallback 2: Alt instead of Shift
-        "CommandOrControl+Alt+S",       // Fallback 3: Alt+S
+        "CommandOrControl+Shift+O", // Primary choice
+        "CommandOrControl+Shift+S", // Fallback 1: S for StratoSort
+        "CommandOrControl+Alt+O",   // Fallback 2: Alt instead of Shift
+        "CommandOrControl+Alt+S",   // Fallback 3: Alt+S
     ];
-    
+
     let mut registered_shortcut_str: Option<&str> = None;
-    
+
     for shortcut_str in &shortcut_options {
         match shortcut_str.parse::<Shortcut>() {
-            Ok(shortcut) => {
-                match shortcuts.register(shortcut) {
-                    Ok(_) => {
-                        info!("Successfully registered global shortcut: {}", shortcut_str);
-                        registered_shortcut_str = Some(shortcut_str);
-                        break;
-                    }
-                    Err(e) => {
-                        warn!("Failed to register shortcut {}: {}. Trying next option...", shortcut_str, e);
-                    }
+            Ok(shortcut) => match shortcuts.register(shortcut) {
+                Ok(_) => {
+                    info!("Successfully registered global shortcut: {}", shortcut_str);
+                    registered_shortcut_str = Some(shortcut_str);
+                    break;
                 }
-            }
+                Err(e) => {
+                    warn!(
+                        "Failed to register shortcut {}: {}. Trying next option...",
+                        shortcut_str, e
+                    );
+                }
+            },
             Err(e) => {
                 warn!("Failed to parse shortcut {}: {}", shortcut_str, e);
             }
         }
     }
-    
+
     // If we managed to register a shortcut, set up the handler
     if let Some(shortcut_str) = registered_shortcut_str {
         if let Ok(shortcut) = shortcut_str.parse::<Shortcut>() {
@@ -558,18 +579,18 @@ fn initialize_services(
                 .await;
         });
     }
-    
+
     // Start periodic tasks
     let state_clone = state.clone();
     async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(300)).await;
-            
+
             // Cleanup old cache entries
             if let Err(e) = state_clone.cleanup_cache().await {
                 error!("Cache cleanup failed: {}", e);
             }
-            
+
             // Save state periodically
             if let Err(e) = state_clone.save_state().await {
                 error!("State save failed: {}", e);
@@ -599,7 +620,7 @@ fn initialize_services(
             Err(e) => warn!("Health checks failed to run: {}", e),
         }
     });
-    
+
     Ok(())
 }
 

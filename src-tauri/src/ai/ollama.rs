@@ -1,33 +1,43 @@
+use crate::ai::{
+    connection::{check_ollama_health, ConnectionPool},
+    AiEngine, FileAnalysis, OrganizationSuggestion,
+};
 use crate::error::{AppError, Result};
-use crate::ai::{FileAnalysis, OrganizationSuggestion, AiEngine, connection::{ConnectionPool, check_ollama_health}};
 use async_trait::async_trait;
-use ollama_rs::{Ollama, generation::completion::request::GenerationRequest, generation::embeddings::request::GenerateEmbeddingsRequest};
+use base64::{engine::general_purpose, Engine as _};
+use ollama_rs::{
+    generation::completion::request::GenerationRequest,
+    generation::embeddings::request::GenerateEmbeddingsRequest, Ollama,
+};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
-use tokio::time::{timeout, sleep};
-use tracing::{error, info, warn, debug};
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use std::path::Path;
-use base64::{Engine as _, engine::general_purpose};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::RwLock;
+use tokio::time::{sleep, timeout};
+use tracing::{debug, error, info, warn};
 
 /// Sanitizes input content for AI prompts to prevent injection attacks
 /// Uses balanced filtering to protect against prompt injection while preserving legitimate content
 pub(crate) fn sanitize_prompt_content(input: &str) -> Result<String> {
     // Check input length and return error if too large
     if input.len() > 2000 {
-        return Err(AppError::InvalidInput { 
-            message: format!("Input exceeds 2000 characters (got {}). Please truncate the input.", input.len())
+        return Err(AppError::InvalidInput {
+            message: format!(
+                "Input exceeds 2000 characters (got {}). Please truncate the input.",
+                input.len()
+            ),
         });
     }
-    
+
     let mut result = input.to_string();
-    
+
     // Remove null bytes and normalize line endings
-    result = result.replace('\0', "")
+    result = result
+        .replace('\0', "")
         .replace(['\r'], "")
         .replace('\t', " ");
-    
+
     // Remove potential prompt injection sequences (case-insensitive)
     // More targeted approach - only block clear injection attempts
     let injection_patterns = [
@@ -41,14 +51,12 @@ pub(crate) fn sanitize_prompt_content(input: &str) -> Result<String> {
         ("new instructions:", "[FILTERED]"),
         ("override your instructions", "[FILTERED]"),
         ("instead of following", "[FILTERED]"),
-        
         // Role hijacking attempts - be more specific
         ("you are now a", "[FILTERED]"),
         ("act as a different", "[FILTERED]"),
         ("pretend to be", "[FILTERED]"),
         ("roleplay as", "[FILTERED]"),
         ("from now on you are", "[FILTERED]"),
-        
         // System prompt attempts - only block obvious ones
         ("system:", "[FILTERED]"),
         ("assistant:", "[FILTERED]"),
@@ -58,7 +66,6 @@ pub(crate) fn sanitize_prompt_content(input: &str) -> Result<String> {
         ("<|system|>", "[FILTERED]"),
         ("<|assistant|>", "[FILTERED]"),
         ("<|user|>", "[FILTERED]"),
-        
         // Jailbreaking attempts
         ("jailbreak mode", "[FILTERED]"),
         ("break free from", "[FILTERED]"),
@@ -68,8 +75,7 @@ pub(crate) fn sanitize_prompt_content(input: &str) -> Result<String> {
         ("remove restrictions", "[FILTERED]"),
         ("unrestricted mode", "[FILTERED]"),
         ("developer mode", "[FILTERED]"),
-        
-        // Direct code execution attempts  
+        // Direct code execution attempts
         ("exec(", "[FILTERED]"),
         ("eval(", "[FILTERED]"),
         ("system(", "[FILTERED]"),
@@ -77,7 +83,6 @@ pub(crate) fn sanitize_prompt_content(input: &str) -> Result<String> {
         ("javascript:", "[FILTERED]"),
         ("data:text/html", "[FILTERED]"),
         ("file://", "[FILTERED]"),
-        
         // Common manipulation patterns
         ("please ignore everything", "[FILTERED]"),
         ("don't follow the", "[FILTERED]"),
@@ -85,35 +90,35 @@ pub(crate) fn sanitize_prompt_content(input: &str) -> Result<String> {
         ("void the previous", "[FILTERED]"),
         ("disregard your training", "[FILTERED]"),
     ];
-    
+
     // Apply pattern replacements (case-insensitive)
     for (pattern, replacement) in injection_patterns {
         result = replace_case_insensitive(&result, pattern, replacement);
     }
-    
+
     // More permissive character filtering - allow more legitimate characters
     result = result
         .chars()
         .filter(|c| {
-            c.is_alphanumeric() || 
-            c.is_whitespace() || 
-            ".,!?:;()[]{}\"'-_/\\@#$%&*+=<>~`^|".contains(*c) ||
-            c.is_ascii_punctuation()
+            c.is_alphanumeric()
+                || c.is_whitespace()
+                || ".,!?:;()[]{}\"'-_/\\@#$%&*+=<>~`^|".contains(*c)
+                || c.is_ascii_punctuation()
         })
         .collect();
-    
+
     // Remove excessive newlines but allow some formatting
     while result.contains("\n\n\n") {
         result = result.replace("\n\n\n", "\n\n");
     }
-    
+
     // Final length check after sanitization - should not be needed since we checked at start
     if result.len() > 1800 {
-        return Err(AppError::InvalidInput { 
-            message: "Input too large after sanitization".to_string()
+        return Err(AppError::InvalidInput {
+            message: "Input too large after sanitization".to_string(),
         });
     }
-    
+
     Ok(result)
 }
 
@@ -121,19 +126,19 @@ pub(crate) fn sanitize_prompt_content(input: &str) -> Result<String> {
 fn replace_case_insensitive(text: &str, pattern: &str, replacement: &str) -> String {
     let pattern_lower = pattern.to_lowercase();
     let text_lower = text.to_lowercase();
-    
+
     let mut result = String::new();
     let mut last_end = 0;
-    
+
     while let Some(start) = text_lower[last_end..].find(&pattern_lower) {
         let absolute_start = last_end + start;
         let absolute_end = absolute_start + pattern.len();
-        
+
         result.push_str(&text[last_end..absolute_start]);
         result.push_str(replacement);
         last_end = absolute_end;
     }
-    
+
     result.push_str(&text[last_end..]);
     result
 }
@@ -173,8 +178,8 @@ impl OllamaClient {
     pub async fn new(host: &str) -> Result<Self> {
         // Validate input
         if host.is_empty() {
-            return Err(AppError::InvalidInput { 
-                message: "Ollama host cannot be empty".to_string() 
+            return Err(AppError::InvalidInput {
+                message: "Ollama host cannot be empty".to_string(),
             });
         }
 
@@ -184,13 +189,13 @@ impl OllamaClient {
         } else {
             format!("http://{}", host)
         };
-        
+
         // Validate URL format
         let url = match url::Url::parse(&parsed_host) {
             Ok(url) => url,
             Err(e) => {
-                return Err(AppError::InvalidInput { 
-                    message: format!("Invalid Ollama host URL '{}': {}", host, e) 
+                return Err(AppError::InvalidInput {
+                    message: format!("Invalid Ollama host URL '{}': {}", host, e),
                 });
             }
         };
@@ -198,8 +203,8 @@ impl OllamaClient {
         let hostname = match url.host_str() {
             Some(h) if !h.is_empty() => h,
             _ => {
-                return Err(AppError::InvalidInput { 
-                    message: format!("Invalid hostname in URL: {}", parsed_host) 
+                return Err(AppError::InvalidInput {
+                    message: format!("Invalid hostname in URL: {}", parsed_host),
                 });
             }
         };
@@ -207,45 +212,49 @@ impl OllamaClient {
 
         // Check if Ollama server is running before creating client
         debug!("Checking Ollama availability at {}:{}", hostname, port);
-        
+
         let is_reachable = check_ollama_health(hostname, port).await?;
-        
+
         if !is_reachable {
             warn!("Ollama server is not reachable at {}:{}", hostname, port);
             return Err(AppError::AiError {
                 message: format!("Ollama server is not running or unreachable at {}:{}. Please ensure Ollama is installed and running.", hostname, port),
             });
         }
-        
+
         info!("Ollama server is reachable at {}:{}", hostname, port);
-        
+
         // Create Ollama client - simplified approach
         let client = Ollama::new(hostname.to_string(), port);
-        
+
         // Validate the client by making a test request
-        let test_result = timeout(
-            Duration::from_secs(3),
-            client.list_local_models()
-        ).await;
-        
+        let test_result = timeout(Duration::from_secs(3), client.list_local_models()).await;
+
         match test_result {
             Ok(Ok(models)) => {
-                info!("Successfully connected to Ollama. Found {} models", models.len());
+                info!(
+                    "Successfully connected to Ollama. Found {} models",
+                    models.len()
+                );
             }
             Ok(Err(e)) => {
                 error!("Ollama client created but API call failed: {}", e);
                 return Err(AppError::AiError {
-                    message: format!("Ollama is running but API is not responding correctly: {}", e),
+                    message: format!(
+                        "Ollama is running but API is not responding correctly: {}",
+                        e
+                    ),
                 });
             }
             Err(_) => {
                 warn!("Ollama health check timed out");
                 return Err(AppError::AiError {
-                    message: "Ollama server timed out. It may be starting up or under heavy load.".to_string(),
+                    message: "Ollama server timed out. It may be starting up or under heavy load."
+                        .to_string(),
                 });
             }
         }
-        
+
         let ollama_client = Self {
             client,
             text_model: "llama3.2:3b".to_string(),
@@ -261,42 +270,48 @@ impl OllamaClient {
             })),
             connection_pool: ConnectionPool::new(5), // Allow 5 concurrent connections
         };
-        
+
         // Perform initial health check and model discovery
         let _ = ollama_client.check_and_update_health().await;
-        
+
         Ok(ollama_client)
     }
-    
+
     pub async fn health_check(&self) -> Result<()> {
         self.check_and_update_health().await
     }
-    
+
     /// Check connection health and update internal state
     async fn check_and_update_health(&self) -> Result<()> {
         let mut health = self.connection_health.write().await;
-        
+
         // Rate limit health checks
         if health.last_check.elapsed() < Duration::from_secs(5) && health.is_healthy {
             return Ok(());
         }
-        
+
         match timeout(Duration::from_secs(3), self.client.list_local_models()).await {
             Ok(Ok(models)) => {
                 health.is_healthy = true;
                 health.consecutive_failures = 0;
                 health.last_check = std::time::Instant::now();
                 health.available_models = models.iter().map(|m| m.name.clone()).collect();
-                
-                debug!("Ollama is healthy with {} models available", health.available_models.len());
+
+                debug!(
+                    "Ollama is healthy with {} models available",
+                    health.available_models.len()
+                );
                 Ok(())
             }
             Ok(Err(e)) => {
                 health.is_healthy = false;
                 health.consecutive_failures += 1;
                 health.last_check = std::time::Instant::now();
-                
-                error!("Ollama error (failures: {}): {}", health.consecutive_failures, e);
+
+                error!(
+                    "Ollama error (failures: {}): {}",
+                    health.consecutive_failures, e
+                );
                 Err(AppError::AiError {
                     message: format!("Ollama is not responding: {}", e),
                 })
@@ -305,15 +320,18 @@ impl OllamaClient {
                 health.is_healthy = false;
                 health.consecutive_failures += 1;
                 health.last_check = std::time::Instant::now();
-                
-                warn!("Ollama health check timed out (failures: {})", health.consecutive_failures);
+
+                warn!(
+                    "Ollama health check timed out (failures: {})",
+                    health.consecutive_failures
+                );
                 Err(AppError::AiError {
                     message: "Ollama connection timed out".to_string(),
                 })
             }
         }
     }
-    
+
     /// Execute a request with retry logic and exponential backoff
     async fn execute_with_retry<F, T>(&self, operation_name: &str, mut operation: F) -> Result<T>
     where
@@ -321,7 +339,7 @@ impl OllamaClient {
     {
         let mut retry_count = 0;
         let mut delay = self.initial_retry_delay;
-        
+
         loop {
             // Acquire connection permit from pool
             let permit = match self.connection_pool.acquire().await {
@@ -330,15 +348,17 @@ impl OllamaClient {
                     // Circuit breaker is open or pool is exhausted
                     if retry_count < self.max_retries {
                         retry_count += 1;
-                        warn!("{} connection pool error (attempt {}/{}): {}", 
-                              operation_name, retry_count, self.max_retries, e);
+                        warn!(
+                            "{} connection pool error (attempt {}/{}): {}",
+                            operation_name, retry_count, self.max_retries, e
+                        );
                         sleep(delay).await;
                         continue;
                     }
                     return Err(e);
                 }
             };
-            
+
             // Check health before attempting operation
             if retry_count == 0 {
                 let health = self.connection_health.read().await;
@@ -347,12 +367,12 @@ impl OllamaClient {
                     let _ = self.check_and_update_health().await;
                 }
             }
-            
+
             match operation().await {
                 Ok(result) => {
                     // Mark request as successful
                     permit.success().await;
-                    
+
                     // Reset consecutive failures on success
                     let mut health = self.connection_health.write().await;
                     health.consecutive_failures = 0;
@@ -362,20 +382,21 @@ impl OllamaClient {
                 Err(e) if retry_count < self.max_retries => {
                     // Mark request as failed
                     permit.failure().await;
-                    
+
                     retry_count += 1;
                     warn!(
                         "{} failed (attempt {}/{}): {}. Retrying in {:?}",
                         operation_name, retry_count, self.max_retries, e, delay
                     );
-                    
+
                     sleep(delay).await;
-                    
+
                     // Exponential backoff with simple jitter (no rand dependency needed)
                     let jitter_ms = (std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
-                        .as_millis() % 100) as u64;
+                        .as_millis()
+                        % 100) as u64;
                     delay = std::cmp::min(
                         delay * 2 + Duration::from_millis(jitter_ms),
                         Duration::from_secs(5),
@@ -384,62 +405,75 @@ impl OllamaClient {
                 Err(e) => {
                     // Mark request as failed
                     permit.failure().await;
-                    
-                    error!("{} failed after {} retries: {}", operation_name, self.max_retries, e);
-                    
+
+                    error!(
+                        "{} failed after {} retries: {}",
+                        operation_name, self.max_retries, e
+                    );
+
                     // Update health status
                     let mut health = self.connection_health.write().await;
                     health.consecutive_failures += 1;
                     health.is_healthy = false;
-                    
+
                     return Err(e);
                 }
             }
         }
     }
-    
+
     /// Verify if a specific model is available
     pub async fn is_model_available(&self, model_name: &str) -> bool {
         let health = self.connection_health.read().await;
-        health.available_models.iter().any(|m| m.starts_with(model_name))
+        health
+            .available_models
+            .iter()
+            .any(|m| m.starts_with(model_name))
     }
-    
+
     /// Get connection pool statistics
     pub async fn get_connection_stats(&self) -> crate::ai::connection::ConnectionPoolStats {
         self.connection_pool.get_stats().await
     }
-    
+
     pub async fn list_models(&self) -> Result<Vec<String>> {
-        let models = self.client.list_local_models()
+        let models = self
+            .client
+            .list_local_models()
             .await
             .map_err(|e| AppError::AiError {
                 message: format!("Failed to list models: {}", e),
             })?;
-        
+
         Ok(models.into_iter().map(|m| m.name).collect())
     }
-    
+
     pub async fn list_models_detailed(&self) -> Result<Vec<ModelInfo>> {
-        let models = self.client.list_local_models()
+        let models = self
+            .client
+            .list_local_models()
             .await
             .map_err(|e| AppError::AiError {
                 message: format!("Failed to list models: {}", e),
             })?;
-        
-        Ok(models.into_iter().map(|m| ModelInfo {
-            name: m.name,
-            size: m.size,
-            modified_at: m.modified_at,
-        }).collect())
+
+        Ok(models
+            .into_iter()
+            .map(|m| ModelInfo {
+                name: m.name,
+                size: m.size,
+                modified_at: m.modified_at,
+            })
+            .collect())
     }
-    
+
     pub async fn pull_model(&self, model_name: &str) -> Result<()> {
         info!("Pulling model: {}", model_name);
-        
+
         // Model pulling can take a long time, use extended timeout
         timeout(
             Duration::from_secs(300), // 5 minute timeout for model pulling
-            self.client.pull_model(model_name.to_string(), false)
+            self.client.pull_model(model_name.to_string(), false),
         )
         .await
         .map_err(|_| AppError::AiError {
@@ -448,11 +482,11 @@ impl OllamaClient {
         .map_err(|e| AppError::AiError {
             message: format!("Failed to pull model {}: {}", model_name, e),
         })?;
-        
+
         info!("Successfully pulled model: {}", model_name);
         Ok(())
     }
-    
+
     pub async fn generate_embeddings(&self, text: &str) -> Result<Vec<f32>> {
         // Limit input size to prevent memory issues
         if text.len() > 8192 {
@@ -460,67 +494,61 @@ impl OllamaClient {
                 message: "Text too large for embedding generation (max 8KB)".to_string(),
             });
         }
-        
+
         let text_clone = text.to_string();
         let model = self.embedding_model.clone();
         let client = self.client.clone();
-        
+
         self.execute_with_retry("generate_embeddings", move || {
-            let request = GenerateEmbeddingsRequest::new(
-                model.clone(),
-                text_clone.clone().into(),
-            );
+            let request = GenerateEmbeddingsRequest::new(model.clone(), text_clone.clone().into());
             let client = client.clone();
-            
+
             Box::pin(async move {
-                let response = timeout(
-                    Duration::from_secs(30),
-                    client.generate_embeddings(request)
-                )
-                .await
-                .map_err(|_| AppError::AiError {
-                    message: "Embedding generation timed out after 30 seconds".to_string(),
-                })?
-                .map_err(|e| AppError::AiError {
-                    message: format!("Failed to generate embeddings: {}", e),
-                })?;
-                
-                response.embeddings.into_iter().next()
+                let response =
+                    timeout(Duration::from_secs(30), client.generate_embeddings(request))
+                        .await
+                        .map_err(|_| AppError::AiError {
+                            message: "Embedding generation timed out after 30 seconds".to_string(),
+                        })?
+                        .map_err(|e| AppError::AiError {
+                            message: format!("Failed to generate embeddings: {}", e),
+                        })?;
+
+                response
+                    .embeddings
+                    .into_iter()
+                    .next()
                     .ok_or_else(|| AppError::AiError {
                         message: "Ollama returned empty embeddings response".to_string(),
                     })
             })
-        }).await
+        })
+        .await
     }
-    
+
     async fn generate_completion(&self, prompt: &str, model: &str) -> Result<String> {
         let prompt_clone = prompt.to_string();
         let model_clone = model.to_string();
         let client = self.client.clone();
-        
+
         self.execute_with_retry("generate_completion", move || {
-            let request = GenerationRequest::new(
-                model_clone.clone(),
-                prompt_clone.clone(),
-            );
+            let request = GenerationRequest::new(model_clone.clone(), prompt_clone.clone());
             let client = client.clone();
-            
+
             Box::pin(async move {
-                let response = timeout(
-                    Duration::from_secs(30),
-                    client.generate(request)
-                )
-                .await
-                .map_err(|_| AppError::AiError {
-                    message: "Generation timed out".to_string(),
-                })?
-                .map_err(|e| AppError::AiError {
-                    message: format!("Generation failed: {}", e),
-                })?;
-                
+                let response = timeout(Duration::from_secs(30), client.generate(request))
+                    .await
+                    .map_err(|_| AppError::AiError {
+                        message: "Generation timed out".to_string(),
+                    })?
+                    .map_err(|e| AppError::AiError {
+                        message: format!("Generation failed: {}", e),
+                    })?;
+
                 Ok(response.response)
             })
-        }).await
+        })
+        .await
     }
 
     /// Analyzes an image file using Ollama's vision model (llava)
@@ -534,35 +562,39 @@ impl OllamaClient {
         }
 
         // Check if it's actually an image file
-        let extension = path.extension()
+        let extension = path
+            .extension()
             .and_then(|ext| ext.to_str())
             .map(|ext| ext.to_lowercase())
             .unwrap_or_default();
 
-        if !matches!(extension.as_str(), "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp") {
+        if !matches!(
+            extension.as_str(),
+            "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp"
+        ) {
             return Err(AppError::InvalidInput {
                 message: format!("Unsupported image format: {}", extension),
             });
         }
 
         // Check file size before reading to prevent memory exhaustion
-        let metadata = tokio::fs::metadata(image_path).await
+        let metadata = tokio::fs::metadata(image_path)
+            .await
             .map_err(AppError::Io)?;
-        
+
         const MAX_IMAGE_SIZE: u64 = 50 * 1024 * 1024; // 50MB limit
         if metadata.len() > MAX_IMAGE_SIZE {
             return Err(AppError::InvalidInput {
                 message: format!(
-                    "Image file too large: {:.2}MB (max: 50MB)", 
+                    "Image file too large: {:.2}MB (max: 50MB)",
                     metadata.len() as f64 / (1024.0 * 1024.0)
                 ),
             });
         }
 
         // Read and encode image to base64
-        let image_bytes = tokio::fs::read(image_path).await
-            .map_err(AppError::Io)?;
-        
+        let image_bytes = tokio::fs::read(image_path).await.map_err(AppError::Io)?;
+
         // Additional check after reading - base64 encoding increases size by ~33%
         const MAX_PROCESSED_SIZE: usize = 66 * 1024 * 1024; // 66MB for base64
         if image_bytes.len() > MAX_PROCESSED_SIZE {
@@ -573,7 +605,7 @@ impl OllamaClient {
                 ),
             });
         }
-        
+
         let base64_image = general_purpose::STANDARD.encode(&image_bytes);
 
         // Create vision prompt
@@ -602,16 +634,20 @@ Respond ONLY with valid JSON, no explanations."#,
         );
 
         // Call vision model with image
-        let response = self.generate_vision_completion(&prompt, &base64_image).await?;
+        let response = self
+            .generate_vision_completion(&prompt, &base64_image)
+            .await?;
 
         // Parse JSON response
-        let analysis: VisionAnalysisResponse = serde_json::from_str(&response)
-            .map_err(|e| {
-                error!("Failed to parse vision analysis JSON: {} - Response: {}", e, response);
-                AppError::ParseError {
-                    message: format!("Invalid JSON response from vision model: {}", e),
-                }
-            })?;
+        let analysis: VisionAnalysisResponse = serde_json::from_str(&response).map_err(|e| {
+            error!(
+                "Failed to parse vision analysis JSON: {} - Response: {}",
+                e, response
+            );
+            AppError::ParseError {
+                message: format!("Invalid JSON response from vision model: {}", e),
+            }
+        })?;
 
         // Convert to FileAnalysis
         Ok(FileAnalysis {
@@ -620,10 +656,10 @@ Respond ONLY with valid JSON, no explanations."#,
             tags: analysis.tags,
             summary: analysis.summary,
             confidence: analysis.confidence,
-            extracted_text: if analysis.text_detected.is_empty() { 
-                None 
-            } else { 
-                Some(analysis.text_detected) 
+            extracted_text: if analysis.text_detected.is_empty() {
+                None
+            } else {
+                Some(analysis.text_detected)
             },
             detected_language: None,
             metadata: serde_json::json!({
@@ -639,13 +675,13 @@ Respond ONLY with valid JSON, no explanations."#,
     async fn generate_vision_completion(&self, prompt: &str, base64_image: &str) -> Result<String> {
         // Implement retry logic manually since with_retries doesn't exist
         let mut last_error = None;
-        
+
         for attempt in 0..3 {
             if attempt > 0 {
                 // Exponential backoff between retries
                 tokio::time::sleep(Duration::from_millis(100 * (1 << attempt))).await;
             }
-            
+
             // Acquire connection permit
             let permit = match self.connection_pool.acquire().await {
                 Ok(p) => p,
@@ -654,7 +690,7 @@ Respond ONLY with valid JSON, no explanations."#,
                     continue;
                 }
             };
-            
+
             let request = serde_json::json!({
                 "model": self.vision_model,
                 "prompt": prompt,
@@ -671,11 +707,13 @@ Respond ONLY with valid JSON, no explanations."#,
             let client = reqwest::Client::new();
             let response_result = timeout(
                 Duration::from_secs(60), // Vision analysis can take longer
-                client.post(format!("http://{}/api/generate", self.client.uri()))
+                client
+                    .post(format!("http://{}/api/generate", self.client.uri()))
                     .json(&request)
-                    .send()
-            ).await;
-            
+                    .send(),
+            )
+            .await;
+
             let response = match response_result {
                 Ok(Ok(resp)) => resp,
                 Ok(Err(e)) => {
@@ -697,7 +735,10 @@ Respond ONLY with valid JSON, no explanations."#,
             if !response.status().is_success() {
                 permit.failure().await;
                 last_error = Some(AppError::AiError {
-                    message: format!("Vision model request failed with status: {}", response.status()),
+                    message: format!(
+                        "Vision model request failed with status: {}",
+                        response.status()
+                    ),
                 });
                 continue;
             }
@@ -725,13 +766,14 @@ Respond ONLY with valid JSON, no explanations."#,
                 }
             };
 
-            let result = json_response.get("response")
+            let result = json_response
+                .get("response")
                 .and_then(|r| r.as_str())
                 .map(|s| s.to_string())
                 .ok_or_else(|| AppError::ParseError {
                     message: "No response field in vision model output".to_string(),
                 });
-            
+
             match result {
                 Ok(text) => {
                     permit.success().await;
@@ -743,7 +785,7 @@ Respond ONLY with valid JSON, no explanations."#,
                 }
             }
         }
-        
+
         // If we get here, all retries failed
         Err(last_error.unwrap_or_else(|| AppError::AiError {
             message: "Failed to generate vision completion after retries".to_string(),
@@ -757,7 +799,7 @@ impl AiEngine for OllamaClient {
         // Sanitize inputs to prevent prompt injection
         let sanitized_content = sanitize_prompt_content(content)?;
         let sanitized_file_type = sanitize_prompt_content(file_type)?;
-        
+
         let prompt = format!(
             r#"Analyze this file content and provide a JSON response with the following structure:
 {{
@@ -772,36 +814,36 @@ Content preview:
 {}
 
 Respond ONLY with valid JSON, no explanations."#,
-            sanitized_file_type,
-            sanitized_content
+            sanitized_file_type, sanitized_content
         );
-        
+
         let response = self.generate_completion(&prompt, &self.text_model).await?;
         // Reference vision model name to keep parity/config discoverable
         let _vision_model_name = &self.vision_model;
-        
+
         // Sanitize response to prevent XSS or injection through AI output
         let sanitized_response = sanitize_prompt_content(&response)?;
-        
+
         // Parse JSON response
-        let analysis: AnalysisResponse = serde_json::from_str(&sanitized_response)
-            .map_err(|e| {
+        let analysis: AnalysisResponse =
+            serde_json::from_str(&sanitized_response).map_err(|e| {
                 error!("Failed to parse AI response: {}", e);
                 AppError::ParseError {
                     message: "Invalid AI response format".to_string(),
                 }
             })?;
-            
+
         // Validate analysis content
-        if analysis.category.len() > 100 || 
-           analysis.content_summary.len() > 500 ||
-           analysis.tags.iter().any(|tag| tag.len() > 50) ||
-           analysis.tags.len() > 20 {
+        if analysis.category.len() > 100
+            || analysis.content_summary.len() > 500
+            || analysis.tags.iter().any(|tag| tag.len() > 50)
+            || analysis.tags.len() > 20
+        {
             return Err(AppError::ParseError {
                 message: "AI response contains potentially malicious content".to_string(),
             });
         }
-        
+
         Ok(FileAnalysis {
             path: "".to_string(), // Will be set by the caller
             category: analysis.category,
@@ -813,32 +855,41 @@ Respond ONLY with valid JSON, no explanations."#,
             metadata: serde_json::json!({}),
         })
     }
-    
+
     async fn generate_embeddings(&self, text: &str) -> Result<Vec<f32>> {
         // Call the struct's own generate_embeddings method
         OllamaClient::generate_embeddings(self, text).await
     }
-    
-    async fn suggest_organization(&self, files: Vec<String>, smart_folders: Vec<crate::commands::organization::SmartFolder>) -> Result<Vec<OrganizationSuggestion>> {
-        let files_list = files.iter()
+
+    async fn suggest_organization(
+        &self,
+        files: Vec<String>,
+        smart_folders: Vec<crate::commands::organization::SmartFolder>,
+    ) -> Result<Vec<OrganizationSuggestion>> {
+        let files_list = files
+            .iter()
             .take(20) // Limit to prevent prompt overflow
             .map(|f| format!("- {}", f))
             .collect::<Vec<_>>()
             .join("\n");
-            
+
         // Build available smart folders context for the LLM
-        let smart_folders_context = smart_folders.iter()
+        let smart_folders_context = smart_folders
+            .iter()
             .filter(|folder| folder.enabled)
             .map(|folder| {
                 format!(
                     "* {}: {}",
                     folder.name,
-                    folder.description.as_deref().unwrap_or("No description available")
+                    folder
+                        .description
+                        .as_deref()
+                        .unwrap_or("No description available")
                 )
             })
             .collect::<Vec<_>>()
             .join("\n");
-        
+
         let prompt = format!(
             r#"Suggest organization for these files into the available smart folders.
 
@@ -859,53 +910,52 @@ Files to organize:
 Match each file to the most appropriate folder based on the descriptions above. 
 If no folder fits perfectly, suggest the closest match with lower confidence.
 Respond ONLY with valid JSON array."#,
-            smart_folders_context,
-            files_list
+            smart_folders_context, files_list
         );
-        
+
         let response = self.generate_completion(&prompt, &self.text_model).await?;
-        
-        let suggestions: Vec<SuggestionResponse> = serde_json::from_str(&response)
-            .map_err(|e| {
+
+        let suggestions: Vec<SuggestionResponse> =
+            serde_json::from_str(&response).map_err(|e| {
                 error!("Failed to parse suggestions: {}", e);
                 AppError::ParseError {
                     message: "Invalid suggestion format".to_string(),
                 }
             })?;
-        
-        Ok(suggestions.into_iter().map(|s| OrganizationSuggestion {
-            source_path: s.source_path,
-            target_folder: s.target_folder,
-            reason: s.reason,
-            confidence: s.confidence,
-        }).collect())
+
+        Ok(suggestions
+            .into_iter()
+            .map(|s| OrganizationSuggestion {
+                source_path: s.source_path,
+                target_folder: s.target_folder,
+                reason: s.reason,
+                confidence: s.confidence,
+            })
+            .collect())
     }
 }
 
 /// Setup Ollama on first run
 pub async fn setup_ollama() -> Result<()> {
     let client = OllamaClient::new("http://localhost:11434").await?;
-    
+
     // Check if Ollama is running
     if client.health_check().await.is_err() {
         warn!("Ollama is not running. Please start Ollama to use AI features.");
         return Ok(());
     }
-    
+
     // Check for required models
     let model_names = client.list_models().await?;
-    
-    let required_models = vec![
-        "llama3.2:3b",
-        "nomic-embed-text",
-    ];
-    
+
+    let required_models = vec!["llama3.2:3b", "nomic-embed-text"];
+
     for model in required_models {
         if !model_names.iter().any(|m| m.starts_with(model)) {
             info!("Model {} not found, consider installing it", model);
         }
     }
-    
+
     info!("Ollama setup complete");
     Ok(())
 }

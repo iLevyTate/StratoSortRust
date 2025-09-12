@@ -1,6 +1,6 @@
 use crate::{
     error::Result,
-    services::file_watcher::{WatchModeConfig, UserAction, UserActionType},
+    services::file_watcher::{UserAction, UserActionType, WatchModeConfig},
     state::AppState,
 };
 use serde::{Deserialize, Serialize};
@@ -20,19 +20,17 @@ pub struct WatchModeStatus {
 
 /// Get current watch mode status and configuration
 #[tauri::command]
-pub async fn get_watch_mode_status(
-    state: State<'_, Arc<AppState>>,
-) -> Result<WatchModeStatus> {
+pub async fn get_watch_mode_status(state: State<'_, Arc<AppState>>) -> Result<WatchModeStatus> {
     let watcher_arc = {
         let watcher_guard = state.file_watcher.read();
         watcher_guard.as_ref().map(std::sync::Arc::clone)
     };
-    
+
     if let Some(watcher_arc) = watcher_arc {
         let config = watcher_arc.get_watch_config().await;
         let pending_count = watcher_arc.get_pending_files_count().await;
         let actions_count = watcher_arc.get_recent_user_actions(100).await.len();
-        
+
         Ok(WatchModeStatus {
             enabled: config.enabled,
             watching_directories: config.watch_directories,
@@ -60,14 +58,16 @@ pub async fn configure_watch_mode(
     config: WatchModeConfig,
     state: State<'_, Arc<AppState>>,
 ) -> Result<()> {
-    info!("Configuring watch mode: enabled={}, directories={:?}", 
-          config.enabled, config.watch_directories);
-    
+    info!(
+        "Configuring watch mode: enabled={}, directories={:?}",
+        config.enabled, config.watch_directories
+    );
+
     let watcher_arc = {
         let watcher_guard = state.file_watcher.read();
         watcher_guard.as_ref().map(Arc::clone)
     };
-    
+
     if let Some(watcher_arc) = watcher_arc {
         watcher_arc.configure_watch_mode(config).await?;
     }
@@ -84,12 +84,12 @@ pub async fn enable_watch_mode(
         let watcher_guard = state.file_watcher.read();
         watcher_guard.as_ref().map(Arc::clone)
     };
-    
+
     if let Some(watcher_arc) = watcher_arc {
         let mut config = watcher_arc.get_watch_config().await;
         config.enabled = true;
         config.watch_directories = directories;
-        
+
         watcher_arc.configure_watch_mode(config).await?;
         info!("Watch mode enabled");
     }
@@ -98,18 +98,16 @@ pub async fn enable_watch_mode(
 
 /// Disable watch mode
 #[tauri::command]
-pub async fn disable_watch_mode(
-    state: State<'_, Arc<AppState>>,
-) -> Result<()> {
+pub async fn disable_watch_mode(state: State<'_, Arc<AppState>>) -> Result<()> {
     let watcher_arc = {
         let watcher_guard = state.file_watcher.read();
         watcher_guard.as_ref().map(Arc::clone)
     };
-    
+
     if let Some(watcher_arc) = watcher_arc {
         let mut config = watcher_arc.get_watch_config().await;
         config.enabled = false;
-        
+
         watcher_arc.configure_watch_mode(config).await?;
         info!("Watch mode disabled");
     }
@@ -131,7 +129,7 @@ pub async fn record_user_organization_action(
         "organize" => UserActionType::OrganizeFiles,
         _ => UserActionType::MoveFile,
     };
-    
+
     let user_action = UserAction {
         action_type,
         timestamp: chrono::Utc::now().timestamp(),
@@ -141,12 +139,12 @@ pub async fn record_user_organization_action(
         rename_pattern: None,
         confidence: 1.0, // User action has 100% confidence
     };
-    
+
     let watcher_arc = {
         let watcher_guard = state.file_watcher.read();
         watcher_guard.as_ref().map(std::sync::Arc::clone)
     };
-    
+
     if let Some(watcher_arc) = watcher_arc {
         watcher_arc.record_user_action(user_action).await;
         info!("Recorded user organization action for learning");
@@ -165,7 +163,7 @@ pub async fn get_user_learning_patterns(
         let watcher_guard = state.file_watcher.read();
         watcher_guard.as_ref().map(std::sync::Arc::clone)
     };
-    
+
     if let Some(watcher_arc) = watcher_arc {
         let actions = watcher_arc.get_recent_user_actions(limit).await;
         Ok(actions)
@@ -186,16 +184,16 @@ pub async fn update_auto_organize_threshold(
             message: "Threshold must be between 0.0 and 1.0".to_string(),
         });
     }
-    
+
     let watcher_arc = {
         let watcher_guard = state.file_watcher.read();
         watcher_guard.as_ref().map(Arc::clone)
     };
-    
+
     if let Some(watcher_arc) = watcher_arc {
         let mut config = watcher_arc.get_watch_config().await;
         config.confidence_threshold = threshold;
-        
+
         watcher_arc.configure_watch_mode(config).await?;
     }
     info!("Updated auto-organize threshold to {}", threshold);
@@ -204,14 +202,12 @@ pub async fn update_auto_organize_threshold(
 
 /// Get pending files awaiting auto-organization
 #[tauri::command]
-pub async fn get_pending_auto_organization(
-    state: State<'_, Arc<AppState>>,
-) -> Result<Vec<String>> {
+pub async fn get_pending_auto_organization(state: State<'_, Arc<AppState>>) -> Result<Vec<String>> {
     let watcher_arc = {
         let watcher_guard = state.file_watcher.read();
         watcher_guard.as_ref().map(std::sync::Arc::clone)
     };
-    
+
     if let Some(watcher_arc) = watcher_arc {
         let file_paths = watcher_arc.get_pending_file_paths().await;
         Ok(file_paths)
@@ -222,21 +218,22 @@ pub async fn get_pending_auto_organization(
 
 /// Manually trigger auto-organization of pending files
 #[tauri::command]
-pub async fn trigger_auto_organization(
-    state: State<'_, Arc<AppState>>,
-) -> Result<usize> {
+pub async fn trigger_auto_organization(state: State<'_, Arc<AppState>>) -> Result<usize> {
     let watcher_arc = {
         let watcher_guard = state.file_watcher.read();
         watcher_guard.as_ref().map(std::sync::Arc::clone)
     };
-    
+
     if let Some(watcher_arc) = watcher_arc {
         let file_count = watcher_arc.clear_pending_files().await;
-        
+
         if file_count > 0 {
-            info!("Manually triggering auto-organization for {} files", file_count);
+            info!(
+                "Manually triggering auto-organization for {} files",
+                file_count
+            );
         }
-        
+
         Ok(file_count)
     } else {
         Ok(0)
@@ -253,17 +250,17 @@ pub async fn add_watch_directory(
         let watcher_guard = state.file_watcher.read();
         watcher_guard.as_ref().map(Arc::clone)
     };
-    
+
     if let Some(watcher_arc) = watcher_arc {
         let mut config = watcher_arc.get_watch_config().await;
-        
+
         if !config.watch_directories.contains(&directory_path) {
             config.watch_directories.push(directory_path.clone());
             watcher_arc.configure_watch_mode(config).await?;
             info!("Added directory to watch list: {}", directory_path);
         }
     }
-    
+
     Ok(())
 }
 
@@ -277,14 +274,16 @@ pub async fn remove_watch_directory(
         let watcher_guard = state.file_watcher.read();
         watcher_guard.as_ref().map(Arc::clone)
     };
-    
+
     if let Some(watcher_arc) = watcher_arc {
         let mut config = watcher_arc.get_watch_config().await;
-        
-        config.watch_directories.retain(|dir| dir != &directory_path);
+
+        config
+            .watch_directories
+            .retain(|dir| dir != &directory_path);
         watcher_arc.configure_watch_mode(config).await?;
         info!("Removed directory from watch list: {}", directory_path);
     }
-    
+
     Ok(())
 }
