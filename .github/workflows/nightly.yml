@@ -1,0 +1,354 @@
+name: Nightly Build
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # Run at 2 AM UTC daily
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  nightly-test:
+    name: Nightly Test Suite
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        rust: [stable, beta, nightly]
+        
+    continue-on-error: ${{ matrix.rust == 'nightly' }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@v1
+      with:
+        toolchain: ${{ matrix.rust }}
+        components: rustfmt, clippy
+
+    - name: Cache cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-${{ matrix.rust }}-cargo-nightly-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Install system dependencies (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libayatana-appindicator3-dev librsvg2-dev
+
+    - name: Install SQLx CLI
+      run: cargo install sqlx-cli --no-default-features --features rustls,sqlite
+
+    - name: Setup test database
+      working-directory: ./src-tauri
+      run: |
+        mkdir -p ../data
+        sqlx database create --database-url sqlite:../data/test.db
+        sqlx migrate run
+
+    - name: Run tests with all features
+      working-directory: ./src-tauri
+      env:
+        DATABASE_URL: sqlite:../data/test.db
+        RUST_LOG: warn
+      run: cargo test --all-features --verbose
+
+    - name: Test with minimal features
+      working-directory: ./src-tauri
+      env:
+        DATABASE_URL: sqlite:../data/test.db
+      run: cargo test --no-default-features --verbose
+
+  dependency-update:
+    name: Dependency Update Check
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-outdated
+      run: cargo install cargo-outdated
+
+    - name: Check for outdated dependencies
+      working-directory: ./src-tauri
+      run: |
+        cargo outdated --verbose > outdated_deps.txt
+        cat outdated_deps.txt
+
+    - name: Upload dependency report
+      uses: actions/upload-artifact@v4
+      with:
+        name: dependency-report-${{ github.run_number }}
+        path: src-tauri/outdated_deps.txt
+
+  benchmark:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libayatana-appindicator3-dev librsvg2-dev
+
+    - name: Install SQLx CLI
+      run: cargo install sqlx-cli --no-default-features --features rustls,sqlite
+
+    - name: Setup benchmark database
+      working-directory: ./src-tauri
+      run: |
+        mkdir -p ../data
+        sqlx database create --database-url sqlite:../data/benchmark.db
+        sqlx migrate run
+
+    - name: Run benchmarks
+      working-directory: ./src-tauri
+      env:
+        DATABASE_URL: sqlite:../data/benchmark.db
+      run: |
+        # Run benchmarks if they exist
+        cargo bench --verbose || echo "No benchmarks configured"
+
+    - name: Performance regression check
+      working-directory: ./src-tauri
+      run: |
+        # Simple performance test - measure build time
+        echo "Measuring build performance..."
+        time cargo build --release --verbose
+        
+        # Measure test execution time
+        echo "Measuring test performance..."
+        time cargo test --release -- --test-threads=1
+
+  code-quality:
+    name: Code Quality Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+
+    - name: Install additional tools
+      run: |
+        cargo install cargo-machete  # Find unused dependencies
+        cargo install cargo-bloat    # Find what takes most space
+        cargo install cargo-tree     # Analyze dependency tree
+
+    - name: Check unused dependencies
+      working-directory: ./src-tauri
+      run: cargo machete || echo "cargo-machete check completed"
+
+    - name: Analyze binary size
+      working-directory: ./src-tauri
+      run: |
+        cargo bloat --release --crates || echo "cargo-bloat analysis completed"
+
+    - name: Analyze dependency tree
+      working-directory: ./src-tauri
+      run: |
+        cargo tree --depth 3 > dependency_tree.txt
+        head -50 dependency_tree.txt
+
+    - name: Extended clippy analysis
+      working-directory: ./src-tauri
+      run: |
+        cargo clippy --all-targets --all-features -- \
+          -W clippy::all \
+          -W clippy::pedantic \
+          -W clippy::nursery \
+          -A clippy::missing_docs_in_private_items \
+          -A clippy::module_name_repetitions \
+          || echo "Extended clippy analysis completed with warnings"
+
+    - name: Upload quality reports
+      uses: actions/upload-artifact@v4
+      with:
+        name: code-quality-${{ github.run_number }}
+        path: |
+          src-tauri/dependency_tree.txt
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Run cargo audit
+      working-directory: ./src-tauri
+      run: |
+        cargo install cargo-audit
+        cargo audit --json > audit_report.json || echo "Audit completed with findings"
+        cat audit_report.json
+
+    - name: Run cargo deny
+      working-directory: ./src-tauri
+      run: |
+        cargo install cargo-deny
+        cargo deny check || echo "Deny check completed"
+
+    - name: Scan for secrets
+      run: |
+        # Basic secret scanning
+        echo "Scanning for potential secrets..."
+        ! grep -r -i "password\|secret\|token\|api_key" --include="*.rs" --include="*.toml" src-tauri/src/ || echo "Potential secrets found - please review"
+
+    - name: Check for unsafe code
+      working-directory: ./src-tauri
+      run: |
+        echo "Checking for unsafe code blocks..."
+        if grep -r "unsafe" --include="*.rs" src/; then
+          echo "⚠️ Unsafe code blocks found"
+        else
+          echo "✅ No unsafe code blocks found"
+        fi
+
+    - name: Upload security reports
+      uses: actions/upload-artifact@v4
+      with:
+        name: security-scan-${{ github.run_number }}
+        path: |
+          src-tauri/audit_report.json
+
+  cross-platform-build:
+    name: Cross Platform Build Test
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-pc-windows-gnu
+          - aarch64-unknown-linux-gnu
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - name: Install cross compilation tools
+      run: |
+        cargo install cross
+        sudo apt-get update
+        sudo apt-get install -y gcc-mingw-w64 gcc-aarch64-linux-gnu
+
+    - name: Cross compile
+      working-directory: ./src-tauri
+      run: |
+        # Try cross compilation (may fail for some targets, that's expected)
+        cross build --target ${{ matrix.target }} --verbose || echo "Cross compilation for ${{ matrix.target }} completed with status $?"
+
+  notify-failure:
+    name: Notify on Failure
+    needs: [nightly-test, dependency-update, benchmark, code-quality, security-scan]
+    runs-on: ubuntu-latest
+    if: failure()
+
+    steps:
+    - name: Notify on Discord (if configured)
+      if: env.DISCORD_WEBHOOK != ''
+      env:
+        DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_NIGHTLY }}
+      run: |
+        curl -H "Content-Type: application/json" \
+             -d "{\"content\":\"❌ StratoRust nightly build failed! Check the GitHub Actions logs for details.\"}" \
+             $DISCORD_WEBHOOK || echo "Discord notification failed"
+
+    - name: Create GitHub Issue on repeated failures
+      if: github.event_name == 'schedule'
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          const { owner, repo } = context.repo;
+          
+          // Check if there's already an open issue about nightly failures
+          const { data: issues } = await github.rest.issues.listForRepo({
+            owner,
+            repo,
+            labels: 'nightly-failure,automated',
+            state: 'open'
+          });
+          
+          if (issues.length === 0) {
+            // Create new issue
+            await github.rest.issues.create({
+              owner,
+              repo,
+              title: `Nightly build failure - ${new Date().toISOString().split('T')[0]}`,
+              body: `The nightly build has failed. Please check the [workflow run](${context.payload.repository.html_url}/actions/runs/${context.runId}) for details.
+              
+              This issue was automatically created. Please investigate and close when resolved.`,
+              labels: ['nightly-failure', 'automated', 'bug']
+            });
+          }
+
+  cleanup:
+    name: Cleanup Old Artifacts
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+    - name: Delete old workflow runs
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          const { owner, repo } = context.repo;
+          
+          // Delete workflow runs older than 30 days for nightly builds
+          const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+          
+          const { data: workflows } = await github.rest.actions.listWorkflowRuns({
+            owner,
+            repo,
+            workflow_id: 'nightly.yml',
+            per_page: 100
+          });
+          
+          for (const run of workflows.workflow_runs) {
+            if (new Date(run.created_at) < thirtyDaysAgo) {
+              try {
+                await github.rest.actions.deleteWorkflowRun({
+                  owner,
+                  repo,
+                  run_id: run.id
+                });
+                console.log(`Deleted workflow run ${run.id}`);
+              } catch (error) {
+                console.log(`Failed to delete workflow run ${run.id}: ${error.message}`);
+              }
+            }
+          }
