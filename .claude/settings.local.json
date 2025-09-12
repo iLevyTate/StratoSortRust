@@ -49,7 +49,8 @@
       "Bash(timeout 120 cargo clippy --all-targets --no-default-features --features \"default\" -- -D warnings)",
       "Bash(timeout 120 cargo test --lib)",
       "Bash(timeout 120 cargo clippy --all-targets --features \"standard\" -- -D warnings)",
-      "Bash(timeout 120 cargo clippy --all-targets --features \"documents,images,archives,multimedia\" -- -D warnings)"
+      "Bash(timeout 120 cargo clippy --all-targets --features \"documents,images,archives,multimedia\" -- -D warnings)",
+      "Bash(timeout 60 cargo test --lib)"
     ],
     "deny": [],
     "ask": []
