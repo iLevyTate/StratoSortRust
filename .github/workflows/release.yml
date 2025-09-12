@@ -1,0 +1,322 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag'
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create_release.outputs.id }}
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Get tag name
+      id: get_tag
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+        else
+          echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.get_tag.outputs.tag }}
+        release_name: StratoRust ${{ steps.get_tag.outputs.tag }}
+        draft: true
+        prerelease: ${{ contains(steps.get_tag.outputs.tag, 'alpha') || contains(steps.get_tag.outputs.tag, 'beta') || contains(steps.get_tag.outputs.tag, 'rc') }}
+        body: |
+          ## What's Changed
+          
+          Please see the [CHANGELOG.md](CHANGELOG.md) for detailed changes.
+          
+          ## Installation
+          
+          ### Windows
+          Download and run the `.msi` installer.
+          
+          ### macOS
+          Download and open the `.dmg` file, then drag StratoRust to Applications.
+          
+          ### Linux
+          Download the `.deb` package for Ubuntu/Debian or the `.AppImage` for other distributions.
+          
+          ## System Requirements
+          
+          - **Windows**: Windows 10 or later
+          - **macOS**: macOS 10.15 (Catalina) or later
+          - **Linux**: Ubuntu 20.04+ or equivalent
+          
+          ## Optional Dependencies
+          
+          - **Ollama**: For AI-powered file analysis (install from https://ollama.com/)
+          
+          ---
+          
+          **Full Changelog**: https://github.com/${{ github.repository }}/compare/previous_tag...${{ steps.get_tag.outputs.tag }}
+
+  build-and-upload:
+    name: Build and Upload
+    needs: create-release
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: windows-x86_64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: macos-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: macos-aarch64
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Get tag name
+      id: get_tag
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+        else
+          echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        fi
+      shell: bash
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - name: Cache cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-${{ matrix.target }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Install system dependencies (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libayatana-appindicator3-dev librsvg2-dev
+        sudo apt-get install -y build-essential curl wget libssl-dev
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+
+    - name: Install Tauri CLI
+      run: cargo install tauri-cli --version "^2.0"
+
+    - name: Create data directory
+      run: mkdir -p data
+
+    - name: Install SQLx CLI and prepare database
+      working-directory: ./src-tauri
+      run: |
+        cargo install sqlx-cli --no-default-features --features rustls,sqlite
+        sqlx database create --database-url sqlite:../data/stratosort.db
+        sqlx migrate run
+
+    - name: Generate SQLx metadata
+      working-directory: ./src-tauri
+      env:
+        DATABASE_URL: sqlite:../data/stratosort.db
+      run: cargo sqlx prepare
+
+    - name: Build application (release)
+      env:
+        DATABASE_URL: sqlite:./data/stratosort.db
+        SQLX_OFFLINE: true
+      run: |
+        if [ "${{ matrix.target }}" != "$(rustc -vV | sed -n 's|host: ||p')" ]; then
+          # Cross-compilation build
+          cargo tauri build --target ${{ matrix.target }}
+        else
+          # Native build
+          cargo tauri build
+        fi
+      shell: bash
+
+    - name: Prepare artifacts (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        mkdir -p artifacts
+        cp src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb artifacts/ || echo "No .deb files found"
+        cp src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage artifacts/ || echo "No .AppImage files found"
+        ls -la artifacts/
+
+    - name: Prepare artifacts (Windows)
+      if: matrix.os == 'windows-latest'
+      run: |
+        mkdir artifacts
+        cp src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi artifacts/ 2>/dev/null || echo "No .msi files found"
+        ls artifacts/
+      shell: bash
+
+    - name: Prepare artifacts (macOS)
+      if: matrix.os == 'macos-latest'
+      run: |
+        mkdir -p artifacts
+        cp src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg artifacts/ || echo "No .dmg files found"
+        ls -la artifacts/
+
+    - name: Upload artifacts to release (Linux .deb)
+      if: matrix.os == 'ubuntu-latest'
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ needs.create-release.outputs.upload_url }}
+        asset_path: ./artifacts/stratosort_${{ steps.get_tag.outputs.tag }}_amd64.deb
+        asset_name: StratoRust-${{ steps.get_tag.outputs.tag }}-linux-amd64.deb
+        asset_content_type: application/vnd.debian.binary-package
+      continue-on-error: true
+
+    - name: Upload artifacts to release (Linux .AppImage)
+      if: matrix.os == 'ubuntu-latest'
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ needs.create-release.outputs.upload_url }}
+        asset_path: ./artifacts/stratosort_${{ steps.get_tag.outputs.tag }}_amd64.AppImage
+        asset_name: StratoRust-${{ steps.get_tag.outputs.tag }}-linux-x86_64.AppImage
+        asset_content_type: application/octet-stream
+      continue-on-error: true
+
+    - name: Upload artifacts to release (Windows)
+      if: matrix.os == 'windows-latest'
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ needs.create-release.outputs.upload_url }}
+        asset_path: ./artifacts/StratoRust_${{ steps.get_tag.outputs.tag }}_x64_en-US.msi
+        asset_name: StratoRust-${{ steps.get_tag.outputs.tag }}-windows-x64.msi
+        asset_content_type: application/x-msi
+      continue-on-error: true
+
+    - name: Upload artifacts to release (macOS)
+      if: matrix.os == 'macos-latest'
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ needs.create-release.outputs.upload_url }}
+        asset_path: ./artifacts/StratoRust_${{ steps.get_tag.outputs.tag }}_${{ matrix.target }}.dmg
+        asset_name: StratoRust-${{ steps.get_tag.outputs.tag }}-${{ matrix.name }}.dmg
+        asset_content_type: application/x-apple-diskimage
+      continue-on-error: true
+
+  publish-release:
+    name: Publish Release
+    needs: [create-release, build-and-upload]
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Publish Release
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          const { owner, repo } = context.repo;
+          const releaseId = '${{ needs.create-release.outputs.release_id }}';
+          
+          await github.rest.repos.updateRelease({
+            owner,
+            repo,
+            release_id: releaseId,
+            draft: false
+          });
+          
+          console.log(`Published release ${releaseId}`);
+
+  notify:
+    name: Notify Release
+    needs: [publish-release]
+    runs-on: ubuntu-latest
+    if: success()
+    
+    steps:
+    - name: Get tag name
+      id: get_tag
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+        else
+          echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Notify Discord (if configured)
+      if: env.DISCORD_WEBHOOK != ''
+      env:
+        DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+      run: |
+        curl -H "Content-Type: application/json" \
+             -d "{\"content\":\"🚀 StratoRust ${{ steps.get_tag.outputs.tag }} has been released! Download it from GitHub Releases.\"}" \
+             $DISCORD_WEBHOOK
+
+    - name: Notify Slack (if configured)
+      if: env.SLACK_WEBHOOK != ''
+      env:
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+      run: |
+        curl -X POST -H 'Content-type: application/json' \
+             --data "{\"text\":\"🚀 StratoRust ${{ steps.get_tag.outputs.tag }} has been released! Download it from GitHub Releases.\"}" \
+             $SLACK_WEBHOOK
+
+  update-homebrew:
+    name: Update Homebrew Formula
+    needs: [publish-release]
+    runs-on: macos-latest
+    if: success() && !contains(github.ref, 'alpha') && !contains(github.ref, 'beta') && !contains(github.ref, 'rc')
+    
+    steps:
+    - name: Get tag name
+      id: get_tag
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+        else
+          echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Update Homebrew formula
+      env:
+        HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.HOMEBREW_GITHUB_API_TOKEN }}
+      run: |
+        # This would update a Homebrew formula if we had one
+        echo "Homebrew formula update would go here for stable release ${{ steps.get_tag.outputs.tag }}"
+        # brew bump-formula-pr --strict stratosort --url=https://github.com/${{ github.repository }}/archive/${{ steps.get_tag.outputs.tag }}.tar.gz

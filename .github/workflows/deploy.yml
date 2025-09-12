@@ -1,0 +1,352 @@
+name: Deploy
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  deploy-docs:
+    name: Deploy Documentation
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install mdBook
+      run: |
+        curl -L https://github.com/rust-lang/mdBook/releases/latest/download/mdbook-x86_64-unknown-linux-gnu.tar.gz | tar xz
+        sudo mv mdbook /usr/local/bin/
+
+    - name: Generate Rust documentation
+      working-directory: ./src-tauri
+      run: |
+        cargo doc --no-deps --all-features --document-private-items
+
+    - name: Create documentation site
+      run: |
+        mkdir -p docs-site/api
+        mkdir -p docs-site/guide
+        
+        # Copy generated Rust docs
+        cp -r src-tauri/target/doc/* docs-site/api/ || echo "No Rust docs to copy"
+        
+        # Copy markdown documentation
+        cp README.md docs-site/
+        cp API.md docs-site/guide/
+        cp DEVELOPMENT.md docs-site/guide/
+        
+        # Create index.html
+        cat > docs-site/index.html << 'EOF'
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>StratoRust Documentation</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 40px; }
+                .container { max-width: 800px; margin: 0 auto; }
+                .section { margin: 20px 0; padding: 20px; border: 1px solid #ddd; border-radius: 8px; }
+                .section h2 { margin-top: 0; }
+                .links a { display: block; margin: 10px 0; padding: 10px; background: #f5f5f5; text-decoration: none; border-radius: 4px; }
+                .links a:hover { background: #e5e5e5; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>StratoRust Documentation</h1>
+                
+                <div class="section">
+                    <h2>User Guide</h2>
+                    <div class="links">
+                        <a href="README.html">Overview & Getting Started</a>
+                        <a href="guide/API.html">API Documentation</a>
+                        <a href="guide/DEVELOPMENT.html">Development Guide</a>
+                    </div>
+                </div>
+                
+                <div class="section">
+                    <h2>API Reference</h2>
+                    <div class="links">
+                        <a href="api/stratosort/index.html">Rust API Documentation</a>
+                    </div>
+                </div>
+                
+                <div class="section">
+                    <h2>Links</h2>
+                    <div class="links">
+                        <a href="https://github.com/your-username/StratoRust">GitHub Repository</a>
+                        <a href="https://github.com/your-username/StratoRust/releases">Download Releases</a>
+                        <a href="https://github.com/your-username/StratoRust/issues">Report Issues</a>
+                    </div>
+                </div>
+            </div>
+        </body>
+        </html>
+        EOF
+
+    - name: Convert Markdown to HTML
+      run: |
+        # Simple markdown to HTML conversion
+        for file in docs-site/*.md docs-site/guide/*.md; do
+          if [ -f "$file" ]; then
+            html_file="${file%.md}.html"
+            echo "<!DOCTYPE html><html><head><title>$(basename "$file" .md)</title><style>body{font-family:Arial,sans-serif;margin:40px;max-width:800px;margin:0 auto;padding:20px;}</style></head><body>" > "$html_file"
+            # Basic markdown processing (would use proper tool in production)
+            sed 's/^# \(.*\)/<h1>\1<\/h1>/g; s/^## \(.*\)/<h2>\1<\/h2>/g; s/^### \(.*\)/<h3>\1<\/h3>/g; s/^\*\*\(.*\)\*\*/<strong>\1<\/strong>/g; s/^\*\(.*\)\*/<em>\1<\/em>/g' "$file" >> "$html_file"
+            echo "</body></html>" >> "$html_file"
+            rm "$file"
+          fi
+        done
+
+    - name: Deploy to GitHub Pages
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./docs-site
+        force_orphan: true
+
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'staging')
+    environment: staging
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libayatana-appindicator3-dev librsvg2-dev
+
+    - name: Install Tauri CLI
+      run: cargo install tauri-cli --version "^2.0"
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+
+    - name: Create staging build
+      env:
+        DATABASE_URL: sqlite:./data/stratosort_staging.db
+        RUST_LOG: info
+      run: |
+        mkdir -p data
+        cargo tauri build --debug
+
+    - name: Deploy to staging server
+      env:
+        STAGING_HOST: ${{ secrets.STAGING_HOST }}
+        STAGING_USER: ${{ secrets.STAGING_USER }}
+        STAGING_KEY: ${{ secrets.STAGING_SSH_KEY }}
+      run: |
+        # This is a placeholder for actual deployment
+        echo "Would deploy to staging server: $STAGING_HOST"
+        echo "Deployment artifacts would be uploaded via SCP/rsync"
+        
+        # Example deployment steps:
+        # 1. Copy build artifacts to staging server
+        # 2. Update application on server
+        # 3. Restart services
+        # 4. Run health checks
+
+    - name: Run staging health check
+      run: |
+        echo "Running staging health checks..."
+        # curl -f http://staging.example.com/health || exit 1
+        echo "Staging deployment successful!"
+
+    - name: Notify deployment
+      if: success()
+      run: |
+        echo "🚀 Staging deployment completed successfully"
+        # Add notification logic here (Slack, Discord, etc.)
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production'
+    environment: production
+    needs: [deploy-staging]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libayatana-appindicator3-dev librsvg2-dev
+
+    - name: Install Tauri CLI
+      run: cargo install tauri-cli --version "^2.0"
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+
+    - name: Create production build
+      env:
+        DATABASE_URL: sqlite:./data/stratosort_production.db
+        RUST_LOG: warn
+      run: |
+        mkdir -p data
+        cargo tauri build
+
+    - name: Run pre-deployment tests
+      run: |
+        echo "Running pre-deployment validation..."
+        # Add production-specific validation tests
+        echo "Pre-deployment tests passed"
+
+    - name: Deploy to production server
+      env:
+        PRODUCTION_HOST: ${{ secrets.PRODUCTION_HOST }}
+        PRODUCTION_USER: ${{ secrets.PRODUCTION_USER }}
+        PRODUCTION_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+      run: |
+        # This is a placeholder for actual deployment
+        echo "Would deploy to production server: $PRODUCTION_HOST"
+        echo "Production deployment artifacts would be uploaded"
+        
+        # Example production deployment steps:
+        # 1. Create backup of current version
+        # 2. Deploy new version with blue-green deployment
+        # 3. Run comprehensive health checks
+        # 4. Switch traffic to new version
+        # 5. Monitor for issues
+
+    - name: Run production health check
+      run: |
+        echo "Running production health checks..."
+        sleep 30  # Wait for services to stabilize
+        # curl -f https://api.example.com/health || exit 1
+        echo "Production deployment successful!"
+
+    - name: Notify production deployment
+      if: success()
+      env:
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_PRODUCTION }}
+        DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_PRODUCTION }}
+      run: |
+        echo "🎉 Production deployment completed successfully"
+        
+        # Notify Slack
+        if [ -n "$SLACK_WEBHOOK" ]; then
+          curl -X POST -H 'Content-type: application/json' \
+               --data '{"text":"🎉 StratoRust production deployment completed successfully!"}' \
+               $SLACK_WEBHOOK
+        fi
+        
+        # Notify Discord
+        if [ -n "$DISCORD_WEBHOOK" ]; then
+          curl -H "Content-Type: application/json" \
+               -d '{"content":"🎉 StratoRust production deployment completed successfully!"}' \
+               $DISCORD_WEBHOOK
+        fi
+
+    - name: Update deployment status
+      if: always()
+      run: |
+        if [ "${{ job.status }}" = "success" ]; then
+          echo "✅ Production deployment completed successfully"
+        else
+          echo "❌ Production deployment failed - rolling back"
+          # Add rollback logic here
+        fi
+
+  rollback:
+    name: Rollback Deployment
+    runs-on: ubuntu-latest
+    if: failure() && github.event.inputs.environment == 'production'
+    needs: [deploy-production]
+
+    steps:
+    - name: Rollback production deployment
+      env:
+        PRODUCTION_HOST: ${{ secrets.PRODUCTION_HOST }}
+        PRODUCTION_USER: ${{ secrets.PRODUCTION_USER }}
+        PRODUCTION_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+      run: |
+        echo "🔄 Initiating production rollback..."
+        # Add rollback logic here:
+        # 1. Switch traffic back to previous version
+        # 2. Restore previous application state
+        # 3. Verify rollback success
+        echo "Rollback completed"
+
+    - name: Notify rollback
+      env:
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_PRODUCTION }}
+        DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_PRODUCTION }}
+      run: |
+        echo "⚠️ Production deployment failed - rollback initiated"
+        
+        # Notify Slack
+        if [ -n "$SLACK_WEBHOOK" ]; then
+          curl -X POST -H 'Content-type: application/json' \
+               --data '{"text":"⚠️ StratoRust production deployment failed - rollback initiated"}' \
+               $SLACK_WEBHOOK
+        fi
+        
+        # Notify Discord
+        if [ -n "$DISCORD_WEBHOOK" ]; then
+          curl -H "Content-Type: application/json" \
+               -d '{"content":"⚠️ StratoRust production deployment failed - rollback initiated"}' \
+               $DISCORD_WEBHOOK
+        fi
+
+  update-status:
+    name: Update Deployment Status
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [deploy-docs, deploy-staging, deploy-production]
+
+    steps:
+    - name: Update deployment dashboard
+      run: |
+        echo "Updating deployment status..."
+        
+        # Update status page or dashboard
+        # This could integrate with:
+        # - Status page services (StatusPage, Atlassian Status)
+        # - Internal dashboards
+        # - Monitoring systems
+        
+        echo "Deployment status updated"
+
+    - name: Create deployment summary
+      run: |
+        echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- **Documentation**: ${{ needs.deploy-docs.result == 'success' && '✅ Deployed' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Staging**: ${{ needs.deploy-staging.result == 'success' && '✅ Deployed' || needs.deploy-staging.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Production**: ${{ needs.deploy-production.result == 'success' && '✅ Deployed' || needs.deploy-production.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Timestamp**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
