@@ -1,0 +1,25 @@
+Note: Typically the names and descriptions for the "Smart Folder" found in this document would be stored in a differnt location and entered from the frontend UI by the end user but this was created for backend testing.
+-----
+NAME IN FILE SYSTM: sample_demo_smart_folder_research
+SMART FOLDER NAME: Research
+DESCRIPTION: Topics related to LLM, VLM and AI Research.
+-----
+NAME IN FILE SYSTM: sample_demo_smart_folder_logos
+SMART FOLDER NAME: Logos or Graphic Art
+DESCRIPTION: Any images that show a brand or logo like image.
+-----
+NAME IN FILE SYSTM:sample_demo_smart_folder_3D_print
+SMART FOLDER NAME: 3D Print
+DESCRIPTION: Any file related to 3D printing.
+-----
+NAME IN FILE SYSTEM: sample_demo_smart_folder_finance
+SMART FOLDER NAME: Finance
+DESCRIPTION: Documents related to financial topics.
+-----
+Relative Paths:
+src-tauri\tests\fixtures\data\sample_demo_smart_folders
+src-tauri\tests\fixtures\data\sample_demo_smart_folders\sample_demo_smart_folder_3D_print
+src-tauri\tests\fixtures\data\sample_demo_smart_folders\sample_demo_smart_folder_finance
+src-tauri\tests\fixtures\data\sample_demo_smart_folders\sample_demo_smart_folder_logos
+src-tauri\tests\fixtures\data\sample_demo_smart_folders\sample_demo_smart_folder_research
+src-tauri\tests\fixtures\data\sample_demo_smart_folders\sample_demo_smart_folder_names_descriptions

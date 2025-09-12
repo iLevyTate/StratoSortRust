@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project>
+    <metadata>
+        <name>File Organization System</name>
+        <version>1.0.0</version>
+        <description>AI-powered file organization with privacy-first design</description>
+        <author>Development Team</author>
+        <created>2024-03-01</created>
+        <modified>2024-03-28</modified>
+    </metadata>
+    
+    <configuration>
+        <settings>
+            <ai_model>llama3.2:3b</ai_model>
+            <max_file_size>104857600</max_file_size>
+            <supported_formats>
+                <format>txt</format>
+                <format>pdf</format>
+                <format>doc</format>
+                <format>docx</format>
+                <format>jpg</format>
+                <format>png</format>
+                <format>mp3</format>
+                <format>mp4</format>
+            </supported_formats>
+        </settings>
+        
+        <database>
+            <type>sqlite</type>
+            <path>./data/stratosort.db</path>
+            <max_connections>10</max_connections>
+        </database>
+    </configuration>
+    
+    <features>
+        <feature id="smart_folders" enabled="true">
+            <name>Smart Folders</name>
+            <description>Automatically categorize files based on AI analysis</description>
+            <priority>high</priority>
+        </feature>
+        
+        <feature id="semantic_search" enabled="true">
+            <name>Semantic Search</name>
+            <description>Find files by meaning, not just keywords</description>
+            <priority>high</priority>
+        </feature>
+        
+        <feature id="file_watcher" enabled="true">
+            <name>File Watcher</name>
+            <description>Monitor directories for changes</description>
+            <priority>medium</priority>
+        </feature>
+        
+        <feature id="batch_operations" enabled="false">
+            <name>Batch Operations</name>
+            <description>Process multiple files simultaneously</description>
+            <priority>low</priority>
+        </feature>
+    </features>
+    
+    <performance_targets>
+        <target metric="accuracy">95%</target>
+        <target metric="processing_speed">5s_per_file</target>
+        <target metric="memory_usage">500MB_max</target>
+        <target metric="response_time">1s_max</target>
+    </performance_targets>
+    
+    <security>
+        <encryption>AES-256</encryption>
+        <local_processing>true</local_processing>
+        <data_retention>30_days</data_retention>
+        <audit_logging>enabled</audit_logging>
+    </security>
+</project>

@@ -1,0 +1,4 @@
+mod test_commands_integration;
+mod test_full_workflow;
+mod test_ai_integration;
+mod test_database_integration;
