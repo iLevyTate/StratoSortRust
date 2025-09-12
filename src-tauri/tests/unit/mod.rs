@@ -1,0 +1,12 @@
+mod test_error;
+mod test_config;
+mod test_config_extended;
+mod test_security;
+mod test_database;
+mod test_file_analyzer;
+mod test_organizer;
+mod test_ai;
+mod test_commands;
+mod test_ollama;
+mod test_embeddings;
+mod test_connection;
