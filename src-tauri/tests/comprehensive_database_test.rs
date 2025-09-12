@@ -248,7 +248,7 @@ impl DatabaseTestSuite {
             }
             
             // Store embedding
-            match self.db.save_embedding(&path, &embedding).await {
+            match self.db.save_embedding(&path, &embedding, Some("test-model")).await {
                 Ok(_) => {
                     successful_saves += 1;
                     details.push_str(&format!("✓ Stored embedding for {}\n", category));
@@ -299,7 +299,7 @@ impl DatabaseTestSuite {
         // Store documents with embeddings
         for (content, path, _category) in &test_documents {
             let embedding = generate_simple_embeddings(content)?;
-            self.db.save_embedding(path, &embedding).await?;
+            self.db.save_embedding(path, &embedding, Some("test-model")).await?;
         }
         
         // Test search queries
@@ -419,7 +419,7 @@ impl DatabaseTestSuite {
             let embedding = generate_simple_embeddings(&text)?;
             let path = format!("/bulk/embedding_{}.txt", i);
             
-            if self.db.save_embedding(&path, &embedding).await.is_ok() {
+            if self.db.save_embedding(&path, &embedding, Some("test-model")).await.is_ok() {
                 embedding_count += 1;
             }
         }
@@ -491,7 +491,7 @@ impl DatabaseTestSuite {
                 
                 // Also test concurrent embedding
                 let embedding = generate_simple_embeddings(&analysis.summary).unwrap();
-                let embed_result = db_clone.save_embedding(&analysis.path, &embedding).await;
+                let embed_result = db_clone.save_embedding(&analysis.path, &embedding, Some("test-model")).await;
                 
                 (save_result.is_ok(), embed_result.is_ok())
             });
@@ -570,7 +570,7 @@ impl DatabaseTestSuite {
         
         // Save data
         self.db.save_analysis(&test_analysis).await?;
-        self.db.save_embedding(test_path, &test_embedding).await?;
+        self.db.save_embedding(test_path, &test_embedding, Some("test-model")).await?;
         
         // Flush database
         match self.db.flush().await {
@@ -692,7 +692,7 @@ impl DatabaseTestSuite {
             
             // Generate and save embedding
             let embedding = generate_simple_embeddings(content)?;
-            self.db.save_embedding(&path, &embedding).await?;
+            self.db.save_embedding(&path, &embedding, Some("test-model")).await?;
             
             // Check if it matches expected smart folder
             if should_match {
@@ -780,7 +780,7 @@ impl DatabaseTestSuite {
             }
             
             // Store vector
-            match self.db.save_embedding(path, &vec).await {
+            match self.db.save_embedding(path, &vec, Some("test-model")).await {
                 Ok(_) => details.push_str(&format!("✓ Stored vector: {}\n", path)),
                 Err(e) => {
                     details.push_str(&format!("✗ Failed to store vector {}: {}\n", path, e));
@@ -835,7 +835,7 @@ impl DatabaseTestSuite {
         
         // Test 1: Empty embedding
         let empty_embedding: Vec<f32> = vec![];
-        match self.db.save_embedding("/error/empty.txt", &empty_embedding).await {
+        match self.db.save_embedding("/error/empty.txt", &empty_embedding, Some("test-model")).await {
             Ok(_) => {
                 details.push_str("⚠ Accepted empty embedding (unexpected)\n");
             }
@@ -847,7 +847,7 @@ impl DatabaseTestSuite {
         
         // Test 2: Invalid dimension embedding
         let wrong_dim = vec![0.1; 100]; // Wrong dimension
-        match self.db.save_embedding("/error/wrong_dim.txt", &wrong_dim).await {
+        match self.db.save_embedding("/error/wrong_dim.txt", &wrong_dim, Some("test-model")).await {
             Ok(_) => {
                 details.push_str("✓ Handled wrong dimension embedding\n");
                 metrics.insert("wrong_dim_handled".to_string(), 1.0);
@@ -898,7 +898,7 @@ impl DatabaseTestSuite {
             
             let handle = tokio::spawn(async move {
                 let embedding = vec![i as f32 / 10.0; EMBEDDING_DIM];
-                db_clone.save_embedding(&path, &embedding).await
+                db_clone.save_embedding(&path, &embedding, Some("test-model")).await
             });
             
             handles.push(handle);
@@ -1097,7 +1097,7 @@ impl DatabaseTestSuite {
             
             // Create full embedding from seed
             embedding_seed.resize(EMBEDDING_DIM, 0.0);
-            self.db.save_embedding(&path, &embedding_seed).await?;
+            self.db.save_embedding(&path, &embedding_seed, Some("test-model")).await?;
         }
         
         // Verify data integrity
@@ -1234,7 +1234,7 @@ impl DatabaseTestSuite {
             self.db.save_analysis(&analysis).await?;
             
             let embedding = generate_simple_embeddings(content)?;
-            self.db.save_embedding(path, &embedding).await?;
+            self.db.save_embedding(path, &embedding, Some("test-model")).await?;
         }
         
         // Test queries with expected results

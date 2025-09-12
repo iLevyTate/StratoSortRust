@@ -73,7 +73,7 @@ mod database_tests {
         let embedding = vec![0.1, 0.2, 0.3, 0.4, 0.5];
         
         // Save embedding
-        let result = db.save_embedding(path, &embedding).await;
+        let result = db.save_embedding(path, &embedding, Some("test-model")).await;
         assert!(result.is_ok());
         
         // Retrieve embedding
@@ -97,7 +97,7 @@ mod database_tests {
         ];
         
         for (path, embedding) in embeddings {
-            db.save_embedding(path, &embedding).await.unwrap();
+            db.save_embedding(path, &embedding, Some("test-model")).await.unwrap();
         }
         
         // Search for similar files to file1
@@ -469,7 +469,7 @@ mod database_tests {
         ];
         
         for (path, embedding) in files {
-            db.save_embedding(path, &embedding).await.unwrap();
+            db.save_embedding(path, &embedding, Some("test-model")).await.unwrap();
         }
         
         // Search for similar documents
@@ -648,7 +648,7 @@ mod database_tests {
         };
         
         db.save_analysis(&analysis).await.unwrap();
-        db.save_embedding("/test/file.txt", &vec![0.1, 0.2, 0.3]).await.unwrap();
+        db.save_embedding("/test/file.txt", &vec![0.1, 0.2, 0.3], Some("test-model")).await.unwrap();
         
         // Clear all data
         let result = db.clear_all_data().await;
@@ -676,7 +676,7 @@ mod database_tests {
         for i in 0..5 {
             let path = format!("/test/file{}.txt", i);
             let embedding = vec![0.1 * i as f32, 0.2, 0.3, 0.4];
-            db.save_embedding(&path, &embedding).await.unwrap();
+            db.save_embedding(&path, &embedding, Some("test-model")).await.unwrap();
         }
         
         let stats = db.get_vector_stats().await.unwrap();

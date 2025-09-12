@@ -258,7 +258,7 @@ mod tests {
         
         // Test saving embeddings
         for (path, embedding) in &embeddings {
-            db.save_embedding(path, embedding).await.unwrap();
+            db.save_embedding(path, embedding, Some("test-model")).await.unwrap();
         }
         
         // Test semantic search
@@ -334,7 +334,7 @@ mod tests {
         
         // Generate and save embeddings
         let embeddings = ai_service.generate_embeddings(file_content).await.unwrap();
-        db.save_embedding("new_contract.txt", &embeddings).await.unwrap();
+        db.save_embedding("new_contract.txt", &embeddings, Some("test-model")).await.unwrap();
         
         // Test organization suggestions with empty smart folders list
         let suggestions = ai_service.suggest_organization(

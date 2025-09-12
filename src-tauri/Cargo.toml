@@ -90,8 +90,9 @@ webp = { version = "0.3", optional = true }         # WebP format support
 # avif-decode = { version = "0.2", optional = true }  # AVIF support - removed due to security advisory in owning_ref
 kamadak-exif = { version = "0.5", optional = true } # EXIF metadata extraction
 rexif = { version = "0.7", optional = true }        # Alternative EXIF parser
-tesseract = { version = "0.15", optional = true }   # OCR - optional for Windows
-leptess = { version = "0.14", optional = true }     # Alternative Tesseract binding
+# OCR dependencies disabled due to system dependencies (vcpkg, tesseract) not available in CI
+# tesseract = { version = "0.15", optional = true }   # OCR - requires system tesseract
+# leptess = { version = "0.14", optional = true }     # OCR - requires system leptonica/tesseract
 
 # File processing - Archives & Compression
 zip = { version = "2.2", optional = true }          # ZIP archive support (updated)
@@ -154,8 +155,9 @@ documents = [
     "pulldown-cmark", "comrak", "yaml-rust", "toml", "serde_yaml", "json5"
 ]
 documents-core = ["pdf-extract", "docx-rs", "calamine", "csv"]  # Essential document formats
-ocr = ["tesseract", "leptess"]  # OCR support (requires system dependencies)
-ocr-advanced = ["ocr", "tesseract", "leptess"]  # Enhanced OCR with multiple engines
+# OCR features disabled due to system dependency requirements
+# ocr = ["tesseract", "leptess"]  # OCR support (requires system dependencies)
+# ocr-advanced = ["ocr", "tesseract", "leptess"]  # Enhanced OCR with multiple engines
 
 # Image processing features  
 images = ["imageproc", "fast_image_resize", "webp", "kamadak-exif", "rexif"]
@@ -178,7 +180,8 @@ large-files = ["memmap2", "async-stream", "futures-util"]
 # Preset feature combinations
 essential = ["documents-core", "images-core", "archives-core", "multimedia-core"]
 standard = ["documents", "images", "archives", "multimedia"]
-full = ["documents", "ocr-advanced", "images", "archives-full", "multimedia-full", "large-files"]
+# full = ["documents", "ocr-advanced", "images", "archives-full", "multimedia-full", "large-files"]  # OCR disabled
+full = ["documents", "images", "archives-full", "multimedia-full", "large-files"]
 
 # System monitoring
 sysinfo = []  # System information and monitoring

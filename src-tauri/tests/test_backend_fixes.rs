@@ -168,7 +168,7 @@ mod database_tests {
         let embeddings = vec![0.1, 0.2, 0.3, 0.4];
         
         // Store embeddings (both tables are handled internally)
-        let result = database.save_embedding(file_path, &embeddings).await;
+        let result = database.save_embedding(file_path, &embeddings, Some("test-model")).await;
         assert!(result.is_ok(), "Should store embeddings");
         
         // Search using embeddings
@@ -278,7 +278,7 @@ mod integration_tests {
         if ai_service.is_available().await {
             let embeddings = ai_service.generate_embeddings("Test content").await;
             if let Ok(emb) = embeddings {
-                let _ = db.save_embedding(&analysis.path, &emb).await;
+                let _ = db.save_embedding(&analysis.path, &emb, Some("test-model")).await;
             }
         }
         
