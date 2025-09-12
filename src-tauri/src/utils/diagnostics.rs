@@ -314,7 +314,7 @@ impl HealthChecker {
                 "http://127.0.0.1:11434",
             ];
             
-            for host in common_hosts {
+            if let Some(host) = common_hosts.into_iter().next() {
                 // Ollama::new doesn't return Result, it creates a client directly
                 let _client = ollama_rs::Ollama::new(host.to_string(), 11434);
                 // In a real implementation, we might try client.list_local_models()

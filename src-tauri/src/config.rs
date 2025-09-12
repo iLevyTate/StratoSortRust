@@ -131,8 +131,10 @@ impl Config {
             
             config
         } else {
-            let mut config = Self::default();
-            config.default_smart_folder_location = Self::default_smart_folder_path(handle)?;
+            let config = Self {
+                default_smart_folder_location: Self::default_smart_folder_path(handle)?,
+                ..Self::default()
+            };
             
             // Save default config
             config.save(handle)?;
@@ -424,6 +426,7 @@ impl Config {
     }
     
     /// Validate privacy settings specifically
+    #[allow(clippy::ptr_arg)]
     fn validate_privacy_settings(&self, _errors: &mut Vec<String>) {
         // Privacy settings are boolean flags, so no specific validation needed
         // This function exists for completeness and future expansion
@@ -460,11 +463,13 @@ impl Config {
     
     /// Create configuration for first run with smart folder location
     pub fn create_first_run_config(handle: &AppHandle, smart_folder_location: String) -> Result<Self> {
-        let mut config = Self::default();
-        config.default_smart_folder_location = if smart_folder_location.is_empty() {
-            Self::default_smart_folder_path(handle)?
-        } else {
-            smart_folder_location
+        let mut config = Self {
+            default_smart_folder_location: if smart_folder_location.is_empty() {
+                Self::default_smart_folder_path(handle)?
+            } else {
+                smart_folder_location
+            },
+            ..Self::default()
         };
         
         // Apply environment variable overrides

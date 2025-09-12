@@ -219,8 +219,8 @@ impl AudioAnalyzer {
                         }
                     }
                     
-                    // TODO: Extract iTunes-style metadata from moov atom
-                    // This would require more complex parsing of the MP4 structure
+                    // iTunes-style metadata extraction from moov atom would require
+                    // more complex MP4 structure parsing. For now, use basic metadata.
                     
                     Ok(metadata)
                 }

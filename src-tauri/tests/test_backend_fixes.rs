@@ -10,6 +10,7 @@ use uuid::Uuid;
 /// Test fixture setup
 struct TestFixture {
     temp_dir: PathBuf,
+    #[allow(dead_code)]
     config: Config,
 }
 
@@ -18,10 +19,11 @@ impl TestFixture {
         let temp_dir = env::temp_dir().join(format!("stratosort_test_{}", Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
         
-        let mut config = Config::default();
-        // Override with test-specific settings
-        config.ai_provider = "ollama".to_string();
-        config.ollama_host = "http://localhost:11434".to_string();
+        let config = Config {
+            ai_provider: "ollama".to_string(),
+            ollama_host: "http://localhost:11434".to_string(),
+            ..Config::default()
+        };
         
         Self { temp_dir, config }
     }
@@ -78,7 +80,7 @@ mod config_tests {
         // Note: dotenv loading would happen in production
         
         // Now create config which will pick up env vars
-        let config = Config::default();
+        let _config = Config::default();
         
         // Since Config::default() doesn't load from env vars,
         // we're testing that the env vars can be set and would be available
@@ -103,11 +105,13 @@ mod ai_service_tests {
     
     #[tokio::test]
     async fn test_ollama_connection_retry() {
-        let mut config = Config::default();
-        config.ai_provider = "ollama".to_string();
-        config.ollama_host = "http://localhost:11434".to_string();
-        config.ollama_model = "llama3.2:latest".to_string();
-        config.ollama_embedding_model = "nomic-embed-text".to_string();
+        let config = Config {
+            ai_provider: "ollama".to_string(),
+            ollama_host: "http://localhost:11434".to_string(),
+            ollama_model: "llama3.2:latest".to_string(),
+            ollama_embedding_model: "nomic-embed-text".to_string(),
+            ..Config::default()
+        };
         
         // Create AI service
         let ai_service = AiService::new(&config).await;
@@ -122,9 +126,11 @@ mod ai_service_tests {
     
     #[tokio::test]
     async fn test_fallback_mode() {
-        let mut config = Config::default();
-        config.ai_provider = "ollama".to_string();
-        config.ollama_host = "http://invalid-host:99999".to_string(); // Invalid host
+        let config = Config {
+            ai_provider: "ollama".to_string(),
+            ollama_host: "http://invalid-host:99999".to_string(), // Invalid host
+            ..Config::default()
+        };
         
         let ai_service = AiService::new(&config).await;
         assert!(ai_service.is_ok(), "Should succeed even with invalid host");
@@ -243,8 +249,8 @@ mod command_tests {
         
         // For now, we just verify the function exists
         // Verify the connect_ollama command exists
-        // This is a compile-time check
-        assert!(true, "Command functions exist");
+        // This is a compile-time check - if the code compiles, the functions exist
+        // No assertion needed since compilation is the test
     }
 }
 

@@ -3,7 +3,7 @@ use crate::services::monitoring::{HealthStatus, PerformanceMetrics};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use tauri::{State, Emitter};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Get system health status
 #[tauri::command]
@@ -469,7 +469,7 @@ pub struct AiStatusIndicator {
 }
 
 /// Calculate directory statistics
-async fn calculate_directory_stats(path: &PathBuf) -> Result<(usize, u64)> {
+async fn calculate_directory_stats(path: &Path) -> Result<(usize, u64)> {
     if !path.exists() {
         return Ok((0, 0));
     }
@@ -477,24 +477,22 @@ async fn calculate_directory_stats(path: &PathBuf) -> Result<(usize, u64)> {
     let mut file_count = 0usize;
     let mut total_size = 0u64;
     
-    fn scan_directory_sync(path: &PathBuf, file_count: &mut usize, total_size: &mut u64) -> Result<()> {
+    fn scan_directory_sync(path: &Path, file_count: &mut usize, total_size: &mut u64) -> Result<()> {
         if let Ok(entries) = std::fs::read_dir(path) {
-            for entry in entries {
-                if let Ok(entry) = entry {
-                    let entry_path = entry.path();
-                    if let Ok(metadata) = entry.metadata() {
-                        if metadata.is_file() {
-                            *file_count += 1;
-                            *total_size += metadata.len();
-                            
-                            // Limit to prevent excessive scanning
-                            if *file_count > 50000 {
-                                return Ok(());
-                            }
-                        } else if metadata.is_dir() {
-                            // Recursively scan subdirectories (with depth limit)
-                            scan_directory_sync(&entry_path, file_count, total_size)?;
+            for entry in entries.flatten() {
+                let entry_path = entry.path();
+                if let Ok(metadata) = entry.metadata() {
+                    if metadata.is_file() {
+                        *file_count += 1;
+                        *total_size += metadata.len();
+                        
+                        // Limit to prevent excessive scanning
+                        if *file_count > 50000 {
+                            return Ok(());
                         }
+                    } else if metadata.is_dir() {
+                        // Recursively scan subdirectories (with depth limit)
+                        scan_directory_sync(&entry_path, file_count, total_size)?;
                     }
                 }
             }
@@ -503,7 +501,7 @@ async fn calculate_directory_stats(path: &PathBuf) -> Result<(usize, u64)> {
     }
     
     // Use blocking task for filesystem operations
-    let path_clone = path.clone();
+    let path_clone = path.to_path_buf();
     tokio::task::spawn_blocking(move || {
         scan_directory_sync(&path_clone, &mut file_count, &mut total_size)?;
         Ok::<(usize, u64), crate::error::AppError>((file_count, total_size))

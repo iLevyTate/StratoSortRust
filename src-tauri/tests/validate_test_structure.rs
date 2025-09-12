@@ -123,38 +123,36 @@ mod validate_test_structure {
         let mut file_types = HashMap::new();
         let mut file_sizes = Vec::new();
 
-        for entry in files {
-            if let Ok(entry) = entry {
-                let path = entry.path();
-                if path.is_file() {
-                    file_count += 1;
-                    
-                    // Check file extension
-                    if let Some(ext) = path.extension() {
-                        *file_types.entry(ext.to_string_lossy().to_string()).or_insert(0) += 1;
-                    }
+        for entry in files.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                file_count += 1;
+                
+                // Check file extension
+                if let Some(ext) = path.extension() {
+                    *file_types.entry(ext.to_string_lossy().to_string()).or_insert(0) += 1;
+                }
 
-                    // Check file size
-                    if let Ok(metadata) = entry.metadata() {
-                        file_sizes.push(metadata.len());
-                    }
+                // Check file size
+                if let Ok(metadata) = entry.metadata() {
+                    file_sizes.push(metadata.len());
+                }
 
-                    // Check for specific test files
-                    let file_name = path.file_name().unwrap().to_string_lossy();
-                    
-                    // Validate 3D print files
-                    if file_name.ends_with(".stl") || file_name.ends_with(".3mf") || 
-                       file_name.ends_with(".obj") || file_name.ends_with(".gcode") ||
-                       file_name.ends_with(".scad") {
-                        validation.add_info(format!("Found 3D print file: {}", file_name));
-                    }
+                // Check for specific test files
+                let file_name = path.file_name().unwrap().to_string_lossy();
+                
+                // Validate 3D print files
+                if file_name.ends_with(".stl") || file_name.ends_with(".3mf") || 
+                   file_name.ends_with(".obj") || file_name.ends_with(".gcode") ||
+                   file_name.ends_with(".scad") {
+                    validation.add_info(format!("Found 3D print file: {}", file_name));
+                }
 
-                    // Validate finance files
-                    if file_name.to_lowercase().contains("finance") || 
-                       file_name.to_lowercase().contains("invoice") ||
-                       file_name.to_lowercase().contains("financial") {
-                        validation.add_info(format!("Found finance file: {}", file_name));
-                    }
+                // Validate finance files
+                if file_name.to_lowercase().contains("finance") || 
+                   file_name.to_lowercase().contains("invoice") ||
+                   file_name.to_lowercase().contains("financial") {
+                    validation.add_info(format!("Found finance file: {}", file_name));
                 }
             }
         }
@@ -229,11 +227,9 @@ mod validate_test_structure {
         };
 
         let mut folder_names = Vec::new();
-        for entry in entries {
-            if let Ok(entry) = entry {
-                if entry.path().is_dir() {
-                    folder_names.push(entry.file_name().to_string_lossy().to_string());
-                }
+        for entry in entries.flatten() {
+            if entry.path().is_dir() {
+                folder_names.push(entry.file_name().to_string_lossy().to_string());
             }
         }
 
@@ -266,25 +262,23 @@ mod validate_test_structure {
             let mut found_files = Vec::new();
             
             if let Ok(entries) = fs::read_dir(sample_files_path) {
-                for entry in entries {
-                    if let Ok(entry) = entry {
-                        let path = entry.path();
-                        if path.is_file() {
-                            let file_name = path.file_name().unwrap().to_string_lossy().to_lowercase();
-                            
-                            for pattern in &patterns {
-                                if pattern.starts_with('.') {
-                                    // Extension check
-                                    if file_name.ends_with(pattern) {
-                                        found_files.push(file_name.clone());
-                                        break;
-                                    }
-                                } else {
-                                    // Name contains check
-                                    if file_name.contains(pattern) {
-                                        found_files.push(file_name.clone());
-                                        break;
-                                    }
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        let file_name = path.file_name().unwrap().to_string_lossy().to_lowercase();
+                        
+                        for pattern in &patterns {
+                            if pattern.starts_with('.') {
+                                // Extension check
+                                if file_name.ends_with(pattern) {
+                                    found_files.push(file_name.clone());
+                                    break;
+                                }
+                            } else {
+                                // Name contains check
+                                if file_name.contains(pattern) {
+                                    found_files.push(file_name.clone());
+                                    break;
                                 }
                             }
                         }

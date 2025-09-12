@@ -610,12 +610,12 @@ mod tests {
     #[test]
     fn test_module_imports() {
         // Basic smoke test to ensure all modules compile
-        assert!(true);
+        // If this compiles, all modules are imported correctly
     }
 
     #[tokio::test]
     async fn test_async_setup() {
         // Test async functionality
-        assert!(true);
+        // If this runs without panicking, async setup works
     }
 }

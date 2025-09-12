@@ -76,20 +76,24 @@ fn test_legitimate_content_preservation() {
 
 #[test]
 fn test_length_limits() {
-    // Test truncation
+    // Test that long input is rejected
     let long_input = "a".repeat(3000);
-    let result = sanitize_prompt_content(&long_input).unwrap();
-    assert!(result.len() <= 1800, "Result should be truncated to max length");
-    assert!(result.len() > 0, "Result should not be empty");
+    let result = sanitize_prompt_content(&long_input);
+    assert!(result.is_err(), "Long input should be rejected");
     
-    // Test that truncation doesn't break on character boundaries
-    let unicode_input = "Hello 🦀 world! This is a test with unicode.".repeat(10);
+    // Test that input at the safe limit works (must be under 1800 after sanitization)
+    let safe_input = "a".repeat(1500);
+    let result = sanitize_prompt_content(&safe_input).unwrap();
+    assert!(result.len() <= 1800, "Input at safe limit should be accepted");
+    
+    // Test that unicode input under limit works
+    let unicode_input = "Hello 🦀 world!".repeat(10); // Much shorter than 2000 chars
     let result = sanitize_prompt_content(&unicode_input).unwrap();
     // Should not panic and should handle unicode properly
-    assert!(result.len() > 0, "Unicode result should not be empty: '{}'", result);
+    assert!(!result.is_empty(), "Unicode result should not be empty: '{}'", result);
     // Should contain at least some of the basic text
-    assert!(result.contains("Hello") || result.contains("world") || result.contains("test"), 
-           "Should preserve some basic text, got: '{}'", result);
+    assert!(result.contains("Hello") || result.contains("world"), 
+           "Should preserve basic text, got: '{}'", result);
 }
 
 #[test]

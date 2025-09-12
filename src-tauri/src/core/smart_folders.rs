@@ -196,10 +196,7 @@ impl SmartFolderManager {
                 RuleType::FileName => file_name.to_string(),
                 RuleType::FileContent => {
                     // Read first 10KB of file for content matching
-                    match self.read_file_preview(file_path, 10240).await {
-                        Ok(content) => content,
-                        Err(_) => String::new(),
-                    }
+                    self.read_file_preview(file_path, 10240).await.unwrap_or_default()
                 }
                 RuleType::FileSize => {
                     metadata.as_ref()
@@ -241,7 +238,8 @@ impl SmartFolderManager {
         
         match combine_with {
             "OR" => rule_results.iter().any(|&r| r),
-            "AND" | _ => rule_results.iter().all(|&r| r),
+            "AND" => rule_results.iter().all(|&r| r),
+            _ => rule_results.iter().all(|&r| r), // Default to AND logic
         }
     }
     
