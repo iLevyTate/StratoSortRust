@@ -52,7 +52,7 @@ pub async fn emit_notification(
 ) -> Result<String> {
     let id = uuid::Uuid::new_v4().to_string();
     let timestamp = chrono::Utc::now().timestamp();
-    
+
     let notification_type = match notification_type.as_str() {
         "success" => NotificationType::Success,
         "info" => NotificationType::Info,
@@ -61,7 +61,7 @@ pub async fn emit_notification(
         "progress" => NotificationType::Progress,
         _ => NotificationType::Info,
     };
-    
+
     let notification = Notification {
         id: id.clone(),
         notification_type: notification_type.clone(),
@@ -72,24 +72,27 @@ pub async fn emit_notification(
         actions: actions.unwrap_or_default(),
         metadata,
     };
-    
+
     // Store notification in database for persistence
     if let Err(e) = state.database.save_notification(&notification).await {
         tracing::warn!("Failed to save notification to database: {}", e);
     }
-    
+
     // Emit to frontend
     let _ = app.emit("notification", &notification);
-    
+
     // Also emit to legacy notification event for backwards compatibility
-    let _ = app.emit("app-notification", serde_json::json!({
-        "id": id,
-        "type": notification_type,
-        "title": title,
-        "message": message,
-        "timestamp": timestamp,
-    }));
-    
+    let _ = app.emit(
+        "app-notification",
+        serde_json::json!({
+            "id": id,
+            "type": notification_type,
+            "title": title,
+            "message": message,
+            "timestamp": timestamp,
+        }),
+    );
+
     tracing::info!("Emitted notification: {} - {}", title, message);
     Ok(id)
 }
@@ -100,10 +103,10 @@ pub async fn get_notifications(
     unread_only: Option<bool>,
     state: State<'_, std::sync::Arc<AppState>>,
 ) -> Result<Vec<Notification>> {
-    state.database.get_notifications(
-        limit.unwrap_or(50),
-        unread_only.unwrap_or(false)
-    ).await
+    state
+        .database
+        .get_notifications(limit.unwrap_or(50), unread_only.unwrap_or(false))
+        .await
 }
 
 #[tauri::command]
@@ -111,7 +114,10 @@ pub async fn mark_notification_read(
     notification_id: String,
     state: State<'_, std::sync::Arc<AppState>>,
 ) -> Result<bool> {
-    state.database.mark_notification_read(&notification_id).await?;
+    state
+        .database
+        .mark_notification_read(&notification_id)
+        .await?;
     Ok(true)
 }
 
@@ -142,7 +148,7 @@ pub async fn emit_progress_notification(
         "total": total,
         "timestamp": chrono::Utc::now().timestamp(),
     });
-    
+
     let _ = app.emit("progress-notification", notification);
     Ok(())
 }
@@ -162,33 +168,47 @@ pub async fn emit_file_operation_status(
         "details": details,
         "timestamp": chrono::Utc::now().timestamp(),
     });
-    
+
     let _ = app.emit("file-operation-status", status_event);
-    
+
     // Also emit a user-friendly notification for important status changes
     if status == "completed" || status == "failed" {
-        let notification_type = if status == "completed" { "success" } else { "error" };
-        let title = format!("{} {}", 
-            operation_type.chars().next()
+        let notification_type = if status == "completed" {
+            "success"
+        } else {
+            "error"
+        };
+        let title = format!(
+            "{} {}",
+            operation_type
+                .chars()
+                .next()
                 .map(|c| c.to_uppercase().collect::<String>() + &operation_type[1..])
                 .unwrap_or_else(|| operation_type.to_string()),
-            if status == "completed" { "Complete" } else { "Failed" }
+            if status == "completed" {
+                "Complete"
+            } else {
+                "Failed"
+            }
         );
-        
+
         let message = if let Some(details) = details {
             format!("{}: {}", file_path, details)
         } else {
             file_path
         };
-        
-        let _ = app.emit("notification", serde_json::json!({
-            "type": notification_type,
-            "title": title,
-            "message": message,
-            "timestamp": chrono::Utc::now().timestamp(),
-        }));
+
+        let _ = app.emit(
+            "notification",
+            serde_json::json!({
+                "type": notification_type,
+                "title": title,
+                "message": message,
+                "timestamp": chrono::Utc::now().timestamp(),
+            }),
+        );
     }
-    
+
     Ok(())
 }
 
@@ -205,19 +225,22 @@ pub async fn emit_system_status(
         "details": details,
         "timestamp": chrono::Utc::now().timestamp(),
     });
-    
+
     let _ = app.emit("system-status", status_event);
-    
+
     // Emit notification for critical system status changes
     if status == "error" || status == "critical" {
-        let _ = app.emit("notification", serde_json::json!({
-            "type": "error",
-            "title": format!("{} Error", component),
-            "message": details.unwrap_or_else(|| format!("{} encountered an error", component)),
-            "timestamp": chrono::Utc::now().timestamp(),
-        }));
+        let _ = app.emit(
+            "notification",
+            serde_json::json!({
+                "type": "error",
+                "title": format!("{} Error", component),
+                "message": details.unwrap_or_else(|| format!("{} encountered an error", component)),
+                "timestamp": chrono::Utc::now().timestamp(),
+            }),
+        );
     }
-    
+
     Ok(())
 }
 
@@ -233,7 +256,7 @@ pub async fn emit_error_notification(
     } else {
         error.user_message()
     };
-    
+
     let notification = serde_json::json!({
         "type": "error",
         "title": title,
@@ -242,24 +265,20 @@ pub async fn emit_error_notification(
         "recoverable": error.is_recoverable(),
         "timestamp": chrono::Utc::now().timestamp(),
     });
-    
+
     let _ = app.emit("notification", notification);
     Ok(())
 }
 
 /// Utility function to emit success notifications
-pub async fn emit_success_notification(
-    app: &AppHandle,
-    title: &str,
-    message: &str,
-) -> Result<()> {
+pub async fn emit_success_notification(app: &AppHandle, title: &str, message: &str) -> Result<()> {
     let notification = serde_json::json!({
         "type": "success",
         "title": title,
         "message": message,
         "timestamp": chrono::Utc::now().timestamp(),
     });
-    
+
     let _ = app.emit("notification", notification);
     Ok(())
 }
@@ -278,7 +297,7 @@ pub async fn emit_warning_notification(
         "actions": actions,
         "timestamp": chrono::Utc::now().timestamp(),
     });
-    
+
     let _ = app.emit("notification", notification);
     Ok(())
 }

@@ -1,26 +1,49 @@
-use crate::ai::{AiService, AiProvider};
+use crate::ai::{AiProvider, AiService};
 use crate::config::Config;
 
 #[tokio::test]
 async fn test_fallback_file_analysis() {
     let config = create_test_config_with_provider("fallback");
     let ai_service = AiService::new(&config).await.unwrap();
-    
+
     // Test various file types
     let test_cases = vec![
-        ("This is a contract agreement between parties.", "application/pdf", "contract", "legal"),
-        ("Invoice #12345 for services rendered.", "text/plain", "invoice", "financial"),
-        ("This is a report from quarterly review.", "text/plain", "report", "quarterly"), 
-        ("PowerPoint presentation content", "application/vnd.ms-powerpoint", "slides", "business"),
+        (
+            "This is a contract agreement between parties.",
+            "application/pdf",
+            "contract",
+            "legal",
+        ),
+        (
+            "Invoice #12345 for services rendered.",
+            "text/plain",
+            "invoice",
+            "financial",
+        ),
+        (
+            "This is a report from quarterly review.",
+            "text/plain",
+            "report",
+            "quarterly",
+        ),
+        (
+            "PowerPoint presentation content",
+            "application/vnd.ms-powerpoint",
+            "slides",
+            "business",
+        ),
     ];
-    
+
     for (content, file_type, expected_tag, expected_tag2) in test_cases {
         let result = ai_service.analyze_file(content, file_type).await.unwrap();
-        
+
         assert_eq!(result.confidence, 0.5); // Fallback confidence
-        assert!(result.tags.iter().any(|tag| tag.contains(expected_tag)) || 
-                result.tags.iter().any(|tag| tag.contains(expected_tag2)),
-                "Missing expected tags for content: {}", content);
+        assert!(
+            result.tags.iter().any(|tag| tag.contains(expected_tag))
+                || result.tags.iter().any(|tag| tag.contains(expected_tag2)),
+            "Missing expected tags for content: {}",
+            content
+        );
         assert!(!result.summary.is_empty());
     }
 }
@@ -29,23 +52,26 @@ async fn test_fallback_file_analysis() {
 async fn test_fallback_image_analysis() {
     let config = create_test_config_with_provider("fallback");
     let ai_service = AiService::new(&config).await.unwrap();
-    
+
     // Create a temporary test file to simulate image analysis
     let temp_dir = std::env::temp_dir();
     let test_image_path = temp_dir.join("test_image.png");
-    
+
     // Create a minimal PNG file for testing
     let png_data = create_minimal_png();
     std::fs::write(&test_image_path, png_data).unwrap();
-    
-    let result = ai_service.analyze_image(test_image_path.to_str().unwrap()).await.unwrap();
-    
+
+    let result = ai_service
+        .analyze_image(test_image_path.to_str().unwrap())
+        .await
+        .unwrap();
+
     assert_eq!(result.category, "Images");
     assert_eq!(result.confidence, 0.3); // Fallback image confidence
     assert!(result.tags.contains(&"image".to_string()));
     assert!(result.tags.contains(&"png".to_string()));
     assert!(!result.summary.is_empty());
-    
+
     // Cleanup
     std::fs::remove_file(&test_image_path).ok();
 }
@@ -54,7 +80,7 @@ async fn test_fallback_image_analysis() {
 async fn test_fallback_organization_suggestions() {
     let config = create_test_config_with_provider("fallback");
     let ai_service = AiService::new(&config).await.unwrap();
-    
+
     let test_files = vec![
         "document.pdf".to_string(),
         "photo.jpg".to_string(),
@@ -62,7 +88,7 @@ async fn test_fallback_organization_suggestions() {
         "presentation.pptx".to_string(),
         "model.stl".to_string(),
     ];
-    
+
     let smart_folders = vec![
         create_test_smart_folder("Documents", "Document files", "pdf"),
         create_test_smart_folder("Images", "Image files", "jpg"),
@@ -70,26 +96,44 @@ async fn test_fallback_organization_suggestions() {
         create_test_smart_folder("Presentations", "Presentation files", "pptx"),
         create_test_smart_folder("3D Print Files", "3D model files", "stl"),
     ];
-    
-    let suggestions = ai_service.suggest_organization(test_files, smart_folders).await.unwrap();
-    
+
+    let suggestions = ai_service
+        .suggest_organization(test_files, smart_folders)
+        .await
+        .unwrap();
+
     assert_eq!(suggestions.len(), 5);
-    
+
     // Check that each file was categorized correctly
-    let doc_suggestion = suggestions.iter().find(|s| s.source_path == "document.pdf").unwrap();
+    let doc_suggestion = suggestions
+        .iter()
+        .find(|s| s.source_path == "document.pdf")
+        .unwrap();
     assert_eq!(doc_suggestion.target_folder, "Documents");
     assert!(doc_suggestion.confidence > 0.7); // Smart folder matching has higher confidence
-    
-    let image_suggestion = suggestions.iter().find(|s| s.source_path == "photo.jpg").unwrap();
+
+    let image_suggestion = suggestions
+        .iter()
+        .find(|s| s.source_path == "photo.jpg")
+        .unwrap();
     assert_eq!(image_suggestion.target_folder, "Images");
-    
-    let audio_suggestion = suggestions.iter().find(|s| s.source_path == "music.mp3").unwrap();
+
+    let audio_suggestion = suggestions
+        .iter()
+        .find(|s| s.source_path == "music.mp3")
+        .unwrap();
     assert_eq!(audio_suggestion.target_folder, "Audio");
-    
-    let ppt_suggestion = suggestions.iter().find(|s| s.source_path == "presentation.pptx").unwrap();
+
+    let ppt_suggestion = suggestions
+        .iter()
+        .find(|s| s.source_path == "presentation.pptx")
+        .unwrap();
     assert_eq!(ppt_suggestion.target_folder, "Presentations");
-    
-    let stl_suggestion = suggestions.iter().find(|s| s.source_path == "model.stl").unwrap();
+
+    let stl_suggestion = suggestions
+        .iter()
+        .find(|s| s.source_path == "model.stl")
+        .unwrap();
     assert_eq!(stl_suggestion.target_folder, "3D Print Files");
 }
 
@@ -97,7 +141,7 @@ async fn test_fallback_organization_suggestions() {
 async fn test_fallback_3d_file_detection() {
     let config = create_test_config_with_provider("fallback");
     let ai_service = AiService::new(&config).await.unwrap();
-    
+
     let test_cases = vec![
         ("miniature_knight.stl", "miniature", "tabletop"),
         ("landscape_terrain.obj", "terrain", "environment"),
@@ -105,18 +149,24 @@ async fn test_fallback_3d_file_detection() {
         ("prototype_part.3mf", "prototype", "replacement-part"),
         ("decorative_art.blend", "artistic", "source-file"),
     ];
-    
+
     for (filename, expected_tag1, expected_tag2) in test_cases {
-        let result = ai_service.analyze_file_with_path("3D model content", "model/stl", filename).await.unwrap();
-        
+        let result = ai_service
+            .analyze_file_with_path("3D model content", "model/stl", filename)
+            .await
+            .unwrap();
+
         assert_eq!(result.category, "3D Print Files");
         assert!(result.tags.contains(&"3d-model".to_string()));
-        
+
         // Check for specific tags based on filename
-        let has_expected_tag = result.tags.iter().any(|tag| tag.contains(expected_tag1)) ||
-                              result.tags.iter().any(|tag| tag.contains(expected_tag2));
-        assert!(has_expected_tag, 
-                "Missing expected tags for {}: got {:?}", filename, result.tags);
+        let has_expected_tag = result.tags.iter().any(|tag| tag.contains(expected_tag1))
+            || result.tags.iter().any(|tag| tag.contains(expected_tag2));
+        assert!(
+            has_expected_tag,
+            "Missing expected tags for {}: got {:?}",
+            filename, result.tags
+        );
     }
 }
 
@@ -124,7 +174,7 @@ async fn test_fallback_3d_file_detection() {
 async fn test_fallback_presentation_detection() {
     let config = create_test_config_with_provider("fallback");
     let ai_service = AiService::new(&config).await.unwrap();
-    
+
     let test_cases = vec![
         ("Meeting agenda for quarterly review", "meeting"),
         ("Training course materials", "training"),
@@ -132,14 +182,21 @@ async fn test_fallback_presentation_detection() {
         ("Annual report slides", "corporate"),
         ("Template for presentations", "template"),
     ];
-    
+
     for (content, expected_tag) in test_cases {
-        let result = ai_service.analyze_file(content, "application/vnd.ms-powerpoint").await.unwrap();
-        
+        let result = ai_service
+            .analyze_file(content, "application/vnd.ms-powerpoint")
+            .await
+            .unwrap();
+
         assert_eq!(result.category, "Presentations");
         assert!(result.tags.contains(&"slides".to_string()));
-        assert!(result.tags.contains(&expected_tag.to_string()),
-                "Missing expected tag '{}' for content: {}", expected_tag, content);
+        assert!(
+            result.tags.contains(&expected_tag.to_string()),
+            "Missing expected tag '{}' for content: {}",
+            expected_tag,
+            content
+        );
     }
 }
 
@@ -147,33 +204,41 @@ async fn test_fallback_presentation_detection() {
 async fn test_provider_status_fallback() {
     let config = create_test_config_with_provider("fallback");
     let ai_service = AiService::new(&config).await.unwrap();
-    
+
     let status = ai_service.get_status().await;
-    
+
     assert!(matches!(status.provider, AiProvider::Fallback));
     assert!(status.is_available);
     assert!(!status.ollama_connected);
-    assert!(status.capabilities.contains(&"basic_file_analysis".to_string()));
-    assert!(status.capabilities.contains(&"simple_embeddings".to_string()));
-    assert!(status.capabilities.contains(&"rule_based_organization".to_string()));
+    assert!(status
+        .capabilities
+        .contains(&"basic_file_analysis".to_string()));
+    assert!(status
+        .capabilities
+        .contains(&"simple_embeddings".to_string()));
+    assert!(status
+        .capabilities
+        .contains(&"rule_based_organization".to_string()));
 }
 
 #[tokio::test]
 async fn test_use_fallback_method() {
     let mut config = create_test_config_with_provider("ollama");
     config.ollama_host = "invalid_host".to_string(); // Force fallback
-    
+
     let ai_service = AiService::new(&config).await.unwrap();
-    
+
     // Should automatically fall back due to invalid host
     let status = ai_service.get_status().await;
     assert!(matches!(status.provider, AiProvider::Fallback));
-    
+
     // Test explicit fallback switch
     let fallback_status = ai_service.use_fallback();
     assert!(matches!(fallback_status.provider, AiProvider::Fallback));
     assert!(fallback_status.is_available);
-    assert!(fallback_status.models_available.contains(&"fallback".to_string()));
+    assert!(fallback_status
+        .models_available
+        .contains(&"fallback".to_string()));
 }
 
 // Helper functions
@@ -185,9 +250,13 @@ fn create_test_config_with_provider(provider: &str) -> Config {
     }
 }
 
-fn create_test_smart_folder(name: &str, description: &str, extension: &str) -> crate::commands::organization::SmartFolder {
+fn create_test_smart_folder(
+    name: &str,
+    description: &str,
+    extension: &str,
+) -> crate::commands::organization::SmartFolder {
     use chrono::Utc;
-    
+
     crate::commands::organization::SmartFolder {
         id: uuid::Uuid::new_v4().to_string(),
         name: name.to_string(),
@@ -196,25 +265,23 @@ fn create_test_smart_folder(name: &str, description: &str, extension: &str) -> c
         target_path: format!("/test/{}", name),
         created_at: Utc::now(),
         updated_at: Utc::now(),
-        rules: vec![
-            crate::commands::organization::OrganizationRule {
-                id: uuid::Uuid::new_v4().to_string(),
-                rule_type: crate::commands::organization::RuleType::FileExtension,
-                condition: crate::commands::organization::RuleCondition {
-                    field: "extension".to_string(),
-                    operator: crate::commands::organization::ConditionOperator::Equals,
-                    value: extension.to_string(),
-                    case_sensitive: Some(false),
-                },
-                action: crate::commands::organization::RuleAction {
-                    action_type: crate::commands::organization::ActionType::Move,
-                    target_folder: name.to_string(),
-                    rename_pattern: None,
-                },
-                priority: 1,
-                enabled: true,
-            }
-        ],
+        rules: vec![crate::commands::organization::OrganizationRule {
+            id: uuid::Uuid::new_v4().to_string(),
+            rule_type: crate::commands::organization::RuleType::FileExtension,
+            condition: crate::commands::organization::RuleCondition {
+                field: "extension".to_string(),
+                operator: crate::commands::organization::ConditionOperator::Equals,
+                value: extension.to_string(),
+                case_sensitive: Some(false),
+            },
+            action: crate::commands::organization::RuleAction {
+                action_type: crate::commands::organization::ActionType::Move,
+                target_folder: name.to_string(),
+                rename_pattern: None,
+            },
+            priority: 1,
+            enabled: true,
+        }],
     }
 }
 

@@ -1,6 +1,6 @@
 use crate::error::{AppError, Result};
-use std::path::{Path, PathBuf};
 use std::fs::File;
+use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
 #[cfg(unix)]
@@ -15,16 +15,20 @@ pub fn validate_and_sanitize_path(path: &str, app: &AppHandle) -> Result<Validat
             message: "Path cannot be empty".to_string(),
         });
     }
-    
+
     // Reject null bytes and control characters (except \r and \n for file names)
-    if path.contains('\0') || path.chars().any(|c| c.is_control() && c != '\r' && c != '\n') {
+    if path.contains('\0')
+        || path
+            .chars()
+            .any(|c| c.is_control() && c != '\r' && c != '\n')
+    {
         return Err(AppError::SecurityError {
             message: "Invalid path: contains null bytes or control characters".to_string(),
         });
     }
-    
+
     let path_buf = PathBuf::from(path);
-    
+
     // First check the original path components before canonicalization
     for component in path_buf.components() {
         match component {
@@ -45,7 +49,7 @@ pub fn validate_and_sanitize_path(path: &str, app: &AppHandle) -> Result<Validat
             _ => {}
         }
     }
-    
+
     // Attempt to canonicalize - but don't rely solely on this for security
     let canonical_path = match path_buf.canonicalize() {
         Ok(p) => p,
@@ -53,11 +57,11 @@ pub fn validate_and_sanitize_path(path: &str, app: &AppHandle) -> Result<Validat
             // If canonicalization fails, the file might not exist
             // Try to canonicalize the parent directory and validate the filename
             if let Some(parent) = path_buf.parent() {
-                let canonical_parent = parent.canonicalize()
-                    .map_err(|_| AppError::SecurityError {
+                let canonical_parent =
+                    parent.canonicalize().map_err(|_| AppError::SecurityError {
                         message: "Parent directory validation failed".to_string(),
                     })?;
-                
+
                 if let Some(filename) = path_buf.file_name() {
                     let sanitized_filename = sanitize_filename(&filename.to_string_lossy());
                     if sanitized_filename.is_empty() {
@@ -65,14 +69,14 @@ pub fn validate_and_sanitize_path(path: &str, app: &AppHandle) -> Result<Validat
                             message: "Invalid filename after sanitization".to_string(),
                         });
                     }
-                    
+
                     // Validate filename doesn't contain path separators after sanitization
                     if sanitized_filename.contains('/') || sanitized_filename.contains('\\') {
                         return Err(AppError::SecurityError {
                             message: "Invalid filename contains path separators".to_string(),
                         });
                     }
-                    
+
                     // Create the final path and verify it's still under the parent
                     let final_path = canonical_parent.join(&sanitized_filename);
                     if !final_path.starts_with(&canonical_parent) {
@@ -80,7 +84,7 @@ pub fn validate_and_sanitize_path(path: &str, app: &AppHandle) -> Result<Validat
                             message: "Path traversal detected after joining".to_string(),
                         });
                     }
-                    
+
                     final_path
                 } else {
                     return Err(AppError::SecurityError {
@@ -94,7 +98,7 @@ pub fn validate_and_sanitize_path(path: &str, app: &AppHandle) -> Result<Validat
             }
         }
     };
-    
+
     // Verify the canonical path doesn't contain traversal patterns
     let canonical_str = canonical_path.to_string_lossy();
     if canonical_str.contains("..") {
@@ -102,14 +106,14 @@ pub fn validate_and_sanitize_path(path: &str, app: &AppHandle) -> Result<Validat
             message: "Path traversal detected in canonical path".to_string(),
         });
     }
-    
+
     // Verify against allowed directories
     if !is_path_allowed(&canonical_path, app)? {
         return Err(AppError::SecurityError {
             message: "Path outside allowed directories".to_string(),
         });
     }
-    
+
     Ok(ValidatedPath {
         canonical_path,
         original_path: path_buf,
@@ -127,17 +131,17 @@ impl ValidatedPath {
     pub fn canonical(&self) -> &Path {
         &self.canonical_path
     }
-    
+
     /// Get the original path - for display purposes only
     pub fn original(&self) -> &Path {
         &self.original_path
     }
-    
+
     /// Convert to PathBuf for compatibility
     pub fn into_path_buf(self) -> PathBuf {
         self.canonical_path
     }
-    
+
     /// Securely open a file with validation
     /// Note: For full TOCTOU protection, pass the AppHandle to this method
     pub fn open_file(&self) -> Result<File> {
@@ -145,7 +149,7 @@ impl ValidatedPath {
         // The TOCTOU window is minimized by doing the validation and open as close as possible
         File::open(&self.canonical_path).map_err(AppError::Io)
     }
-    
+
     /// Securely open a file with re-validation (preferred method)
     pub fn open_file_validated(&self, app: &AppHandle) -> Result<File> {
         // Re-validate just before opening to minimize TOCTOU window
@@ -154,7 +158,7 @@ impl ValidatedPath {
                 message: "Path validation failed during file open".to_string(),
             });
         }
-        
+
         File::open(&self.canonical_path).map_err(AppError::Io)
     }
 }
@@ -162,34 +166,35 @@ impl ValidatedPath {
 /// Checks if a path is allowed to be accessed
 pub fn is_path_allowed(path: &Path, _app: &AppHandle) -> Result<bool> {
     let path_str = path.to_string_lossy();
-    
+
     // Block access to sensitive system directories
     let blocked_paths = [
         "/etc/passwd",
-        "/etc/shadow", 
+        "/etc/shadow",
         "/root/",
         "C:\\Windows\\System32\\",
         "C:\\System Volume Information\\",
         "C:\\$Recycle.Bin\\",
     ];
-    
+
     for blocked in &blocked_paths {
         if path_str.starts_with(blocked) {
             return Ok(false);
         }
     }
-    
+
     // Block access to files starting with dots (hidden files) in root directories
     if let Some(file_name) = path.file_name() {
         if file_name.to_string_lossy().starts_with('.') {
             if let Some(parent) = path.parent() {
-                if parent.components().count() <= 2 { // Root or single level
+                if parent.components().count() <= 2 {
+                    // Root or single level
                     return Ok(false);
                 }
             }
         }
     }
-    
+
     Ok(true)
 }
 
@@ -197,7 +202,12 @@ pub fn is_path_allowed(path: &Path, _app: &AppHandle) -> Result<bool> {
 pub fn sanitize_filename(filename: &str) -> String {
     filename
         .chars()
-        .filter(|&c| !matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*' | '\0' | '/' | '\\'))
+        .filter(|&c| {
+            !matches!(
+                c,
+                '<' | '>' | ':' | '"' | '|' | '?' | '*' | '\0' | '/' | '\\'
+            )
+        })
         .collect::<String>()
         .trim()
         .to_string()
@@ -207,7 +217,10 @@ pub fn sanitize_filename(filename: &str) -> String {
 pub fn validate_file_size(size: u64, max_size: u64) -> Result<()> {
     if size > max_size {
         return Err(AppError::SecurityError {
-            message: format!("File size {} exceeds maximum allowed size {}", size, max_size),
+            message: format!(
+                "File size {} exceeds maximum allowed size {}",
+                size, max_size
+            ),
         });
     }
     Ok(())

@@ -2,14 +2,12 @@ use crate::error::Result;
 use crate::services::monitoring::{HealthStatus, PerformanceMetrics};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
-use tauri::{State, Emitter};
 use std::path::{Path, PathBuf};
+use tauri::{Emitter, State};
 
 /// Get system health status
 #[tauri::command]
-pub async fn get_health_status(
-    state: State<'_, std::sync::Arc<AppState>>,
-) -> Result<HealthStatus> {
+pub async fn get_health_status(state: State<'_, std::sync::Arc<AppState>>) -> Result<HealthStatus> {
     state.monitoring_service.get_health_status(&state).await
 }
 
@@ -18,7 +16,10 @@ pub async fn get_health_status(
 pub async fn get_performance_metrics(
     state: State<'_, std::sync::Arc<AppState>>,
 ) -> Result<PerformanceMetrics> {
-    state.monitoring_service.get_performance_metrics(&state).await
+    state
+        .monitoring_service
+        .get_performance_metrics(&state)
+        .await
 }
 
 /// Get performance metrics history
@@ -88,10 +89,10 @@ pub struct ProcessInfo {
 #[tauri::command]
 pub async fn get_system_info() -> Result<SystemInfo> {
     use sysinfo::System;
-    
+
     let mut sys = System::new_all();
     sys.refresh_all();
-    
+
     // Wait a bit and refresh again for CPU usage
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
     sys.refresh_cpu_all();
@@ -113,10 +114,15 @@ pub async fn get_system_info() -> Result<SystemInfo> {
 
     // Network information
     let networks = sysinfo::Networks::new_with_refreshed_list();
-    let (total_rx, total_tx) = networks.iter()
-        .fold((0u64, 0u64), |(rx_acc, tx_acc), (_, network)| {
-            (rx_acc + network.total_received(), tx_acc + network.total_transmitted())
-        });
+    let (total_rx, total_tx) =
+        networks
+            .iter()
+            .fold((0u64, 0u64), |(rx_acc, tx_acc), (_, network)| {
+                (
+                    rx_acc + network.total_received(),
+                    tx_acc + network.total_transmitted(),
+                )
+            });
 
     let network_info = NetworkInfo {
         interfaces_count: networks.len(),
@@ -179,7 +185,9 @@ pub async fn get_system_info() -> Result<SystemInfo> {
         total_memory_mb,
         available_memory_mb,
         cpu_count: sys.cpus().len(),
-        cpu_brand: sys.cpus().first()
+        cpu_brand: sys
+            .cpus()
+            .first()
             .map(|cpu| cpu.brand().to_string())
             .unwrap_or_else(|| "Unknown".to_string()),
         hostname: sysinfo::System::host_name().unwrap_or_else(|| "localhost".to_string()),
@@ -223,7 +231,12 @@ pub async fn get_app_info() -> Result<AppInfo> {
         homepage: option_env!("CARGO_PKG_HOMEPAGE").map(|s| s.to_string()),
         repository: option_env!("CARGO_PKG_REPOSITORY").map(|s| s.to_string()),
         build_date: env!("BUILD_DATE").to_string(),
-        build_profile: if cfg!(debug_assertions) { "debug" } else { "release" }.to_string(),
+        build_profile: if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        }
+        .to_string(),
         rust_version: env!("RUST_VERSION").to_string(),
         target_triple: env!("TARGET_TRIPLE").to_string(),
         features: get_enabled_features(),
@@ -239,9 +252,9 @@ pub async fn readiness_probe(
     // Check if all critical systems are ready
     let database_ready = state.database.health_check().await.is_ok();
     let ai_service_ready = true; // AI service is optional, always ready
-    
+
     let ready = database_ready && ai_service_ready;
-    
+
     Ok(ReadinessStatus {
         ready,
         timestamp: chrono::Utc::now(),
@@ -266,22 +279,24 @@ pub async fn readiness_probe(
 
 /// Liveness probe for container orchestration
 #[tauri::command]
-pub async fn liveness_probe(
-    state: State<'_, std::sync::Arc<AppState>>,
-) -> Result<LivenessStatus> {
+pub async fn liveness_probe(state: State<'_, std::sync::Arc<AppState>>) -> Result<LivenessStatus> {
     // Basic application responsiveness check
     let start = std::time::Instant::now();
-    
+
     // Simple health check - if we can respond, we're alive
     let response_time_ms = start.elapsed().as_millis() as u64;
-    
+
     // Check if application is not hanging
     let alive = response_time_ms < 5000; // 5 second timeout
-    
+
     Ok(LivenessStatus {
         alive,
         timestamp: chrono::Utc::now(),
-        uptime_seconds: state.monitoring_service.get_start_time().elapsed().as_secs(),
+        uptime_seconds: state
+            .monitoring_service
+            .get_start_time()
+            .elapsed()
+            .as_secs(),
         response_time_ms,
         message: if alive {
             None
@@ -320,7 +335,7 @@ pub async fn get_runtime_config(
     state: State<'_, std::sync::Arc<AppState>>,
 ) -> Result<RuntimeConfig> {
     let config = state.config.read();
-    
+
     Ok(RuntimeConfig {
         debug_mode: config.debug_mode,
         log_level: config.log_level.clone(),
@@ -370,8 +385,9 @@ pub struct RuntimeFeatures {
 
 fn get_enabled_features() -> Vec<String> {
     let mut features = Vec::new();
-    
-    if false { // OCR features disabled
+
+    if false {
+        // OCR features disabled
         features.push("ocr".to_string());
     }
     if cfg!(feature = "vision") {
@@ -380,7 +396,7 @@ fn get_enabled_features() -> Vec<String> {
     if cfg!(feature = "advanced-analytics") {
         features.push("advanced-analytics".to_string());
     }
-    
+
     features
 }
 
@@ -404,7 +420,7 @@ pub async fn get_file_statistics(
     };
 
     let (file_count, total_size) = calculate_directory_stats(&target_path).await?;
-    
+
     Ok(FileStatistics {
         file_count,
         total_size_bytes: total_size,
@@ -416,20 +432,23 @@ pub async fn get_file_statistics(
 
 /// Get system status for bottom status bar
 #[tauri::command]
-pub async fn get_system_status(
-    state: State<'_, std::sync::Arc<AppState>>,
-) -> Result<SystemStatus> {
+pub async fn get_system_status(state: State<'_, std::sync::Arc<AppState>>) -> Result<SystemStatus> {
     let memory_usage = crate::utils::memory::get_memory_usage().await;
     let ai_status = state.ai_service.get_status().await;
     let file_stats = get_file_statistics(None, state.clone()).await?;
-    
+
     Ok(SystemStatus {
         file_count: file_stats.file_count,
         total_size_formatted: file_stats.total_size_formatted,
         memory_usage_mb: memory_usage.used_mb,
         memory_usage_percentage: memory_usage.percentage,
         ai_status_indicator: AiStatusIndicator {
-            status: if ai_status.is_available { "connected" } else { "disconnected" }.to_string(),
+            status: if ai_status.is_available {
+                "connected"
+            } else {
+                "disconnected"
+            }
+            .to_string(),
             provider: match ai_status.provider {
                 crate::ai::AiProvider::Ollama => "ollama".to_string(),
                 crate::ai::AiProvider::Fallback => "fallback".to_string(),
@@ -476,8 +495,12 @@ async fn calculate_directory_stats(path: &Path) -> Result<(usize, u64)> {
 
     let mut file_count = 0usize;
     let mut total_size = 0u64;
-    
-    fn scan_directory_sync(path: &Path, file_count: &mut usize, total_size: &mut u64) -> Result<()> {
+
+    fn scan_directory_sync(
+        path: &Path,
+        file_count: &mut usize,
+        total_size: &mut u64,
+    ) -> Result<()> {
         if let Ok(entries) = std::fs::read_dir(path) {
             for entry in entries.flatten() {
                 let entry_path = entry.path();
@@ -485,7 +508,7 @@ async fn calculate_directory_stats(path: &Path) -> Result<(usize, u64)> {
                     if metadata.is_file() {
                         *file_count += 1;
                         *total_size += metadata.len();
-                        
+
                         // Limit to prevent excessive scanning
                         if *file_count > 50000 {
                             return Ok(());
@@ -499,16 +522,18 @@ async fn calculate_directory_stats(path: &Path) -> Result<(usize, u64)> {
         }
         Ok(())
     }
-    
+
     // Use blocking task for filesystem operations
     let path_clone = path.to_path_buf();
     tokio::task::spawn_blocking(move || {
         scan_directory_sync(&path_clone, &mut file_count, &mut total_size)?;
         Ok::<(usize, u64), crate::error::AppError>((file_count, total_size))
-    }).await.map_err(|e| crate::error::AppError::SystemError {
+    })
+    .await
+    .map_err(|e| crate::error::AppError::SystemError {
         message: format!("Task join error: {}", e),
     })??;
-    
+
     Ok((file_count, total_size))
 }
 
@@ -517,12 +542,12 @@ fn format_file_size(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
     let mut size = bytes as f64;
     let mut unit_index = 0;
-    
+
     while size >= 1024.0 && unit_index < UNITS.len() - 1 {
         size /= 1024.0;
         unit_index += 1;
     }
-    
+
     if unit_index == 0 {
         format!("{} {}", bytes, UNITS[unit_index])
     } else {
@@ -531,25 +556,28 @@ fn format_file_size(bytes: u64) -> String {
 }
 
 /// Start periodic status monitoring and broadcasting
-pub async fn start_status_monitoring(app_handle: tauri::AppHandle, state: std::sync::Arc<AppState>) {
+pub async fn start_status_monitoring(
+    app_handle: tauri::AppHandle,
+    state: std::sync::Arc<AppState>,
+) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5)); // Update every 5 seconds
-    
+
     tokio::spawn(async move {
         loop {
             interval.tick().await;
-            
+
             // Get current system status
             if let Ok(system_status) = get_system_status_internal(&state).await {
                 // Emit system status update
                 let _ = app_handle.emit("system-status-update", &system_status);
             }
-            
+
             // Get active operations status
             if let Ok(active_ops) = crate::commands::get_active_operations_internal(&state).await {
                 // Emit operations status update
                 let _ = app_handle.emit("operations-status-update", &active_ops);
             }
-            
+
             // Get health status every 30 seconds (less frequent)
             if chrono::Utc::now().timestamp() % 30 == 0 {
                 if let Ok(health_status) = get_health_status_internal(&state).await {
@@ -571,7 +599,7 @@ pub async fn enable_realtime_monitoring(
         let mut config = state.config.write();
         config.enable_telemetry = enable; // Reuse this flag for real-time monitoring
     }
-    
+
     if enable {
         tracing::info!("Real-time monitoring enabled");
         // Start status monitoring if not already running
@@ -580,7 +608,7 @@ pub async fn enable_realtime_monitoring(
         tracing::info!("Real-time monitoring disabled");
         // Note: We don't stop the task here, but the frontend can choose to ignore events
     }
-    
+
     Ok(enable)
 }
 
@@ -593,7 +621,7 @@ pub async fn refresh_all_status(
     let health_status = get_health_status(state.clone()).await?;
     let performance_metrics = get_performance_metrics(state.clone()).await?;
     let active_operations = crate::commands::get_active_operations(state.clone()).await?;
-    
+
     let all_status = AllStatusInfo {
         system_status,
         health_status,
@@ -601,10 +629,10 @@ pub async fn refresh_all_status(
         active_operations,
         last_updated: chrono::Utc::now(),
     };
-    
+
     // Emit comprehensive status update
     let _ = state.handle.emit("all-status-update", &all_status);
-    
+
     Ok(all_status)
 }
 
@@ -612,15 +640,23 @@ pub async fn refresh_all_status(
 pub async fn get_system_status_internal(state: &AppState) -> Result<SystemStatus> {
     let memory_usage = crate::utils::memory::get_memory_usage().await;
     let ai_status = state.ai_service.get_status().await;
-    let file_stats = calculate_directory_stats(&dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."))).await?;
-    
+    let file_stats = calculate_directory_stats(
+        &dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
+    )
+    .await?;
+
     Ok(SystemStatus {
         file_count: file_stats.0,
         total_size_formatted: bytesize::ByteSize::b(file_stats.1).to_string(),
         memory_usage_mb: memory_usage.used_mb,
         memory_usage_percentage: memory_usage.percentage,
         ai_status_indicator: AiStatusIndicator {
-            status: if ai_status.is_available { "connected" } else { "disconnected" }.to_string(),
+            status: if ai_status.is_available {
+                "connected"
+            } else {
+                "disconnected"
+            }
+            .to_string(),
             provider: match ai_status.provider {
                 crate::ai::AiProvider::Ollama => "ollama".to_string(),
                 crate::ai::AiProvider::Fallback => "fallback".to_string(),
@@ -654,7 +690,7 @@ mod tests {
     async fn test_get_system_info() {
         let system_info = get_system_info().await;
         assert!(system_info.is_ok());
-        
+
         let info = system_info.expect("System info should be available in tests");
         assert!(!info.os.is_empty());
         assert!(info.total_memory_mb > 0.0);
@@ -665,7 +701,7 @@ mod tests {
     async fn test_get_app_info() {
         let app_info = get_app_info().await;
         assert!(app_info.is_ok());
-        
+
         let info = app_info.expect("App info should be available in tests");
         assert_eq!(info.name, "stratosort");
         assert!(!info.version.is_empty());

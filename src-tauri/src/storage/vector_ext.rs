@@ -25,7 +25,7 @@ impl VectorExtension {
             version: None,
             embedding_dimensions: 384, // Updated to match nomic-embed-text model
             use_quantization: true,    // Enable quantization for better performance
-            batch_size: 50,          // Optimized batch size for Ollama embeddings
+            batch_size: 50,            // Optimized batch size for Ollama embeddings
         };
 
         // Try to initialize sqlite-vec extension
@@ -34,7 +34,10 @@ impl VectorExtension {
                 extension.is_available = true;
                 extension.version = Some(version.clone());
                 VEC_EXTENSION_AVAILABLE.store(true, Ordering::Relaxed);
-                info!("sqlite-vec extension loaded successfully, version: {}", version);
+                info!(
+                    "sqlite-vec extension loaded successfully, version: {}",
+                    version
+                );
             }
             Err(e) => {
                 warn!("sqlite-vec extension not available: {}. Falling back to manual similarity calculations.", e);
@@ -49,7 +52,7 @@ impl VectorExtension {
     async fn try_load_extension(pool: &SqlitePool) -> Result<String> {
         // Initialize sqlite-vec extension using the proper FFI approach
         // Note: This would typically be done at connection level, but we'll check if it's available
-        
+
         // Test if vec functions are available
         let version_result = sqlx::query_scalar::<_, String>("SELECT vec_version()")
             .fetch_one(pool)
@@ -64,9 +67,9 @@ impl VectorExtension {
                 // Try to see if we can load the extension manually
                 // This is a fallback approach - in production, you'd typically
                 // initialize the extension when creating the connection
-                
+
                 debug!("Attempting to check sqlite-vec availability through alternative method");
-                
+
                 // If no vec functions available, return error
                 Err(AppError::DatabaseError {
                     message: "sqlite-vec extension functions not available".to_string(),
@@ -76,7 +79,12 @@ impl VectorExtension {
     }
 
     /// Create vector table using modern sqlite-vec syntax
-    pub async fn create_vector_table(&self, pool: &SqlitePool, table_name: &str, dimensions: usize) -> Result<()> {
+    pub async fn create_vector_table(
+        &self,
+        pool: &SqlitePool,
+        table_name: &str,
+        dimensions: usize,
+    ) -> Result<()> {
         if !self.is_available {
             return Err(AppError::DatabaseError {
                 message: "Vector extension not available".to_string(),
@@ -100,12 +108,21 @@ impl VectorExtension {
                 message: format!("Failed to create vector table {}: {}", table_name, e),
             })?;
 
-        info!("Created vector table: {} with {} dimensions", table_name, dimensions);
+        info!(
+            "Created vector table: {} with {} dimensions",
+            table_name, dimensions
+        );
         Ok(())
     }
 
     /// Store vector embedding using sqlite-vec
-    pub async fn store_embedding(&self, pool: &SqlitePool, table_name: &str, path: &str, embedding: &[f32]) -> Result<()> {
+    pub async fn store_embedding(
+        &self,
+        pool: &SqlitePool,
+        table_name: &str,
+        path: &str,
+        embedding: &[f32],
+    ) -> Result<()> {
         if !self.is_available {
             return Err(AppError::DatabaseError {
                 message: "Vector extension not available".to_string(),
@@ -124,7 +141,7 @@ impl VectorExtension {
 
         // Convert embedding to bytes for sqlite-vec
         let embedding_bytes = Self::f32_vec_to_bytes(embedding);
-        
+
         let insert_query = format!(
             "INSERT OR REPLACE INTO {} (path, embedding) VALUES (?, ?)",
             table_name
@@ -167,7 +184,7 @@ impl VectorExtension {
         }
 
         let query_bytes = Self::f32_vec_to_bytes(query_embedding);
-        
+
         // Use sqlite-vec's distance function for similarity search
         let search_query = format!(
             r#"
@@ -255,80 +272,83 @@ impl VectorExtension {
         debug!("Vacuumed vector table: {}", table_name);
         Ok(())
     }
-    
+
     /// Store multiple embeddings in a batch for better performance
     pub async fn store_embeddings_batch(
-        &self, 
-        pool: &SqlitePool, 
-        table_name: &str, 
-        embeddings: &[(String, Vec<f32>)]
+        &self,
+        pool: &SqlitePool,
+        table_name: &str,
+        embeddings: &[(String, Vec<f32>)],
     ) -> Result<usize> {
         if !self.is_available {
             return Err(AppError::DatabaseError {
                 message: "Vector extension not available".to_string(),
             });
         }
-        
+
         if embeddings.is_empty() {
             return Ok(0);
         }
-        
+
         let mut stored_count = 0;
         let mut tx = pool.begin().await?;
-        
+
         // Process in batches to avoid memory issues
         for chunk in embeddings.chunks(self.batch_size) {
             for (path, embedding) in chunk {
                 if embedding.len() != self.embedding_dimensions {
-                    warn!("Skipping embedding with wrong dimensions: {} (expected {})", 
-                          embedding.len(), self.embedding_dimensions);
+                    warn!(
+                        "Skipping embedding with wrong dimensions: {} (expected {})",
+                        embedding.len(),
+                        self.embedding_dimensions
+                    );
                     continue;
                 }
-                
+
                 let embedding_bytes = Self::f32_vec_to_bytes(embedding);
-                
+
                 let insert_query = format!(
                     "INSERT OR REPLACE INTO {} (path, embedding) VALUES (?, ?)",
                     table_name
                 );
-                
+
                 sqlx::query(&insert_query)
                     .bind(path)
                     .bind(&embedding_bytes)
                     .execute(&mut *tx)
                     .await?;
-                    
+
                 stored_count += 1;
             }
         }
-        
+
         tx.commit().await?;
-        
+
         info!("Successfully stored {} embeddings in batch", stored_count);
         Ok(stored_count)
     }
-    
+
     /// Delete embeddings for specified paths
     pub async fn delete_embeddings(
         &self,
         pool: &SqlitePool,
         table_name: &str,
-        paths: &[String]
+        paths: &[String],
     ) -> Result<usize> {
         if !self.is_available || paths.is_empty() {
             return Ok(0);
         }
-        
+
         // Validate table name to prevent SQL injection
         if !crate::storage::database::is_valid_sql_identifier(table_name) {
             return Err(AppError::SecurityError {
                 message: "Invalid table name format".to_string(),
             });
         }
-        
+
         let mut deleted_count = 0;
         let mut tx = pool.begin().await?;
-        
+
         for path in paths {
             // Safe to use format! after validation
             let delete_query = format!("DELETE FROM {} WHERE path = ?", table_name);
@@ -336,16 +356,16 @@ impl VectorExtension {
                 .bind(path)
                 .execute(&mut *tx)
                 .await?;
-                
+
             deleted_count += result.rows_affected();
         }
-        
+
         tx.commit().await?;
-        
+
         info!("Deleted {} embeddings", deleted_count);
         Ok(deleted_count as usize)
     }
-    
+
     /// Perform similarity search with filtering
     pub async fn filtered_vector_search(
         &self,
@@ -354,16 +374,16 @@ impl VectorExtension {
         query_embedding: &[f32],
         limit: usize,
         min_similarity: f32,
-        path_pattern: Option<&str>
+        path_pattern: Option<&str>,
     ) -> Result<Vec<(String, f32)>> {
         if !self.is_available {
             return Err(AppError::DatabaseError {
                 message: "Vector extension not available".to_string(),
             });
         }
-        
+
         let query_bytes = Self::f32_vec_to_bytes(query_embedding);
-        
+
         let mut search_query = format!(
             r#"
             SELECT path, vec_distance_cosine(embedding, ?) as distance
@@ -372,22 +392,25 @@ impl VectorExtension {
             "#,
             table_name
         );
-        
+
         let mut params: Vec<Box<dyn sqlx::Encode<sqlx::Sqlite> + Send + Sync + 'static>> = vec![];
         params.push(Box::new(query_bytes.clone()));
-        
+
         // Add path filtering if specified
         if let Some(pattern) = path_pattern {
             search_query.push_str(" AND path LIKE ?");
             params.push(Box::new(pattern.to_string()));
         }
-        
+
         // Add similarity threshold
         let max_distance = 1.0 - min_similarity;
-        search_query.push_str(&format!(" AND vec_distance_cosine(embedding, ?) <= {} ORDER BY distance LIMIT ?", max_distance));
+        search_query.push_str(&format!(
+            " AND vec_distance_cosine(embedding, ?) <= {} ORDER BY distance LIMIT ?",
+            max_distance
+        ));
         params.push(Box::new(query_bytes.clone()));
         params.push(Box::new(limit as i32));
-        
+
         // For now, use the simpler approach without dynamic parameters
         let simple_query = format!(
             r#"
@@ -398,19 +421,19 @@ impl VectorExtension {
             "#,
             table_name
         );
-        
+
         let rows = sqlx::query(&simple_query)
             .bind(Self::f32_vec_to_bytes(query_embedding))
             .bind(limit as i32)
             .fetch_all(pool)
             .await?;
-        
+
         let mut results = Vec::new();
         for row in rows {
             let path: String = row.get("path");
             let distance: f32 = row.get("distance");
             let similarity = 1.0 - distance;
-            
+
             // Apply similarity threshold and path filtering in post-processing
             if similarity >= min_similarity {
                 if let Some(pattern) = path_pattern {
@@ -422,29 +445,33 @@ impl VectorExtension {
                 }
             }
         }
-        
+
         Ok(results)
     }
-    
+
     /// Optimize vector table for better search performance
     pub async fn optimize_vector_table(&self, pool: &SqlitePool, table_name: &str) -> Result<()> {
         if !self.is_available {
             return Ok(());
         }
-        
+
         // Run ANALYZE to update query planner statistics
         sqlx::query(&format!("ANALYZE {}", table_name))
             .execute(pool)
             .await?;
-        
+
         debug!("Optimized vector table: {}", table_name);
         Ok(())
     }
 
     /// Get statistics about vector table
-    pub async fn get_vector_stats(&self, pool: &SqlitePool, table_name: &str) -> Result<VectorStats> {
+    pub async fn get_vector_stats(
+        &self,
+        pool: &SqlitePool,
+        table_name: &str,
+    ) -> Result<VectorStats> {
         let count_query = format!("SELECT COUNT(*) as count FROM {}", table_name);
-        
+
         let count: i64 = sqlx::query_scalar(&count_query)
             .fetch_one(pool)
             .await

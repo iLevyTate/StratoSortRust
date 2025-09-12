@@ -35,46 +35,48 @@ impl HealthChecker {
     pub async fn check_all() -> Result<HealthStatus> {
         let _start_time = Instant::now();
         let mut checks = Vec::new();
-        
+
         // Database connectivity check
         checks.push(Self::check_database().await);
-        
+
         // File system accessibility check
         checks.push(Self::check_filesystem().await);
-        
+
         // Disk space check
         checks.push(Self::check_disk_space().await);
-        
+
         // Memory usage check
         checks.push(Self::check_memory_usage().await);
-        
+
         // SQLite vector extension check
         checks.push(Self::check_sqlite_vec().await);
-        
+
         // AI service connectivity check
         checks.push(Self::check_ai_service().await);
-        
+
         let healthy = checks.iter().all(|c| c.status);
         let system_info = Self::get_system_info().await.unwrap_or_default();
-        
-        Ok(HealthStatus { 
-            healthy, 
+
+        Ok(HealthStatus {
+            healthy,
             checks,
             system_info,
-            last_check: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+            last_check: chrono::Utc::now()
+                .format("%Y-%m-%d %H:%M:%S UTC")
+                .to_string(),
         })
     }
-    
+
     async fn check_database() -> HealthCheck {
         let start = Instant::now();
         let name = "Database".to_string();
-        
+
         // Try to perform a simple database operation with timeout
         let check_result = timeout(Duration::from_secs(5), async {
             // We can't easily access the database connection here without dependency injection
             // For now, we'll check if we can create a basic SQLite connection
             let temp_db_path = std::env::temp_dir().join("health_check.db");
-            
+
             match sqlx::SqlitePool::connect(&format!("sqlite://{}", temp_db_path.display())).await {
                 Ok(pool) => {
                     // Try a simple query
@@ -84,15 +86,16 @@ impl HealthChecker {
                             let _ = tokio::fs::remove_file(&temp_db_path).await;
                             Ok(())
                         }
-                        Err(e) => Err(format!("Query failed: {}", e))
+                        Err(e) => Err(format!("Query failed: {}", e)),
                     }
                 }
-                Err(e) => Err(format!("Connection failed: {}", e))
+                Err(e) => Err(format!("Connection failed: {}", e)),
             }
-        }).await;
-        
+        })
+        .await;
+
         let duration = start.elapsed();
-        
+
         match check_result {
             Ok(Ok(())) => HealthCheck {
                 name,
@@ -117,37 +120,41 @@ impl HealthChecker {
             },
         }
     }
-    
+
     async fn check_filesystem() -> HealthCheck {
         let start = Instant::now();
         let name = "FileSystem".to_string();
-        
+
         // Test file system by creating, writing, reading, and deleting a test file
         let test_file = std::env::temp_dir().join("stratosort_health_check.tmp");
         let test_content = "StratoSort health check";
-        
+
         let check_result = async {
             // Write test
-            tokio::fs::write(&test_file, test_content).await
+            tokio::fs::write(&test_file, test_content)
+                .await
                 .map_err(|e| format!("Write failed: {}", e))?;
-            
+
             // Read test
-            let read_content = tokio::fs::read_to_string(&test_file).await
+            let read_content = tokio::fs::read_to_string(&test_file)
+                .await
                 .map_err(|e| format!("Read failed: {}", e))?;
-            
+
             if read_content != test_content {
                 return Err("Content mismatch".to_string());
             }
-            
+
             // Delete test
-            tokio::fs::remove_file(&test_file).await
+            tokio::fs::remove_file(&test_file)
+                .await
                 .map_err(|e| format!("Delete failed: {}", e))?;
-            
+
             Ok(())
-        }.await;
-        
+        }
+        .await;
+
         let duration = start.elapsed();
-        
+
         match check_result {
             Ok(()) => HealthCheck {
                 name,
@@ -165,19 +172,20 @@ impl HealthChecker {
             },
         }
     }
-    
+
     async fn check_disk_space() -> HealthCheck {
         let start = Instant::now();
         let name = "DiskSpace".to_string();
-        
+
         let check_result = async {
             let current_dir = std::env::current_dir()
                 .map_err(|e| format!("Failed to get current directory: {}", e))?;
-            
+
             // Get disk usage information
-            let _metadata = tokio::fs::metadata(&current_dir).await
+            let _metadata = tokio::fs::metadata(&current_dir)
+                .await
                 .map_err(|e| format!("Failed to get directory metadata: {}", e))?;
-            
+
             #[cfg(unix)]
             {
                 use std::os::unix::fs::MetadataExt;
@@ -185,14 +193,14 @@ impl HealthChecker {
                 // For simplicity, we'll just check if we can access the directory
                 Ok("Unix disk space check - directory accessible".to_string())
             }
-            
+
             #[cfg(windows)]
             {
                 use std::path::Path;
-                
+
                 let path = current_dir.to_string_lossy();
                 let root_path = Path::new(&*path).ancestors().last().unwrap_or(&current_dir);
-                
+
                 // For Windows, we would use GetDiskFreeSpaceEx
                 // For now, just verify the path is accessible
                 if root_path.exists() {
@@ -201,15 +209,16 @@ impl HealthChecker {
                     Err("Root directory not accessible".to_string())
                 }
             }
-            
+
             #[cfg(not(any(unix, windows)))]
             {
                 Ok("Platform-specific disk space check not implemented".to_string())
             }
-        }.await;
-        
+        }
+        .await;
+
         let duration = start.elapsed();
-        
+
         match check_result {
             Ok(msg) => HealthCheck {
                 name,
@@ -227,26 +236,27 @@ impl HealthChecker {
             },
         }
     }
-    
+
     async fn check_memory_usage() -> HealthCheck {
         let start = Instant::now();
         let name = "Memory".to_string();
-        
+
         // Simple memory allocation test
         let check_result = async {
             // Try to allocate and immediately drop a reasonably sized vector
             let test_size = 10_000; // 10KB
             let _test_vec: Vec<u8> = vec![0; test_size];
-            
+
             // Get current process memory usage if possible
             #[cfg(feature = "sysinfo")]
             {
-                use sysinfo::System;
                 use std::ffi::OsStr;
+                use sysinfo::System;
                 let mut system = System::new_all();
                 system.refresh_all();
-                
-                let processes: Vec<_> = system.processes_by_name(OsStr::new("stratosort")).collect();
+
+                let processes: Vec<_> =
+                    system.processes_by_name(OsStr::new("stratosort")).collect();
                 if let Some(process) = processes.first() {
                     let memory_bytes = process.memory();
                     format!("Memory usage: {} KB", memory_bytes / 1024)
@@ -254,15 +264,16 @@ impl HealthChecker {
                     "Process memory info not available".to_string()
                 }
             }
-            
+
             #[cfg(not(feature = "sysinfo"))]
             {
                 "Memory allocation test successful".to_string()
             }
-        }.await;
-        
+        }
+        .await;
+
         let duration = start.elapsed();
-        
+
         HealthCheck {
             name,
             status: true,
@@ -271,19 +282,19 @@ impl HealthChecker {
             last_error: None,
         }
     }
-    
+
     async fn check_sqlite_vec() -> HealthCheck {
         let start = Instant::now();
         let name = "SQLiteVec".to_string();
-        
+
         // Test if sqlite-vec extension is available
         let check_result = match crate::storage::initialize_sqlite_vec() {
             Ok(()) => Ok("SQLite-vec extension available".to_string()),
             Err(e) => Err(format!("SQLite-vec extension not available: {}", e)),
         };
-        
+
         let duration = start.elapsed();
-        
+
         match check_result {
             Ok(msg) => HealthCheck {
                 name,
@@ -301,19 +312,16 @@ impl HealthChecker {
             },
         }
     }
-    
+
     async fn check_ai_service() -> HealthCheck {
         let start = Instant::now();
         let name = "AIService".to_string();
-        
+
         // Simple check if we can create an Ollama client
         let check_result = timeout(Duration::from_secs(3), async {
             // Try to create Ollama client and ping common endpoints
-            let common_hosts = vec![
-                "http://localhost:11434",
-                "http://127.0.0.1:11434",
-            ];
-            
+            let common_hosts = vec!["http://localhost:11434", "http://127.0.0.1:11434"];
+
             if let Some(host) = common_hosts.into_iter().next() {
                 // Ollama::new doesn't return Result, it creates a client directly
                 let _client = ollama_rs::Ollama::new(host.to_string(), 11434);
@@ -321,12 +329,13 @@ impl HealthChecker {
                 // For now, just assume the endpoint is available if we can create a client
                 return Ok(format!("AI service endpoint available at {}", host));
             }
-            
+
             Err("No AI service endpoints available - using fallback mode".to_string())
-        }).await;
-        
+        })
+        .await;
+
         let duration = start.elapsed();
-        
+
         match check_result {
             Ok(Ok(msg)) => HealthCheck {
                 name,
@@ -351,7 +360,7 @@ impl HealthChecker {
             },
         }
     }
-    
+
     async fn get_system_info() -> Result<SystemInfo> {
         // For now, return default values
         // In a real implementation, we'd use system APIs or sysinfo crate

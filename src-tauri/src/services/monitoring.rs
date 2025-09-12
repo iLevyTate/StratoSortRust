@@ -1,10 +1,10 @@
 use crate::error::Result;
+use chrono::{DateTime, Utc};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use parking_lot::RwLock;
-use chrono::{DateTime, Utc};
 use tokio::time::{Duration, Instant};
 
 /// System health status
@@ -100,7 +100,7 @@ impl MonitoringService {
     /// Record a request with its response time
     pub fn record_request(&self, response_time: Duration, is_error: bool) {
         self.total_requests.fetch_add(1, Ordering::SeqCst);
-        
+
         if is_error {
             self.total_errors.fetch_add(1, Ordering::SeqCst);
         }
@@ -128,30 +128,39 @@ impl MonitoringService {
         app_state: &crate::state::AppState,
     ) -> Result<HealthStatus> {
         let uptime = self.start_time.elapsed().as_secs();
-        
+
         // Run health checks with error recovery
         let mut checks = Vec::new();
         let mut system_errors = Vec::new();
-        
+
         // Database health check
         let db_check = self.check_database_health(&app_state.database).await;
         if matches!(db_check.status, HealthCheckStatus::Unhealthy) {
-            system_errors.push(format!("Database: {}", db_check.message.as_deref().unwrap_or("Connection failed")));
+            system_errors.push(format!(
+                "Database: {}",
+                db_check.message.as_deref().unwrap_or("Connection failed")
+            ));
         }
         checks.push(db_check.clone());
-        
+
         // AI service health check
         let ai_check = self.check_ai_service_health(&app_state.ai_service).await;
         if matches!(ai_check.status, HealthCheckStatus::Unhealthy) {
-            system_errors.push(format!("AI Service: {}", ai_check.message.as_deref().unwrap_or("Service unavailable")));
+            system_errors.push(format!(
+                "AI Service: {}",
+                ai_check.message.as_deref().unwrap_or("Service unavailable")
+            ));
         }
         checks.push(ai_check.clone());
-        
+
         // Memory health check with error recovery
         let memory_check = match self.check_memory_health().await {
             Ok(check) => {
                 if matches!(check.status, HealthCheckStatus::Unhealthy) {
-                    system_errors.push(format!("Memory: {}", check.message.as_deref().unwrap_or("High usage")));
+                    system_errors.push(format!(
+                        "Memory: {}",
+                        check.message.as_deref().unwrap_or("High usage")
+                    ));
                 }
                 check
             }
@@ -168,12 +177,15 @@ impl MonitoringService {
             }
         };
         checks.push(memory_check);
-        
+
         // Disk health check with error recovery
         let disk_check = match self.check_disk_health().await {
             Ok(check) => {
                 if matches!(check.status, HealthCheckStatus::Unhealthy) {
-                    system_errors.push(format!("Disk: {}", check.message.as_deref().unwrap_or("Low space")));
+                    system_errors.push(format!(
+                        "Disk: {}",
+                        check.message.as_deref().unwrap_or("Low space")
+                    ));
                 }
                 check
             }
@@ -192,9 +204,15 @@ impl MonitoringService {
         checks.push(disk_check.clone());
 
         // Calculate overall status
-        let overall_status = if checks.iter().any(|c| matches!(c.status, HealthCheckStatus::Unhealthy)) {
+        let overall_status = if checks
+            .iter()
+            .any(|c| matches!(c.status, HealthCheckStatus::Unhealthy))
+        {
             "unhealthy"
-        } else if checks.iter().any(|c| matches!(c.status, HealthCheckStatus::Degraded)) {
+        } else if checks
+            .iter()
+            .any(|c| matches!(c.status, HealthCheckStatus::Degraded))
+        {
             "degraded"
         } else {
             "healthy"
@@ -233,7 +251,7 @@ impl MonitoringService {
         let uptime = self.start_time.elapsed().as_secs();
         let total_requests = self.total_requests.load(Ordering::SeqCst);
         let total_errors = self.total_errors.load(Ordering::SeqCst);
-        
+
         let average_response_time = {
             let times = self.response_times.read();
             if times.is_empty() {
@@ -306,23 +324,20 @@ impl MonitoringService {
     }
 
     /// Check database health
-    async fn check_database_health(
-        &self,
-        database: &crate::storage::Database,
-    ) -> HealthCheck {
+    async fn check_database_health(&self, database: &crate::storage::Database) -> HealthCheck {
         let start = Instant::now();
-        
+
         // Simple database connectivity test
         let (status, message) = match database.health_check().await {
             Ok(_) => (HealthCheckStatus::Healthy, None),
             Err(e) => (
-                HealthCheckStatus::Unhealthy, 
-                Some(format!("Database connection failed: {}", e))
+                HealthCheckStatus::Unhealthy,
+                Some(format!("Database connection failed: {}", e)),
             ),
         };
-        
+
         let response_time = start.elapsed().as_millis() as u64;
-        
+
         HealthCheck {
             name: "database".to_string(),
             status,
@@ -342,23 +357,20 @@ impl MonitoringService {
     }
 
     /// Check AI service health
-    async fn check_ai_service_health(
-        &self,
-        ai_service: &crate::ai::AiService,
-    ) -> HealthCheck {
+    async fn check_ai_service_health(&self, ai_service: &crate::ai::AiService) -> HealthCheck {
         let start = Instant::now();
-        
+
         let (status, message) = if ai_service.is_available().await {
             (HealthCheckStatus::Healthy, None)
         } else {
             (
-                HealthCheckStatus::Degraded, 
-                Some("AI service is not available, using fallback mode".to_string())
+                HealthCheckStatus::Degraded,
+                Some("AI service is not available, using fallback mode".to_string()),
             )
         };
-        
+
         let response_time = start.elapsed().as_millis() as u64;
-        
+
         HealthCheck {
             name: "ai_service".to_string(),
             status,
@@ -380,34 +392,39 @@ impl MonitoringService {
     /// Check memory health with error handling
     async fn check_memory_health(&self) -> Result<HealthCheck> {
         let start = Instant::now();
-        
-        let memory_usage_percentage = match tokio::task::spawn_blocking(|| {
-            Self::get_memory_usage_percentage()
-        }).await {
-            Ok(usage) => usage,
-            Err(e) => {
-                return Err(crate::error::AppError::SystemError {
-                    message: format!("Failed to get memory usage: {}", e)
-                });
-            }
-        };
-        
+
+        let memory_usage_percentage =
+            match tokio::task::spawn_blocking(Self::get_memory_usage_percentage).await {
+                Ok(usage) => usage,
+                Err(e) => {
+                    return Err(crate::error::AppError::SystemError {
+                        message: format!("Failed to get memory usage: {}", e),
+                    });
+                }
+            };
+
         let (status, message) = if memory_usage_percentage > 90.0 {
             (
                 HealthCheckStatus::Unhealthy,
-                Some(format!("High memory usage: {:.1}%", memory_usage_percentage))
+                Some(format!(
+                    "High memory usage: {:.1}%",
+                    memory_usage_percentage
+                )),
             )
         } else if memory_usage_percentage > 75.0 {
             (
                 HealthCheckStatus::Degraded,
-                Some(format!("Elevated memory usage: {:.1}%", memory_usage_percentage))
+                Some(format!(
+                    "Elevated memory usage: {:.1}%",
+                    memory_usage_percentage
+                )),
             )
         } else {
             (HealthCheckStatus::Healthy, None)
         };
-        
+
         let response_time = start.elapsed().as_millis() as u64;
-        
+
         Ok(HealthCheck {
             name: "memory".to_string(),
             status,
@@ -429,34 +446,36 @@ impl MonitoringService {
     /// Check disk health with error handling
     async fn check_disk_health(&self) -> Result<HealthCheck> {
         let start = Instant::now();
-        
-        let disk_usage_percentage = match tokio::task::spawn_blocking(|| {
-            Self::get_disk_usage_percentage()
-        }).await {
-            Ok(usage) => usage,
-            Err(e) => {
-                return Err(crate::error::AppError::SystemError {
-                    message: format!("Failed to get disk usage: {}", e)
-                });
-            }
-        };
-        
+
+        let disk_usage_percentage =
+            match tokio::task::spawn_blocking(Self::get_disk_usage_percentage).await {
+                Ok(usage) => usage,
+                Err(e) => {
+                    return Err(crate::error::AppError::SystemError {
+                        message: format!("Failed to get disk usage: {}", e),
+                    });
+                }
+            };
+
         let (status, message) = if disk_usage_percentage > 95.0 {
             (
                 HealthCheckStatus::Unhealthy,
-                Some(format!("Disk space critical: {:.1}%", disk_usage_percentage))
+                Some(format!(
+                    "Disk space critical: {:.1}%",
+                    disk_usage_percentage
+                )),
             )
         } else if disk_usage_percentage > 85.0 {
             (
                 HealthCheckStatus::Degraded,
-                Some(format!("Disk space low: {:.1}%", disk_usage_percentage))
+                Some(format!("Disk space low: {:.1}%", disk_usage_percentage)),
             )
         } else {
             (HealthCheckStatus::Healthy, None)
         };
-        
+
         let response_time = start.elapsed().as_millis() as u64;
-        
+
         Ok(HealthCheck {
             name: "disk".to_string(),
             status,
@@ -480,7 +499,7 @@ impl MonitoringService {
         let hits = self.cache_hits.load(Ordering::SeqCst);
         let misses = self.cache_misses.load(Ordering::SeqCst);
         let total = hits + misses;
-        
+
         if total > 0 {
             Some((hits as f64 / total as f64) * 100.0)
         } else {
@@ -489,7 +508,7 @@ impl MonitoringService {
     }
 
     // System metrics helpers
-    
+
     fn get_memory_usage() -> f64 {
         use sysinfo::System;
         let mut sys = System::new();
@@ -522,17 +541,23 @@ impl MonitoringService {
 
     /// Safe disk usage percentage getter with error handling
     fn get_disk_usage_percentage_safe() -> f64 {
-        use sysinfo::{System, Disks};
+        use sysinfo::{Disks, System};
         match std::panic::catch_unwind(|| {
             let _sys = System::new();
             let disks = Disks::new_with_refreshed_list();
-            
-            let (used, total): (u64, u64) = disks.iter()
-                .map(|disk| (disk.total_space() - disk.available_space(), disk.total_space()))
+
+            let (used, total): (u64, u64) = disks
+                .iter()
+                .map(|disk| {
+                    (
+                        disk.total_space() - disk.available_space(),
+                        disk.total_space(),
+                    )
+                })
                 .fold((0, 0), |(acc_used, acc_total), (used, total)| {
                     (acc_used + used, acc_total + total)
                 });
-            
+
             if total > 0 {
                 (used as f64 / total as f64) * 100.0
             } else {
@@ -556,57 +581,66 @@ impl MonitoringService {
     }
 
     fn get_disk_usage_mb() -> f64 {
-        use sysinfo::{System, Disks};
+        use sysinfo::{Disks, System};
         let _sys = System::new();
         let disks = Disks::new_with_refreshed_list();
-        
-        disks.iter()
+
+        disks
+            .iter()
             .map(|disk| (disk.total_space() - disk.available_space()) as f64 / 1_024_000.0)
             .sum()
     }
 
     fn get_disk_usage_percentage() -> f64 {
-        use sysinfo::{System, Disks};
+        use sysinfo::{Disks, System};
         let _sys = System::new();
         let disks = Disks::new_with_refreshed_list();
-        
-        let (used, total): (u64, u64) = disks.iter()
-            .map(|disk| (disk.total_space() - disk.available_space(), disk.total_space()))
+
+        let (used, total): (u64, u64) = disks
+            .iter()
+            .map(|disk| {
+                (
+                    disk.total_space() - disk.available_space(),
+                    disk.total_space(),
+                )
+            })
             .fold((0, 0), |(acc_used, acc_total), (used, total)| {
                 (acc_used + used, acc_total + total)
             });
-        
+
         if total > 0 {
             (used as f64 / total as f64) * 100.0
         } else {
             0.0
         }
     }
-    
+
     /// Get the start time of the monitoring service
     pub fn get_start_time(&self) -> Instant {
         self.start_time
     }
-    
+
     /// Start periodic metrics collection
     pub fn start_periodic_collection(&self, app_state: std::sync::Arc<crate::state::AppState>) {
         let monitoring = std::sync::Arc::new(self.clone());
         let state = app_state;
-        
+
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60)); // Collect every minute
-            
+
             loop {
                 interval.tick().await;
-                
+
                 // Collect performance metrics
                 if let Ok(metrics) = monitoring.get_performance_metrics(&state).await {
                     // Metrics are automatically stored in history by get_performance_metrics
-                    tracing::debug!("Collected metrics: CPU {:.1}%, Memory {:.1}%, Active Ops: {}", 
-                                   metrics.cpu_usage_percentage, 
-                                   metrics.memory_usage_percentage,
-                                   metrics.active_operations);
-                    
+                    tracing::debug!(
+                        "Collected metrics: CPU {:.1}%, Memory {:.1}%, Active Ops: {}",
+                        metrics.cpu_usage_percentage,
+                        metrics.memory_usage_percentage,
+                        metrics.active_operations
+                    );
+
                     // Emit metrics to frontend if configured
                     // Use Emitter trait explicitly
                     use tauri::Emitter;
@@ -617,7 +651,7 @@ impl MonitoringService {
             }
         });
     }
-    
+
     /// Enable/disable metrics collection
     pub fn set_metrics_collection_enabled(&self, enabled: bool) {
         if enabled {
@@ -712,13 +746,13 @@ mod tests {
     #[test]
     fn test_record_request() {
         let monitoring = MonitoringService::new();
-        
+
         monitoring.record_request(Duration::from_millis(100), false);
         monitoring.record_request(Duration::from_millis(200), true);
-        
+
         assert_eq!(monitoring.total_requests.load(Ordering::SeqCst), 2);
         assert_eq!(monitoring.total_errors.load(Ordering::SeqCst), 1);
-        
+
         let times = monitoring.response_times.read();
         assert_eq!(times.len(), 2);
     }
@@ -726,15 +760,15 @@ mod tests {
     #[test]
     fn test_cache_hit_rate_calculation() {
         let monitoring = MonitoringService::new();
-        
+
         // No cache activity
         assert_eq!(monitoring.calculate_cache_hit_rate(), None);
-        
+
         // Record some cache activity
         monitoring.record_cache_hit(true);
         monitoring.record_cache_hit(true);
         monitoring.record_cache_hit(false);
-        
+
         if let Some(hit_rate) = monitoring.calculate_cache_hit_rate() {
             assert!((hit_rate - 66.67).abs() < 0.01); // ~66.67%
         } else {
@@ -752,7 +786,7 @@ mod tests {
             last_success: Some(Utc::now()),
             last_failure: None,
         };
-        
+
         assert!(matches!(check.status, HealthCheckStatus::Healthy));
         assert_eq!(check.name, "test");
         assert_eq!(check.response_time_ms, 50);
@@ -761,7 +795,7 @@ mod tests {
     #[tokio::test]
     async fn test_metrics_history_limit() {
         let monitoring = MonitoringService::new();
-        
+
         // Add more metrics than the limit
         for i in 0..150 {
             let metrics = PerformanceMetrics {
@@ -781,13 +815,13 @@ mod tests {
                 errors_per_minute: 0.1,
                 throughput_ops_per_second: 10.0,
             };
-            
+
             monitoring.metrics_history.write().push(metrics);
         }
-        
+
         let history = monitoring.get_metrics_history(50);
         assert_eq!(history.len(), 50);
-        
+
         // Should return the most recent 50 metrics
         assert_eq!(history[0].total_requests, 100); // 150 - 50
         assert_eq!(history[49].total_requests, 149);
@@ -798,13 +832,13 @@ mod tests {
         // These are basic smoke tests since actual values depend on the system
         let memory_usage = MonitoringService::get_memory_usage();
         assert!(memory_usage >= 0.0);
-        
+
         let memory_percentage = MonitoringService::get_memory_usage_percentage();
         assert!((0.0..=100.0).contains(&memory_percentage));
-        
+
         let disk_usage = MonitoringService::get_disk_usage_mb();
         assert!(disk_usage >= 0.0);
-        
+
         let disk_percentage = MonitoringService::get_disk_usage_percentage();
         assert!((0.0..=100.0).contains(&disk_percentage));
     }
