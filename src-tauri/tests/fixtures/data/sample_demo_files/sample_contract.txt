@@ -1,0 +1,75 @@
+SOFTWARE DEVELOPMENT SERVICES AGREEMENT
+
+This Software Development Services Agreement ("Agreement") is entered into as of March 1, 2024 ("Effective Date") by and between StratoTech Solutions, LLC, a Delaware limited liability company ("Company") and TechCorp Industries, Inc., a California corporation ("Client").
+
+RECITALS
+
+WHEREAS, Company is engaged in the business of providing software development, consulting, and related technology services;
+
+WHEREAS, Client desires to engage Company to provide certain software development services as described herein; and
+
+WHEREAS, Company desires to provide such services to Client subject to the terms and conditions set forth in this Agreement.
+
+NOW, THEREFORE, in consideration of the mutual covenants and agreements contained herein, and for other good and valuable consideration, the receipt and sufficiency of which are hereby acknowledged, the parties agree as follows:
+
+1. SERVICES
+
+1.1 Development Services. Company shall provide Client with software development services ("Services") as described in the Statement of Work attached hereto as Exhibit A and incorporated herein by reference ("SOW").
+
+1.2 Performance Standards. Company shall perform the Services in a professional and workmanlike manner in accordance with industry standards and the specifications set forth in the SOW.
+
+1.3 Changes to Services. Any changes to the Services must be agreed upon in writing by both parties and may result in adjustments to the fees and timeline.
+
+2. COMPENSATION
+
+2.1 Fees. In consideration for the Services, Client shall pay Company the fees set forth in the SOW ("Fees").
+
+2.2 Payment Terms. Client shall pay all invoices within thirty (30) days of receipt. Late payments may incur a service charge of 1.5% per month.
+
+2.3 Expenses. Client shall reimburse Company for all reasonable out-of-pocket expenses incurred in connection with the performance of the Services, provided such expenses are pre-approved by Client in writing.
+
+3. INTELLECTUAL PROPERTY
+
+3.1 Work Product. All work product, including but not limited to software code, documentation, designs, and any other deliverables created by Company in the performance of the Services ("Work Product") shall be owned by Client upon payment of all Fees.
+
+3.2 Pre-existing IP. Company retains all rights to its pre-existing intellectual property, including but not limited to methodologies, processes, and tools used in the performance of the Services.
+
+4. CONFIDENTIALITY
+
+4.1 Confidential Information. Each party acknowledges that it may receive certain confidential and proprietary information of the other party. Each party agrees to maintain in confidence all such information and not to disclose it to third parties without prior written consent.
+
+5. TERM AND TERMINATION
+
+5.1 Term. This Agreement shall commence on the Effective Date and continue until completion of the Services, unless earlier terminated in accordance with this Agreement.
+
+5.2 Termination. Either party may terminate this Agreement with thirty (30) days written notice to the other party.
+
+6. WARRANTIES AND DISCLAIMERS
+
+6.1 Company Warranties. Company warrants that it has the right and authority to enter into this Agreement and perform the Services.
+
+6.2 DISCLAIMER. EXCEPT AS EXPRESSLY SET FORTH HEREIN, COMPANY MAKES NO WARRANTIES, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+
+7. LIMITATION OF LIABILITY
+
+IN NO EVENT SHALL COMPANY'S LIABILITY EXCEED THE TOTAL AMOUNT OF FEES PAID BY CLIENT UNDER THIS AGREEMENT.
+
+8. GENERAL PROVISIONS
+
+8.1 Governing Law. This Agreement shall be governed by the laws of the State of Delaware.
+
+8.2 Entire Agreement. This Agreement constitutes the entire agreement between the parties and supersedes all prior agreements and understandings.
+
+8.3 Amendment. This Agreement may only be amended in writing signed by both parties.
+
+IN WITNESS WHEREOF, the parties have executed this Agreement as of the Effective Date.
+
+COMPANY:                           CLIENT:
+
+StratoTech Solutions, LLC          TechCorp Industries, Inc.
+
+
+By: _________________________     By: _________________________
+Name: John Smith                   Name: Sarah Johnson
+Title: CEO                         Title: CTO
+Date: March 1, 2024               Date: March 1, 2024
