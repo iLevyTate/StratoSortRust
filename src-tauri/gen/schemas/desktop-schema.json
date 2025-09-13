@@ -1940,6 +1940,132 @@
                   "identifier": {
                     "anyOf": [
                       {
+                        "description": "This permission set configures what kind of\nfetch operations are available from the http plugin.\n\nThis enables all fetch operations but does not\nallow explicitly any origins to be fetched. This needs to\nbe manually configured before usage.\n\n#### Granted Permissions\n\nAll fetch operations are enabled.\n\n\n#### This default permission set includes:\n\n- `allow-fetch`\n- `allow-fetch-cancel`\n- `allow-fetch-read-body`\n- `allow-fetch-send`",
+                        "type": "string",
+                        "const": "http:default",
+                        "markdownDescription": "This permission set configures what kind of\nfetch operations are available from the http plugin.\n\nThis enables all fetch operations but does not\nallow explicitly any origins to be fetched. This needs to\nbe manually configured before usage.\n\n#### Granted Permissions\n\nAll fetch operations are enabled.\n\n\n#### This default permission set includes:\n\n- `allow-fetch`\n- `allow-fetch-cancel`\n- `allow-fetch-read-body`\n- `allow-fetch-send`"
+                      },
+                      {
+                        "description": "Enables the fetch command without any pre-configured scope.",
+                        "type": "string",
+                        "const": "http:allow-fetch",
+                        "markdownDescription": "Enables the fetch command without any pre-configured scope."
+                      },
+                      {
+                        "description": "Enables the fetch_cancel command without any pre-configured scope.",
+                        "type": "string",
+                        "const": "http:allow-fetch-cancel",
+                        "markdownDescription": "Enables the fetch_cancel command without any pre-configured scope."
+                      },
+                      {
+                        "description": "Enables the fetch_read_body command without any pre-configured scope.",
+                        "type": "string",
+                        "const": "http:allow-fetch-read-body",
+                        "markdownDescription": "Enables the fetch_read_body command without any pre-configured scope."
+                      },
+                      {
+                        "description": "Enables the fetch_send command without any pre-configured scope.",
+                        "type": "string",
+                        "const": "http:allow-fetch-send",
+                        "markdownDescription": "Enables the fetch_send command without any pre-configured scope."
+                      },
+                      {
+                        "description": "Denies the fetch command without any pre-configured scope.",
+                        "type": "string",
+                        "const": "http:deny-fetch",
+                        "markdownDescription": "Denies the fetch command without any pre-configured scope."
+                      },
+                      {
+                        "description": "Denies the fetch_cancel command without any pre-configured scope.",
+                        "type": "string",
+                        "const": "http:deny-fetch-cancel",
+                        "markdownDescription": "Denies the fetch_cancel command without any pre-configured scope."
+                      },
+                      {
+                        "description": "Denies the fetch_read_body command without any pre-configured scope.",
+                        "type": "string",
+                        "const": "http:deny-fetch-read-body",
+                        "markdownDescription": "Denies the fetch_read_body command without any pre-configured scope."
+                      },
+                      {
+                        "description": "Denies the fetch_send command without any pre-configured scope.",
+                        "type": "string",
+                        "const": "http:deny-fetch-send",
+                        "markdownDescription": "Denies the fetch_send command without any pre-configured scope."
+                      }
+                    ]
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "allow": {
+                    "items": {
+                      "title": "HttpScopeEntry",
+                      "description": "HTTP scope entry.",
+                      "anyOf": [
+                        {
+                          "description": "A URL that can be accessed by the webview when using the HTTP APIs. Wildcards can be used following the URL pattern standard.\n\nSee [the URL Pattern spec](https://urlpattern.spec.whatwg.org/) for more information.\n\nExamples:\n\n- \"https://*\" : allows all HTTPS origin on port 443\n\n- \"https://*:*\" : allows all HTTPS origin on any port\n\n- \"https://*.github.com/tauri-apps/tauri\": allows any subdomain of \"github.com\" with the \"tauri-apps/api\" path\n\n- \"https://myapi.service.com/users/*\": allows access to any URLs that begins with \"https://myapi.service.com/users/\"",
+                          "type": "string"
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "url"
+                          ],
+                          "properties": {
+                            "url": {
+                              "description": "A URL that can be accessed by the webview when using the HTTP APIs. Wildcards can be used following the URL pattern standard.\n\nSee [the URL Pattern spec](https://urlpattern.spec.whatwg.org/) for more information.\n\nExamples:\n\n- \"https://*\" : allows all HTTPS origin on port 443\n\n- \"https://*:*\" : allows all HTTPS origin on any port\n\n- \"https://*.github.com/tauri-apps/tauri\": allows any subdomain of \"github.com\" with the \"tauri-apps/api\" path\n\n- \"https://myapi.service.com/users/*\": allows access to any URLs that begins with \"https://myapi.service.com/users/\"",
+                              "type": "string"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  "deny": {
+                    "items": {
+                      "title": "HttpScopeEntry",
+                      "description": "HTTP scope entry.",
+                      "anyOf": [
+                        {
+                          "description": "A URL that can be accessed by the webview when using the HTTP APIs. Wildcards can be used following the URL pattern standard.\n\nSee [the URL Pattern spec](https://urlpattern.spec.whatwg.org/) for more information.\n\nExamples:\n\n- \"https://*\" : allows all HTTPS origin on port 443\n\n- \"https://*:*\" : allows all HTTPS origin on any port\n\n- \"https://*.github.com/tauri-apps/tauri\": allows any subdomain of \"github.com\" with the \"tauri-apps/api\" path\n\n- \"https://myapi.service.com/users/*\": allows access to any URLs that begins with \"https://myapi.service.com/users/\"",
+                          "type": "string"
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "url"
+                          ],
+                          "properties": {
+                            "url": {
+                              "description": "A URL that can be accessed by the webview when using the HTTP APIs. Wildcards can be used following the URL pattern standard.\n\nSee [the URL Pattern spec](https://urlpattern.spec.whatwg.org/) for more information.\n\nExamples:\n\n- \"https://*\" : allows all HTTPS origin on port 443\n\n- \"https://*:*\" : allows all HTTPS origin on any port\n\n- \"https://*.github.com/tauri-apps/tauri\": allows any subdomain of \"github.com\" with the \"tauri-apps/api\" path\n\n- \"https://myapi.service.com/users/*\": allows access to any URLs that begins with \"https://myapi.service.com/users/\"",
+                              "type": "string"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              },
+              "properties": {
+                "identifier": {
+                  "description": "Identifier of the permission or permission set.",
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/Identifier"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "identifier": {
+                    "anyOf": [
+                      {
                         "description": "This permission set configures which\nshell functionality is exposed by default.\n\n#### Granted Permissions\n\nIt allows to use the `open` functionality with a reasonable\nscope pre-configured. It will allow opening `http(s)://`,\n`tel:` and `mailto:` links.\n\n#### This default permission set includes:\n\n- `allow-open`",
                         "type": "string",
                         "const": "shell:default",
@@ -6069,6 +6195,60 @@
           "markdownDescription": "Denies the unregister_all command without any pre-configured scope."
         },
         {
+          "description": "This permission set configures what kind of\nfetch operations are available from the http plugin.\n\nThis enables all fetch operations but does not\nallow explicitly any origins to be fetched. This needs to\nbe manually configured before usage.\n\n#### Granted Permissions\n\nAll fetch operations are enabled.\n\n\n#### This default permission set includes:\n\n- `allow-fetch`\n- `allow-fetch-cancel`\n- `allow-fetch-read-body`\n- `allow-fetch-send`",
+          "type": "string",
+          "const": "http:default",
+          "markdownDescription": "This permission set configures what kind of\nfetch operations are available from the http plugin.\n\nThis enables all fetch operations but does not\nallow explicitly any origins to be fetched. This needs to\nbe manually configured before usage.\n\n#### Granted Permissions\n\nAll fetch operations are enabled.\n\n\n#### This default permission set includes:\n\n- `allow-fetch`\n- `allow-fetch-cancel`\n- `allow-fetch-read-body`\n- `allow-fetch-send`"
+        },
+        {
+          "description": "Enables the fetch command without any pre-configured scope.",
+          "type": "string",
+          "const": "http:allow-fetch",
+          "markdownDescription": "Enables the fetch command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the fetch_cancel command without any pre-configured scope.",
+          "type": "string",
+          "const": "http:allow-fetch-cancel",
+          "markdownDescription": "Enables the fetch_cancel command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the fetch_read_body command without any pre-configured scope.",
+          "type": "string",
+          "const": "http:allow-fetch-read-body",
+          "markdownDescription": "Enables the fetch_read_body command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the fetch_send command without any pre-configured scope.",
+          "type": "string",
+          "const": "http:allow-fetch-send",
+          "markdownDescription": "Enables the fetch_send command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the fetch command without any pre-configured scope.",
+          "type": "string",
+          "const": "http:deny-fetch",
+          "markdownDescription": "Denies the fetch command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the fetch_cancel command without any pre-configured scope.",
+          "type": "string",
+          "const": "http:deny-fetch-cancel",
+          "markdownDescription": "Denies the fetch_cancel command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the fetch_read_body command without any pre-configured scope.",
+          "type": "string",
+          "const": "http:deny-fetch-read-body",
+          "markdownDescription": "Denies the fetch_read_body command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the fetch_send command without any pre-configured scope.",
+          "type": "string",
+          "const": "http:deny-fetch-send",
+          "markdownDescription": "Denies the fetch_send command without any pre-configured scope."
+        },
+        {
           "description": "This permission set configures which\nnotification features are by default exposed.\n\n#### Granted Permissions\n\nIt allows all notification related features.\n\n\n#### This default permission set includes:\n\n- `allow-is-permission-granted`\n- `allow-request-permission`\n- `allow-notify`\n- `allow-register-action-types`\n- `allow-register-listener`\n- `allow-cancel`\n- `allow-get-pending`\n- `allow-remove-active`\n- `allow-get-active`\n- `allow-check-permissions`\n- `allow-show`\n- `allow-batch`\n- `allow-list-channels`\n- `allow-delete-channel`\n- `allow-create-channel`\n- `allow-permission-state`",
           "type": "string",
           "const": "notification:default",
@@ -6265,6 +6445,180 @@
           "type": "string",
           "const": "notification:deny-show",
           "markdownDescription": "Denies the show command without any pre-configured scope."
+        },
+        {
+          "description": "This permission set configures which\noperating system information are available\nto gather from the frontend.\n\n#### Granted Permissions\n\nAll information except the host name are available.\n\n\n#### This default permission set includes:\n\n- `allow-arch`\n- `allow-exe-extension`\n- `allow-family`\n- `allow-locale`\n- `allow-os-type`\n- `allow-platform`\n- `allow-version`",
+          "type": "string",
+          "const": "os:default",
+          "markdownDescription": "This permission set configures which\noperating system information are available\nto gather from the frontend.\n\n#### Granted Permissions\n\nAll information except the host name are available.\n\n\n#### This default permission set includes:\n\n- `allow-arch`\n- `allow-exe-extension`\n- `allow-family`\n- `allow-locale`\n- `allow-os-type`\n- `allow-platform`\n- `allow-version`"
+        },
+        {
+          "description": "Enables the arch command without any pre-configured scope.",
+          "type": "string",
+          "const": "os:allow-arch",
+          "markdownDescription": "Enables the arch command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the exe_extension command without any pre-configured scope.",
+          "type": "string",
+          "const": "os:allow-exe-extension",
+          "markdownDescription": "Enables the exe_extension command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the family command without any pre-configured scope.",
+          "type": "string",
+          "const": "os:allow-family",
+          "markdownDescription": "Enables the family command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the hostname command without any pre-configured scope.",
+          "type": "string",
+          "const": "os:allow-hostname",
+          "markdownDescription": "Enables the hostname command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the locale command without any pre-configured scope.",
+          "type": "string",
+          "const": "os:allow-locale",
+          "markdownDescription": "Enables the locale command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the os_type command without any pre-configured scope.",
+          "type": "string",
+          "const": "os:allow-os-type",
+          "markdownDescription": "Enables the os_type command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the platform command without any pre-configured scope.",
+          "type": "string",
+          "const": "os:allow-platform",
+          "markdownDescription": "Enables the platform command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the version command without any pre-configured scope.",
+          "type": "string",
+          "const": "os:allow-version",
+          "markdownDescription": "Enables the version command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the arch command without any pre-configured scope.",
+          "type": "string",
+          "const": "os:deny-arch",
+          "markdownDescription": "Denies the arch command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the exe_extension command without any pre-configured scope.",
+          "type": "string",
+          "const": "os:deny-exe-extension",
+          "markdownDescription": "Denies the exe_extension command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the family command without any pre-configured scope.",
+          "type": "string",
+          "const": "os:deny-family",
+          "markdownDescription": "Denies the family command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the hostname command without any pre-configured scope.",
+          "type": "string",
+          "const": "os:deny-hostname",
+          "markdownDescription": "Denies the hostname command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the locale command without any pre-configured scope.",
+          "type": "string",
+          "const": "os:deny-locale",
+          "markdownDescription": "Denies the locale command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the os_type command without any pre-configured scope.",
+          "type": "string",
+          "const": "os:deny-os-type",
+          "markdownDescription": "Denies the os_type command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the platform command without any pre-configured scope.",
+          "type": "string",
+          "const": "os:deny-platform",
+          "markdownDescription": "Denies the platform command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the version command without any pre-configured scope.",
+          "type": "string",
+          "const": "os:deny-version",
+          "markdownDescription": "Denies the version command without any pre-configured scope."
+        },
+        {
+          "description": "Allows the moveWindow and handleIconState APIs\n#### This default permission set includes:\n\n- `allow-move-window`\n- `allow-move-window-constrained`\n- `allow-set-tray-icon-state`",
+          "type": "string",
+          "const": "positioner:default",
+          "markdownDescription": "Allows the moveWindow and handleIconState APIs\n#### This default permission set includes:\n\n- `allow-move-window`\n- `allow-move-window-constrained`\n- `allow-set-tray-icon-state`"
+        },
+        {
+          "description": "Enables the move_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "positioner:allow-move-window",
+          "markdownDescription": "Enables the move_window command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the move_window_constrained command without any pre-configured scope.",
+          "type": "string",
+          "const": "positioner:allow-move-window-constrained",
+          "markdownDescription": "Enables the move_window_constrained command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_tray_icon_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "positioner:allow-set-tray-icon-state",
+          "markdownDescription": "Enables the set_tray_icon_state command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the move_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "positioner:deny-move-window",
+          "markdownDescription": "Denies the move_window command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the move_window_constrained command without any pre-configured scope.",
+          "type": "string",
+          "const": "positioner:deny-move-window-constrained",
+          "markdownDescription": "Denies the move_window_constrained command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_tray_icon_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "positioner:deny-set-tray-icon-state",
+          "markdownDescription": "Denies the set_tray_icon_state command without any pre-configured scope."
+        },
+        {
+          "description": "This permission set configures which\nprocess features are by default exposed.\n\n#### Granted Permissions\n\nThis enables to quit via `allow-exit` and restart via `allow-restart`\nthe application.\n\n#### This default permission set includes:\n\n- `allow-exit`\n- `allow-restart`",
+          "type": "string",
+          "const": "process:default",
+          "markdownDescription": "This permission set configures which\nprocess features are by default exposed.\n\n#### Granted Permissions\n\nThis enables to quit via `allow-exit` and restart via `allow-restart`\nthe application.\n\n#### This default permission set includes:\n\n- `allow-exit`\n- `allow-restart`"
+        },
+        {
+          "description": "Enables the exit command without any pre-configured scope.",
+          "type": "string",
+          "const": "process:allow-exit",
+          "markdownDescription": "Enables the exit command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the restart command without any pre-configured scope.",
+          "type": "string",
+          "const": "process:allow-restart",
+          "markdownDescription": "Enables the restart command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the exit command without any pre-configured scope.",
+          "type": "string",
+          "const": "process:deny-exit",
+          "markdownDescription": "Denies the exit command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the restart command without any pre-configured scope.",
+          "type": "string",
+          "const": "process:deny-restart",
+          "markdownDescription": "Denies the restart command without any pre-configured scope."
         },
         {
           "description": "This permission set configures which\nshell functionality is exposed by default.\n\n#### Granted Permissions\n\nIt allows to use the `open` functionality with a reasonable\nscope pre-configured. It will allow opening `http(s)://`,\n`tel:` and `mailto:` links.\n\n#### This default permission set includes:\n\n- `allow-open`",
@@ -6505,6 +6859,102 @@
           "type": "string",
           "const": "store:deny-values",
           "markdownDescription": "Denies the values command without any pre-configured scope."
+        },
+        {
+          "description": "This permission set configures which kind of\nupdater functions are exposed to the frontend.\n\n#### Granted Permissions\n\nThe full workflow from checking for updates to installing them\nis enabled.\n\n\n#### This default permission set includes:\n\n- `allow-check`\n- `allow-download`\n- `allow-install`\n- `allow-download-and-install`",
+          "type": "string",
+          "const": "updater:default",
+          "markdownDescription": "This permission set configures which kind of\nupdater functions are exposed to the frontend.\n\n#### Granted Permissions\n\nThe full workflow from checking for updates to installing them\nis enabled.\n\n\n#### This default permission set includes:\n\n- `allow-check`\n- `allow-download`\n- `allow-install`\n- `allow-download-and-install`"
+        },
+        {
+          "description": "Enables the check command without any pre-configured scope.",
+          "type": "string",
+          "const": "updater:allow-check",
+          "markdownDescription": "Enables the check command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the download command without any pre-configured scope.",
+          "type": "string",
+          "const": "updater:allow-download",
+          "markdownDescription": "Enables the download command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the download_and_install command without any pre-configured scope.",
+          "type": "string",
+          "const": "updater:allow-download-and-install",
+          "markdownDescription": "Enables the download_and_install command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the install command without any pre-configured scope.",
+          "type": "string",
+          "const": "updater:allow-install",
+          "markdownDescription": "Enables the install command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the check command without any pre-configured scope.",
+          "type": "string",
+          "const": "updater:deny-check",
+          "markdownDescription": "Denies the check command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the download command without any pre-configured scope.",
+          "type": "string",
+          "const": "updater:deny-download",
+          "markdownDescription": "Denies the download command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the download_and_install command without any pre-configured scope.",
+          "type": "string",
+          "const": "updater:deny-download-and-install",
+          "markdownDescription": "Denies the download_and_install command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the install command without any pre-configured scope.",
+          "type": "string",
+          "const": "updater:deny-install",
+          "markdownDescription": "Denies the install command without any pre-configured scope."
+        },
+        {
+          "description": "This permission set configures what kind of\noperations are available from the window state plugin.\n\n#### Granted Permissions\n\nAll operations are enabled by default.\n\n\n#### This default permission set includes:\n\n- `allow-filename`\n- `allow-restore-state`\n- `allow-save-window-state`",
+          "type": "string",
+          "const": "window-state:default",
+          "markdownDescription": "This permission set configures what kind of\noperations are available from the window state plugin.\n\n#### Granted Permissions\n\nAll operations are enabled by default.\n\n\n#### This default permission set includes:\n\n- `allow-filename`\n- `allow-restore-state`\n- `allow-save-window-state`"
+        },
+        {
+          "description": "Enables the filename command without any pre-configured scope.",
+          "type": "string",
+          "const": "window-state:allow-filename",
+          "markdownDescription": "Enables the filename command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the restore_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "window-state:allow-restore-state",
+          "markdownDescription": "Enables the restore_state command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_window_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "window-state:allow-save-window-state",
+          "markdownDescription": "Enables the save_window_state command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the filename command without any pre-configured scope.",
+          "type": "string",
+          "const": "window-state:deny-filename",
+          "markdownDescription": "Denies the filename command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the restore_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "window-state:deny-restore-state",
+          "markdownDescription": "Denies the restore_state command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_window_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "window-state:deny-save-window-state",
+          "markdownDescription": "Denies the save_window_state command without any pre-configured scope."
         }
       ]
     },

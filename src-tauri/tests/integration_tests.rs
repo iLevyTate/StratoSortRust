@@ -69,10 +69,29 @@ impl TestFixtures {
 
     /// Create sample embeddings for testing
     pub fn create_sample_embeddings() -> Vec<(String, Vec<f32>)> {
+        // Create 384-dimensional embeddings to match nomic-embed-text model
+        let mut embedding1 = vec![0.0; 384];
+        embedding1[0] = 0.1;
+        embedding1[1] = 0.2;
+        embedding1[2] = 0.3;
+        embedding1[3] = 0.4;
+
+        let mut embedding2 = vec![0.0; 384];
+        embedding2[0] = 0.5;
+        embedding2[1] = 0.6;
+        embedding2[2] = 0.7;
+        embedding2[3] = 0.8;
+
+        let mut embedding3 = vec![0.0; 384];
+        embedding3[0] = 0.9;
+        embedding3[1] = 0.8;
+        embedding3[2] = 0.7;
+        embedding3[3] = 0.6;
+
         vec![
-            ("test_contract.pdf".to_string(), vec![0.1, 0.2, 0.3, 0.4]),
-            ("vacation_photo.jpg".to_string(), vec![0.5, 0.6, 0.7, 0.8]),
-            ("invoice_2024.xlsx".to_string(), vec![0.9, 0.8, 0.7, 0.6]),
+            ("test_contract.pdf".to_string(), embedding1),
+            ("vacation_photo.jpg".to_string(), embedding2),
+            ("invoice_2024.xlsx".to_string(), embedding3),
         ]
     }
 
@@ -280,7 +299,11 @@ mod tests {
         }
 
         // Test semantic search
-        let query_embedding = vec![0.1, 0.2, 0.3, 0.4];
+        let mut query_embedding = vec![0.0; 384];
+        query_embedding[0] = 0.1;
+        query_embedding[1] = 0.2;
+        query_embedding[2] = 0.3;
+        query_embedding[3] = 0.4;
         let results = db.semantic_search(&query_embedding, 5).await.unwrap();
 
         // We should get results since we have embeddings
@@ -390,7 +413,11 @@ mod tests {
         assert!(result.is_none());
 
         // Test semantic search with empty database
-        let query_embedding = vec![0.1, 0.2, 0.3, 0.4];
+        let mut query_embedding = vec![0.0; 384];
+        query_embedding[0] = 0.1;
+        query_embedding[1] = 0.2;
+        query_embedding[2] = 0.3;
+        query_embedding[3] = 0.4;
         let results = db.semantic_search(&query_embedding, 5).await.unwrap();
         assert!(results.is_empty());
     }

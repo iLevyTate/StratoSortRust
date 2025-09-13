@@ -263,7 +263,7 @@ pub async fn open_folder(path: String, app: AppHandle) -> Result<()> {
         cmd.env_clear();
         cmd.env(
             "SYSTEMROOT",
-            std::env::var("SYSTEMROOT").unwrap_or_default(),
+            std::env::var("SYSTEMROOT").unwrap_or_else(|_| "C:\\Windows".to_string()),
         );
 
         cmd.spawn()
@@ -350,7 +350,7 @@ pub async fn open_with_default(path: String, app: AppHandle) -> Result<()> {
         cmd.env_clear();
         cmd.env(
             "SYSTEMROOT",
-            std::env::var("SYSTEMROOT").unwrap_or_default(),
+            std::env::var("SYSTEMROOT").unwrap_or_else(|_| "C:\\Windows".to_string()),
         );
 
         cmd.spawn()
@@ -422,7 +422,7 @@ pub async fn show_in_folder(path: String, app: AppHandle) -> Result<()> {
         cmd.env_clear();
         cmd.env(
             "SYSTEMROOT",
-            std::env::var("SYSTEMROOT").unwrap_or_default(),
+            std::env::var("SYSTEMROOT").unwrap_or_else(|_| "C:\\Windows".to_string()),
         );
 
         cmd.spawn()
@@ -629,7 +629,10 @@ fn check_gpu_availability() -> bool {
 }
 
 fn rustc_version() -> String {
-    env!("CARGO_PKG_RUST_VERSION").to_string()
+    // Use RUST_VERSION set by build.rs, fallback to package version
+    option_env!("RUST_VERSION")
+        .unwrap_or(env!("CARGO_PKG_VERSION"))
+        .to_string()
 }
 
 async fn node_version() -> String {

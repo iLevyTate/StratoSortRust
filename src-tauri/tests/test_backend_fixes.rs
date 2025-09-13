@@ -180,7 +180,12 @@ mod database_tests {
 
         // Store embeddings in both tables
         let file_path = "test_file.txt";
-        let embeddings = vec![0.1, 0.2, 0.3, 0.4];
+        // Create 384-dimensional embedding to match nomic-embed-text model
+        let mut embeddings = vec![0.0; 384];
+        embeddings[0] = 0.1;
+        embeddings[1] = 0.2;
+        embeddings[2] = 0.3;
+        embeddings[3] = 0.4;
 
         // Store embeddings (both tables are handled internally)
         let result = database

@@ -54,7 +54,16 @@
       "Bash(rustup component add:*)",
       "Bash(del fix_whitespace.py)",
       "Bash(rustup component list:*)",
-      "Bash(set TEST_MODE=true)"
+      "Bash(set TEST_MODE=true)",
+      "Bash(timeout 120 cargo check)",
+      "Bash(timeout 300 cargo test --lib)",
+      "Bash(timeout 300 cargo test --tests)",
+      "Bash(if exist testsunittest_core_modules.rs del testsunittest_core_modules.rs)",
+      "Bash(if exist teststest_core_modules.rs del teststest_core_modules.rs)",
+      "Bash(timeout 120 cargo clippy --lib -- -D warnings)",
+      "Bash(timeout 120 cargo build)",
+      "Bash(timeout 120 cargo build --release)",
+      "Bash(git config:*)"
     ],
     "deny": [],
     "ask": []
