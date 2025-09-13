@@ -2887,7 +2887,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.61.2",
+ "windows-core 0.56.0",
 ]
 
 [[package]]
@@ -3580,30 +3580,11 @@ dependencies = [
 
 [[package]]
 name = "lopdf"
-version = "0.33.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5c14afa083a906d49e1bda105ddbf8175016e2658954e6d0c3e612f886df3db"
-dependencies = [
- "chrono",
- "encoding_rs",
- "flate2",
- "indexmap 2.11.0",
- "itoa",
- "linked-hash-map",
- "log",
- "md-5",
- "nom",
- "rayon",
- "time",
- "weezl",
-]
-
-[[package]]
-name = "lopdf"
 version = "0.34.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c5c8ecfc6c72051981c0459f75ccc585e7ff67c70829560cda8e647882a9abff"
 dependencies = [
+ "chrono",
  "encoding_rs",
  "flate2",
  "indexmap 2.11.0",
@@ -3612,6 +3593,7 @@ dependencies = [
  "md-5",
  "nom",
  "rangemap",
+ "rayon",
  "time",
  "weezl",
 ]
@@ -4762,7 +4744,7 @@ dependencies = [
  "adobe-cmap-parser",
  "encoding_rs",
  "euclid",
- "lopdf 0.34.0",
+ "lopdf",
  "postscript",
  "type1-encoding-parser",
  "unicode-normalization",
@@ -6715,7 +6697,7 @@ dependencies = [
  "json5",
  "kamadak-exif",
  "libsqlite3-sys",
- "lopdf 0.33.0",
+ "lopdf",
  "markup5ever 0.12.1",
  "memmap2",
  "metaflac",
