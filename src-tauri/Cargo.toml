@@ -81,7 +81,7 @@ crossbeam-channel = "0.5"
 
 # File processing - Documents & Text
 pdf-extract = { version = "0.7", optional = true }  # Basic PDF text extraction
-lopdf = { version = "0.33", optional = true }       # Advanced PDF manipulation (updated)
+lopdf = { version = "0.34", optional = true }       # Advanced PDF manipulation (updated)
 docx-rs = { version = "0.4", optional = true }      # Microsoft Word document processing
 # docx crate removed - using docx-rs instead
 # odf crate doesn't exist - consider calamine for spreadsheets, no direct ODF support
