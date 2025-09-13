@@ -12,20 +12,40 @@ fn main() {
         }
     }
     // Set build date
-    let output = Command::new("powershell")
-        .args(["-Command", "Get-Date -Format 'yyyy-MM-dd HH:mm:ss'"])
-        .output()
-        .unwrap_or_else(|_| {
-            // Fallback for non-Windows systems
-            Command::new("date")
-                .args(["+%Y-%m-%d %H:%M:%S"])
-                .output()
-                .unwrap_or_else(|_| std::process::Output {
-                    status: std::process::ExitStatus::default(),
-                    stdout: "Unknown".as_bytes().to_vec(),
-                    stderr: vec![],
-                })
-        });
+    let output = if cfg!(target_os = "windows") {
+        // Use PowerShell with more robust settings for Windows CI
+        Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "Get-Date -Format 'yyyy-MM-dd HH:mm:ss'",
+            ])
+            .output()
+            .unwrap_or_else(|_| {
+                // Fallback to cmd.exe if PowerShell fails
+                Command::new("cmd")
+                    .args(["/C", "echo %DATE% %TIME%"])
+                    .output()
+                    .unwrap_or_else(|_| std::process::Output {
+                        status: std::process::ExitStatus::default(),
+                        stdout: "Unknown".as_bytes().to_vec(),
+                        stderr: vec![],
+                    })
+            })
+    } else {
+        // Unix systems
+        Command::new("date")
+            .args(["+%Y-%m-%d %H:%M:%S"])
+            .output()
+            .unwrap_or_else(|_| std::process::Output {
+                status: std::process::ExitStatus::default(),
+                stdout: "Unknown".as_bytes().to_vec(),
+                stderr: vec![],
+            })
+    };
 
     let build_date = String::from_utf8_lossy(&output.stdout).trim().to_string();
     println!("cargo:rustc-env=BUILD_DATE={}", build_date);

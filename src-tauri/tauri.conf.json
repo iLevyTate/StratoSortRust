@@ -8,6 +8,13 @@
     "beforeBuildCommand": null,
     "frontendDist": "../dist"
   },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": ["https://releases.myapp.com/{{target}}/{{current_version}}"],
+      "dialog": true
+    }
+  },
   "app": {
     "withGlobalTauri": true,
     "windows": [

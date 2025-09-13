@@ -1,19 +1,13 @@
 // Common test utilities and fixtures
-use stratosort::{
-    ai::{AiService, FileAnalysis, OrganizationSuggestion},
-    config::Config,
-    storage::database::Database,
-    error::Result,
-};
-use tempfile::{tempdir, TempDir};
+use mockito;
 use std::{
     fs,
     path::{Path, PathBuf},
     sync::Arc,
 };
+use stratosort::{ai::FileAnalysis, config::Config, error::Result, storage::Database};
+use tempfile::{tempdir, TempDir};
 use uuid::Uuid;
-use chrono::Utc;
-use mockito;
 
 // Test data builders
 pub struct TestDataBuilder;
@@ -22,11 +16,11 @@ impl TestDataBuilder {
     pub fn file_analysis() -> FileAnalysisBuilder {
         FileAnalysisBuilder::new()
     }
-    
+
     pub fn config() -> ConfigBuilder {
         ConfigBuilder::new()
     }
-    
+
     pub fn test_file() -> TestFileBuilder {
         TestFileBuilder::new()
     }
@@ -48,30 +42,30 @@ impl FileAnalysisBuilder {
                 extracted_text: None,
                 detected_language: None,
                 metadata: serde_json::json!({}),
-            }
+            },
         }
     }
-    
+
     pub fn with_path(mut self, path: &str) -> Self {
         self.analysis.path = path.to_string();
         self
     }
-    
+
     pub fn with_category(mut self, category: &str) -> Self {
         self.analysis.category = category.to_string();
         self
     }
-    
+
     pub fn with_tags(mut self, tags: Vec<&str>) -> Self {
         self.analysis.tags = tags.iter().map(|s| s.to_string()).collect();
         self
     }
-    
+
     pub fn with_confidence(mut self, confidence: f32) -> Self {
         self.analysis.confidence = confidence;
         self
     }
-    
+
     pub fn build(self) -> FileAnalysis {
         self.analysis
     }
@@ -87,22 +81,22 @@ impl ConfigBuilder {
             config: Config::default(),
         }
     }
-    
+
     pub fn with_ollama_host(mut self, host: &str) -> Self {
         self.config.ollama_host = host.to_string();
         self
     }
-    
+
     pub fn with_ollama_model(mut self, model: &str) -> Self {
         self.config.ollama_model = model.to_string();
         self
     }
-    
+
     pub fn with_debug_mode(mut self, debug: bool) -> Self {
         self.config.debug_mode = debug;
         self
     }
-    
+
     pub fn build(self) -> Config {
         self.config
     }
@@ -122,28 +116,28 @@ impl TestFileBuilder {
             file_type: "text/plain".to_string(),
         }
     }
-    
+
     pub fn with_path(mut self, path: PathBuf) -> Self {
         self.path = Some(path);
         self
     }
-    
+
     pub fn with_content(mut self, content: &str) -> Self {
         self.content = content.to_string();
         self
     }
-    
+
     pub fn with_type(mut self, file_type: &str) -> Self {
         self.file_type = file_type.to_string();
         self
     }
-    
+
     pub fn create(self) -> Result<PathBuf> {
         let path = self.path.unwrap_or_else(|| {
             let dir = tempdir().unwrap();
             dir.path().join("test_file.txt")
         });
-        
+
         fs::write(&path, self.content)?;
         Ok(path)
     }
@@ -162,12 +156,12 @@ impl MockAiService {
             current_index: 0,
         }
     }
-    
+
     pub fn with_response(mut self, response: FileAnalysis) -> Self {
         self.responses.push(response);
         self
     }
-    
+
     pub async fn analyze_file(&mut self, _content: &str, _file_type: &str) -> Result<FileAnalysis> {
         if self.current_index < self.responses.len() {
             let response = self.responses[self.current_index].clone();
@@ -189,31 +183,31 @@ pub struct TestEnvironment {
 impl TestEnvironment {
     pub async fn new() -> Self {
         let temp_dir = tempdir().unwrap();
-        let mut config = Config::default();
-        
-        // Use test-specific paths
-        config.database_path = Some(temp_dir.path().join("test.db").to_string_lossy().to_string());
-        
+        let config = Config::default();
+
+        // Config doesn't have database_path field anymore
+        // Database paths are handled separately
+
         Self {
             temp_dir,
             config,
             database: None,
         }
     }
-    
+
     pub async fn with_database(mut self) -> Self {
         let db_path = self.temp_dir.path().join("test.db");
         let db_url = format!("sqlite://{}", db_path.display());
         self.database = Some(Database::new_from_url(&db_url).await.unwrap());
         self
     }
-    
+
     pub fn create_test_file(&self, name: &str, content: &str) -> PathBuf {
         let path = self.temp_dir.path().join(name);
         fs::write(&path, content).unwrap();
         path
     }
-    
+
     pub fn create_test_directory(&self, name: &str) -> PathBuf {
         let path = self.temp_dir.path().join(name);
         fs::create_dir_all(&path).unwrap();
@@ -232,30 +226,33 @@ impl MockOllamaServer {
             server: mockito::Server::new(),
         }
     }
-    
+
     pub fn url(&self) -> String {
         self.server.url()
     }
-    
+
     pub fn mock_list_models(&mut self) -> mockito::Mock {
-        self.server.mock("GET", "/api/tags")
+        self.server
+            .mock("GET", "/api/tags")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"models": [{"name": "test-model", "size": 1000}]}"#)
             .create()
     }
-    
+
     pub fn mock_generate(&mut self, response: &str) -> mockito::Mock {
-        self.server.mock("POST", "/api/generate")
+        self.server
+            .mock("POST", "/api/generate")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(format!(r#"{{"response": "{}", "done": true}}"#, response))
             .create()
     }
-    
+
     pub fn mock_embeddings(&mut self, embeddings: Vec<f32>) -> mockito::Mock {
         let embedding_str = serde_json::to_string(&embeddings).unwrap();
-        self.server.mock("POST", "/api/embeddings")
+        self.server
+            .mock("POST", "/api/embeddings")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(format!(r#"{{"embedding": {}}}"#, embedding_str))
@@ -271,13 +268,16 @@ impl TestAssertions {
         assert_eq!(actual.path, expected.path, "Path mismatch");
         assert_eq!(actual.category, expected.category, "Category mismatch");
         assert_eq!(actual.tags, expected.tags, "Tags mismatch");
-        assert!((actual.confidence - expected.confidence).abs() < 0.01, "Confidence mismatch");
+        assert!(
+            (actual.confidence - expected.confidence).abs() < 0.01,
+            "Confidence mismatch"
+        );
     }
-    
+
     pub fn assert_path_exists(path: &Path) {
         assert!(path.exists(), "Path does not exist: {:?}", path);
     }
-    
+
     pub fn assert_file_content(path: &Path, expected_content: &str) {
         let content = fs::read_to_string(path).unwrap();
         assert_eq!(content, expected_content, "File content mismatch");
@@ -297,17 +297,19 @@ impl PerformanceTimer {
             name: name.to_string(),
         }
     }
-    
+
     pub fn elapsed_ms(&self) -> u128 {
         self.start.elapsed().as_millis()
     }
-    
+
     pub fn assert_under_ms(&self, max_ms: u128) {
         let elapsed = self.elapsed_ms();
         assert!(
             elapsed < max_ms,
             "{} took {}ms, expected under {}ms",
-            self.name, elapsed, max_ms
+            self.name,
+            elapsed,
+            max_ms
         );
     }
 }
@@ -319,15 +321,17 @@ impl TestDataGenerator {
     pub fn random_path() -> String {
         format!("/test/{}.txt", Uuid::new_v4())
     }
-    
+
     pub fn random_content(size: usize) -> String {
         (0..size).map(|_| "x").collect()
     }
-    
+
     pub fn sample_files(count: usize) -> Vec<String> {
-        (0..count).map(|i| format!("/test/file_{}.txt", i)).collect()
+        (0..count)
+            .map(|i| format!("/test/file_{}.txt", i))
+            .collect()
     }
-    
+
     pub fn sample_embeddings(dimension: usize) -> Vec<f32> {
         (0..dimension).map(|i| (i as f32) * 0.1).collect()
     }
@@ -343,7 +347,7 @@ impl DatabaseTestHelper {
         let db_url = format!("sqlite://{}", db_path.display());
         Database::new_from_url(&db_url).await
     }
-    
+
     pub async fn populate_with_test_data(db: &Database, count: usize) -> Result<()> {
         for i in 0..count {
             let analysis = TestDataBuilder::file_analysis()
@@ -351,7 +355,7 @@ impl DatabaseTestHelper {
                 .with_category(if i % 2 == 0 { "Documents" } else { "Images" })
                 .with_tags(vec![&format!("tag_{}", i)])
                 .build();
-            
+
             db.save_analysis(&analysis).await?;
         }
         Ok(())
@@ -369,15 +373,13 @@ impl ConcurrencyTestHelper {
     {
         let mut handles = vec![];
         let task_fn = Arc::new(task_fn);
-        
+
         for i in 0..task_count {
             let task_fn = task_fn.clone();
-            let handle = tokio::spawn(async move {
-                task_fn(i)
-            });
+            let handle = tokio::spawn(async move { task_fn(i) });
             handles.push(handle);
         }
-        
+
         let mut results = vec![];
         for handle in handles {
             results.push(handle.await.unwrap());
