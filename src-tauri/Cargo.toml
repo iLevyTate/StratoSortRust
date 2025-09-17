@@ -5,11 +5,15 @@ description = "AI-powered file organization"
 authors = ["StratoSort Team"]
 edition = "2021"
 rust-version = "1.75"
-default-run = "stratosort"
+default-run = "stratosort-app"
 
 [lib]
 name = "stratosort"
 crate-type = ["lib", "cdylib"]
+
+[[bin]]
+name = "stratosort-app"
+path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

@@ -146,7 +146,11 @@
       "Bash(timeout 60 npm test:*)",
       "Bash(timeout 30 cargo check --test test_vector_ext_sql_injection)",
       "Bash(timeout 30 cargo check --lib)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(timeout 60 cargo clippy --all-targets -- -D warnings)",
+      "Bash(timeout 60 cargo clippy --no-deps -- -D warnings)",
+      "Bash(npx svelte-check:*)",
+      "Bash(timeout 60 npm run test:ci:*)"
     ],
     "deny": [],
     "ask": []
