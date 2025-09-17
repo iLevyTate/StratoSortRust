@@ -1,6 +1,4 @@
-use stratosort::storage::database::Database;
-use stratosort::error::AppError;
-use sqlx::SqlitePool;
+use stratosort::storage::Database;
 use tempfile::tempdir;
 use std::sync::Arc;
 

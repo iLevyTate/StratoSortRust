@@ -1,15 +1,15 @@
-use stratosort::utils::security::{validate_and_sanitize_path_legacy, is_path_within_bounds};
+use stratosort::utils::security::validate_and_sanitize_path_legacy;
 use stratosort::error::AppError;
-use tauri::test::{mock_app, MockRuntime};
 use std::path::PathBuf;
 use std::fs;
 use tempfile::tempdir;
+use tauri::test::mock_app;
 
 #[test]
 fn test_toctou_race_condition_prevention() {
     // Test Time-of-Check-Time-of-Use race conditions
     let temp_dir = tempdir().unwrap();
-    let app = mock_app();
+    let app = mock_app(); // Mock app needed for path validation
     
     // Create a legitimate file first
     let legit_path = temp_dir.path().join("legitimate.txt");
@@ -38,7 +38,7 @@ fn test_toctou_race_condition_prevention() {
 #[test]
 fn test_symlink_attack_prevention() {
     let temp_dir = tempdir().unwrap();
-    let app = mock_app();
+    let app = mock_app(); // Mock app needed for path validation
     
     // Create target file outside allowed area (simulated - we can't actually create symlinks in all test environments)
     let outside_target = "/etc/passwd";
@@ -80,7 +80,7 @@ fn test_symlink_attack_prevention() {
 
 #[test]
 fn test_unicode_normalization_attacks() {
-    let app = mock_app();
+    let app = mock_app(); // Mock app needed for path validation
     
     let unicode_attacks = vec![
         // Unicode normalization attacks
@@ -127,7 +127,7 @@ fn test_unicode_normalization_attacks() {
 #[test]
 fn test_path_canonicalization_bypass() {
     let temp_dir = tempdir().unwrap();
-    let app = mock_app();
+    let app = mock_app(); // Mock app needed for path validation
     
     // Create nested directory structure for testing
     let nested_dir = temp_dir.path().join("level1").join("level2");
@@ -197,7 +197,7 @@ fn test_path_canonicalization_bypass() {
 #[test]
 fn test_directory_traversal_with_allowed_paths() {
     let temp_dir = tempdir().unwrap();
-    let app = mock_app();
+    let app = mock_app(); // Mock app needed for path validation
     
     // Create some allowed and disallowed directories
     let allowed_dir = temp_dir.path().join("allowed");
@@ -255,7 +255,7 @@ fn test_directory_traversal_with_allowed_paths() {
 
 #[test]
 fn test_file_extension_confusion_attacks() {
-    let app = mock_app();
+    let app = mock_app(); // Mock app needed for path validation
     
     let extension_attacks = vec![
         // Double extensions

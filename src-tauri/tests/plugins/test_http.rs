@@ -27,7 +27,7 @@ mod test_http_plugin {
     #[tokio::test]
     async fn test_http_post_ai_request() {
         // Test POST request to AI service
-        let request_body = json!({
+        let _request_body = json!({
             "model": "llama2",
             "prompt": "Analyze this document for categorization",
             "temperature": 0.7,
@@ -58,7 +58,7 @@ mod test_http_plugin {
     async fn test_http_multipart_upload() {
         // Test multipart file upload for AI analysis
         let file_content = b"PDF file content here";
-        let boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
+        let _boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
 
         // Simulate multipart request
         let response = MockHttpResponse::ok_json(json!({
@@ -161,7 +161,7 @@ mod test_http_plugin {
     #[tokio::test]
     async fn test_http_streaming_response() {
         // Test streaming responses for large AI responses
-        let chunks: Vec<&[u8]> = vec![
+        let chunks: [&[u8]; 3] = [
             b"First chunk of data",
             b"Second chunk of data",
             b"Third chunk of data",
@@ -229,7 +229,7 @@ mod test_http_plugin {
     #[tokio::test]
     async fn test_http_proxy_support() {
         // Test proxy support for corporate environments
-        let proxy_config = json!({
+        let _proxy_config = json!({
             "http_proxy": "http://proxy.company.com:8080",
             "https_proxy": "https://proxy.company.com:8080",
             "no_proxy": "localhost,127.0.0.1,*.local"
@@ -282,7 +282,7 @@ mod test_http_plugin {
     #[test]
     fn test_http_error_handling() {
         // Test handling various HTTP errors
-        let error_responses = vec![
+        let error_responses = [
             (400, "Bad Request"),
             (401, "Unauthorized"),
             (403, "Forbidden"),

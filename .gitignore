@@ -60,8 +60,8 @@ lerna-debug.log*
 .next
 .svelte-kit
 
-# Frontend build outputs (keep dist/ for Tauri frontend)
-# dist/
+# Frontend build outputs
+dist/
 build/
 out/
 .output/
@@ -121,7 +121,8 @@ jspm_packages/
 # Optional REPL history
 .node_repl_history
 
-# Environment files (but keep .env for development)
+# Environment files
+.env
 .env.local
 .env.development.local
 .env.test.local
@@ -136,6 +137,11 @@ src-tauri/data/
 *.deb
 *.AppImage
 *.msi
+
+# Tauri signing keys (SECURITY: Never commit private keys)
+*.key
+*.key.pub
+tauri-signing-key*
 
 # Database files
 *.db

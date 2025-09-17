@@ -215,7 +215,7 @@ mod test_os_plugin {
         // Test OS-specific file system features
         let os_info = MockOsInfo::default();
 
-        let supports_symlinks = match os_info.platform.as_str() {
+        let _supports_symlinks = match os_info.platform.as_str() {
             "windows" => {
                 // Windows requires admin rights for symlinks
                 false // Conservative default
@@ -240,7 +240,7 @@ mod test_os_plugin {
         // Test feature availability
         if supports_extended_attrs {
             // Can store AI metadata as extended attributes
-            assert!(true, "Extended attributes available for metadata");
+            // Extended attributes available for metadata
         }
     }
 
@@ -282,18 +282,15 @@ mod test_os_plugin {
             _ => false,
         };
 
-        let has_code_signing = match os_info.platform.as_str() {
-            "macos" | "windows" => true,
-            _ => false,
-        };
+        let has_code_signing = matches!(os_info.platform.as_str(), "macos" | "windows");
 
         // Verify security features are considered
         if has_sandboxing {
-            assert!(true, "Sandboxing available for secure operations");
+            // Sandboxing available for secure operations
         }
 
         if has_code_signing {
-            assert!(true, "Code signing available for integrity verification");
+            // Code signing available for integrity verification
         }
     }
 }

@@ -35,7 +35,7 @@ pub async fn undo(
         let success = perform_undo_operation(&op, &state).await?;
 
         if success {
-            app.emit("operation-undone", &op)?;
+            app.emit("history-operation-undone", &op)?;
         }
 
         Ok(UndoResult {
@@ -64,7 +64,7 @@ pub async fn redo(
         let success = perform_redo_operation(&op, &state).await?;
 
         if success {
-            app.emit("operation-redone", &op)?;
+            app.emit("history-operation-redone", &op)?;
         }
 
         Ok(RedoResult {
@@ -155,7 +155,7 @@ pub async fn batch_undo(
 
     if successful > 0 {
         app.emit(
-            "batch-undo",
+            "history-batch-undo",
             serde_json::json!({
                 "count": successful,
                 "operations": operations,
@@ -202,7 +202,7 @@ pub async fn batch_redo(
 
     if successful > 0 {
         app.emit(
-            "batch-redo",
+            "history-batch-redo",
             serde_json::json!({
                 "count": successful,
                 "operations": operations,
@@ -316,7 +316,7 @@ pub async fn jump_to_history(
 
     if success {
         app.emit(
-            "jumped-to-history",
+            "history-jumped-to",
             serde_json::json!({
                 "operation_id": operation_id,
                 "target_operation": target_op,

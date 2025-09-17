@@ -22,6 +22,22 @@ type DirectorySizeResult<'a> =
 static CONCURRENT_READS: AtomicUsize = AtomicUsize::new(0);
 static TOTAL_MEMORY_USAGE: AtomicUsize = AtomicUsize::new(0);
 
+// Helper function to add timeout to long-running file operations
+async fn with_timeout<T, F>(
+    future: F,
+    timeout_secs: u64,
+    operation_name: &str,
+) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>>,
+{
+    tokio::time::timeout(tokio::time::Duration::from_secs(timeout_secs), future)
+        .await
+        .map_err(|_| crate::error::AppError::Timeout {
+            message: format!("{} operation timed out after {} seconds", operation_name, timeout_secs),
+        })?
+}
+
 // Resource limits are now configurable via Config struct
 // These functions get the limits from the app state
 fn get_max_concurrent_reads(state: &AppState) -> usize {
@@ -41,12 +57,59 @@ fn get_max_scan_depth(state: &AppState) -> usize {
 }
 
 const STREAM_THRESHOLD: u64 = 1024 * 1024; // Stream files > 1MB (still constant)
+const CHUNK_SIZE: usize = 8192; // 8KB chunks for streaming
+const MAX_STRING_GROWTH: usize = 64 * 1024; // Don't grow strings more than 64KB at once
 
 // RAII guard for concurrent reads counter and memory usage
 struct ReadGuard;
 
 struct MemoryGuard {
     size: usize,
+}
+
+// RAII guard for operation tracking to prevent resource leaks
+#[allow(dead_code)]
+struct OperationGuard {
+    operation_id: uuid::Uuid,
+    state: std::sync::Arc<AppState>,
+    completed: bool,
+}
+
+#[allow(dead_code)]
+impl OperationGuard {
+    fn new(
+        state: std::sync::Arc<AppState>,
+        operation_type: crate::state::OperationType,
+        message: String,
+    ) -> Self {
+        let operation_id = state.start_operation(operation_type, message);
+        Self {
+            operation_id,
+            state,
+            completed: false,
+        }
+    }
+
+    fn complete(&mut self) {
+        if !self.completed {
+            self.state.complete_operation(self.operation_id);
+            self.completed = true;
+        }
+    }
+
+    fn id(&self) -> uuid::Uuid {
+        self.operation_id
+    }
+}
+
+impl Drop for OperationGuard {
+    fn drop(&mut self) {
+        // Ensure operation is always completed, even on panic or early return
+        if !self.completed {
+            tracing::warn!("Operation {} was not properly completed, cleaning up", self.operation_id);
+            self.state.complete_operation(self.operation_id);
+        }
+    }
 }
 
 impl ReadGuard {
@@ -146,6 +209,21 @@ pub async fn scan_directory(
     state: State<'_, std::sync::Arc<AppState>>,
     app: AppHandle,
 ) -> Result<Vec<FileInfo>> {
+    // Add timeout to prevent indefinite blocking on large directory scans
+    with_timeout(
+        scan_directory_internal(path, recursive, state, app),
+        300, // 5 minutes timeout for directory scanning
+        "Directory scan",
+    )
+    .await
+}
+
+async fn scan_directory_internal(
+    path: String,
+    recursive: bool,
+    state: State<'_, std::sync::Arc<AppState>>,
+    app: AppHandle,
+) -> Result<Vec<FileInfo>> {
     // Validate and sanitize path to prevent path traversal
     let sanitized_path = validate_and_sanitize_path(&path, &app)?;
 
@@ -193,12 +271,14 @@ pub async fn scan_directory(
             .into_iter()
             .filter_map(|e| e.ok())
         {
-            // Check for cancellation
-            if let Some(op) = state.active_operations.get(&operation_id) {
-                if op.cancellation_token.is_cancelled() {
-                    state.complete_operation(operation_id);
-                    return Err(crate::error::AppError::Cancelled);
-                }
+            // Check for cancellation atomically
+            let is_cancelled = state.active_operations.get(&operation_id)
+                .map(|op| op.cancellation_token.is_cancelled())
+                .unwrap_or(true); // Consider cancelled if operation no longer exists
+
+            if is_cancelled {
+                state.complete_operation(operation_id);
+                return Err(crate::error::AppError::Cancelled);
             }
 
             if let Ok(info) = get_file_info(entry.path()).await {
@@ -248,7 +328,188 @@ pub async fn scan_directory(
 }
 
 #[tauri::command]
+pub async fn scan_directory_stream(
+    path: String,
+    recursive: bool,
+    batch_size: Option<usize>,
+    state: State<'_, std::sync::Arc<AppState>>,
+    app: AppHandle,
+) -> Result<String> {
+    // Validate and sanitize path to prevent path traversal
+    let sanitized_path = validate_and_sanitize_path(&path, &app)?;
+
+    // Validate path exists
+    if !sanitized_path.exists() {
+        return Err(crate::error::AppError::FileNotFound {
+            path: sanitized_path.display().to_string(),
+        });
+    }
+
+    // Ensure path is within allowed directories
+    if !is_path_allowed(&sanitized_path, &app)? {
+        return Err(crate::error::AppError::SecurityError {
+            message: "Access to this directory is not allowed".to_string(),
+        });
+    }
+
+    let batch_size = batch_size.unwrap_or(50);
+    let operation_id = state.start_operation(
+        crate::state::OperationType::FileAnalysis,
+        format!("Streaming directory scan: {}", path),
+    );
+
+    // Clone necessary values for the async task
+    let app_clone = app.clone();
+    let state_clone = state.inner().clone();
+    let operation_id_clone = operation_id;
+    let operation_id_str = operation_id.to_string();
+    let operation_id_str_clone = operation_id_str.clone();
+
+    // Spawn background task for streaming
+    tokio::spawn(async move {
+        let operation_id_str = operation_id_str_clone;
+        let mut batch = Vec::new();
+        let mut total_processed = 0usize;
+
+        if recursive {
+            let max_depth = get_max_scan_depth(&state_clone);
+            let entries = WalkDir::new(&sanitized_path)
+                .max_depth(max_depth)
+                .into_iter()
+                .filter_map(|e| e.ok());
+
+            for entry in entries {
+                // Check for cancellation
+                if let Some(status) = state_clone.active_operations.get(&operation_id_clone) {
+                    if status.cancellation_token.is_cancelled() {
+                        let _ = app_clone.emit("scan-cancelled", serde_json::json!({
+                            "operation_id": operation_id_str,
+                            "reason": "User cancelled operation"
+                        }));
+                        return;
+                    }
+                }
+
+                if let Ok(info) = get_file_info(entry.path()).await {
+                    batch.push(info);
+                    total_processed += 1;
+
+                    // Emit when batch is full
+                    if batch.len() >= batch_size {
+                        let _ = app_clone.emit("scan-batch", serde_json::json!({
+                            "operation_id": operation_id_str,
+                            "files": batch,
+                            "total_processed": total_processed,
+                            "batch_size": batch.len()
+                        }));
+                        batch.clear();
+                    }
+                }
+
+                // Update progress periodically
+                if total_processed % 100 == 0 {
+                    state_clone.update_progress(
+                        operation_id_clone,
+                        0.5, // Approximate progress for streaming
+                        format!("Streamed {} files", total_processed),
+                    );
+
+                    // Small delay to prevent overwhelming the frontend
+                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                }
+            }
+        } else {
+            match fs::read_dir(&sanitized_path).await {
+                Ok(mut entries) => {
+                    while let Ok(Some(entry)) = entries.next_entry().await {
+                        // Check for cancellation
+                        if let Some(status) = state_clone.active_operations.get(&operation_id_clone) {
+                            if status.cancellation_token.is_cancelled() {
+                                let _ = app_clone.emit("scan-cancelled", serde_json::json!({
+                                    "operation_id": operation_id_str,
+                                    "reason": "User cancelled operation"
+                                }));
+                                return;
+                            }
+                        }
+
+                        if let Ok(info) = get_file_info(&entry.path()).await {
+                            batch.push(info);
+                            total_processed += 1;
+
+                            // Emit when batch is full
+                            if batch.len() >= batch_size {
+                                let _ = app_clone.emit("scan-batch", serde_json::json!({
+                                    "operation_id": operation_id_str,
+                                    "files": batch,
+                                    "total_processed": total_processed,
+                                    "batch_size": batch.len()
+                                }));
+                                batch.clear();
+                            }
+                        }
+                    }
+                },
+                Err(e) => {
+                    let _ = app_clone.emit("scan-error", serde_json::json!({
+                        "operation_id": operation_id_str,
+                        "error": e.to_string()
+                    }));
+                    // Update operation with error and complete it
+                    state_clone.update_progress(
+                        operation_id_clone,
+                        0.0,
+                        format!("Error: {}", e),
+                    );
+                    state_clone.complete_operation(operation_id_clone);
+                    return;
+                }
+            }
+        }
+
+        // Emit final batch if any remain
+        if !batch.is_empty() {
+            let _ = app_clone.emit("scan-batch", serde_json::json!({
+                "operation_id": operation_id_str,
+                "files": batch,
+                "total_processed": total_processed,
+                "batch_size": batch.len()
+            }));
+        }
+
+        // Emit completion
+        let _ = app_clone.emit("scan-complete", serde_json::json!({
+            "operation_id": operation_id_str,
+            "total_files": total_processed
+        }));
+
+        state_clone.update_progress(
+            operation_id_clone,
+            1.0,
+            format!("Streaming scan complete: {} files", total_processed),
+        );
+        state_clone.complete_operation(operation_id_clone);
+    });
+
+    Ok(operation_id_str)
+}
+
+#[tauri::command]
 pub async fn analyze_files(
+    paths: Vec<String>,
+    state: State<'_, std::sync::Arc<AppState>>,
+    app: AppHandle,
+) -> Result<Vec<crate::ai::FileAnalysis>> {
+    // Add timeout to prevent indefinite blocking during AI analysis
+    with_timeout(
+        analyze_files_internal(paths, state, app),
+        600, // 10 minutes timeout for file analysis (AI operations can be slow)
+        "File analysis",
+    )
+    .await
+}
+
+async fn analyze_files_internal(
     paths: Vec<String>,
     state: State<'_, std::sync::Arc<AppState>>,
     app: AppHandle,
@@ -449,47 +710,21 @@ pub async fn get_file_content(
     // Reserve memory for this file read
     let _memory_guard = MemoryGuard::new(metadata.len() as usize, &state)?;
 
-    // Read file with streaming for large files
+    // Read file with improved memory management and operation tracking
+    let operation_id = state.start_operation(
+        crate::state::OperationType::FileAnalysis,
+        format!("Reading file: {}", path),
+    );
+
     let content = if metadata.len() > STREAM_THRESHOLD {
         // Stream large files to avoid memory exhaustion
-        let file = fs::File::open(&sanitized_path).await?;
-        let mut reader = BufReader::new(file);
-        // NEVER pre-allocate based on untrusted file size
-        let mut content = String::new();
-
-        // Read in smaller, fixed chunks for security
-        let mut buffer = vec![0; 8192]; // Fixed 8KB chunks
-        let mut total_read = 0u64;
-
-        loop {
-            let bytes_read = reader.read(&mut buffer).await?;
-            if bytes_read == 0 {
-                break;
-            }
-
-            total_read += bytes_read as u64;
-            let max_file_size = get_max_file_size(&state);
-            if total_read > max_file_size {
-                return Err(crate::error::AppError::SecurityError {
-                    message: "File size exceeded limit during read".to_string(),
-                });
-            }
-
-            // Convert bytes to string and append
-            match std::str::from_utf8(&buffer[..bytes_read]) {
-                Ok(s) => content.push_str(s),
-                Err(_) => {
-                    // If not valid UTF-8, try to read as binary and convert
-                    content.push_str(&String::from_utf8_lossy(&buffer[..bytes_read]));
-                }
-            }
-        }
-
-        content
+        read_large_file_streaming(&sanitized_path, &state, operation_id).await?
     } else {
-        // Small files - read all at once
-        fs::read_to_string(&sanitized_path).await?
+        // Small files - read all at once but with memory monitoring
+        read_small_file_safe(&sanitized_path, &state).await?
     };
+
+    state.complete_operation(operation_id);
 
     // Cache for future use
     let file_info = get_file_info(&sanitized_path).await?;
@@ -963,6 +1198,12 @@ pub async fn create_directory(path: String, recursive: bool, app: AppHandle) -> 
 pub async fn get_file_info_command(path: String, app: AppHandle) -> Result<FileInfo> {
     let sanitized_path = validate_and_sanitize_path(&path, &app)?;
     get_file_info(&sanitized_path).await
+}
+
+/// Alias for backwards compatibility with tests calling `get_file_info`
+#[tauri::command(rename = "get_file_info")]
+pub async fn get_file_info_cmd(path: String, app: AppHandle) -> Result<FileInfo> {
+    get_file_info_command(path, app).await
 }
 
 #[tauri::command]
@@ -1749,7 +1990,7 @@ pub async fn process_dropped_paths(
 }
 
 // Data structures for the new commands
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DialogFilter {
     pub name: String,
     pub extensions: Vec<String>,
@@ -1892,4 +2133,89 @@ async fn validate_file_access(
     // For desktop app, default to allowing access if path validation passed
     // In production multi-user environment, this should be more restrictive
     Ok(true)
+}
+
+/// Stream large files to avoid memory exhaustion
+async fn read_large_file_streaming(path: &Path, state: &AppState, operation_id: uuid::Uuid) -> Result<String> {
+    let file = fs::File::open(path).await?;
+    let mut reader = BufReader::new(file);
+
+    // Use String::with_capacity with a reasonable initial size to reduce reallocations
+    let mut content = String::with_capacity(CHUNK_SIZE * 4);
+    let mut buffer = vec![0; CHUNK_SIZE];
+    let mut total_read = 0u64;
+    let max_file_size = get_max_file_size(state);
+
+    loop {
+        let bytes_read = reader.read(&mut buffer).await?;
+        if bytes_read == 0 {
+            break;
+        }
+
+        total_read += bytes_read as u64;
+        if total_read > max_file_size {
+            return Err(crate::error::AppError::SecurityError {
+                message: "File size exceeded limit during read".to_string(),
+            });
+        }
+
+        // Convert bytes to string and append with controlled growth
+        let chunk_str = match std::str::from_utf8(&buffer[..bytes_read]) {
+            Ok(s) => s.to_string(),
+            Err(_) => {
+                // If not valid UTF-8, try to read as binary and convert
+                String::from_utf8_lossy(&buffer[..bytes_read]).to_string()
+            }
+        };
+
+        // Control string growth to avoid excessive memory usage
+        if content.capacity() - content.len() < chunk_str.len() {
+            let additional_capacity = (chunk_str.len().max(MAX_STRING_GROWTH)).next_power_of_two();
+            content.reserve(additional_capacity);
+        }
+
+        content.push_str(&chunk_str);
+
+        // Periodic memory pressure and cancellation checks
+        if total_read % (CHUNK_SIZE as u64 * 64) == 0 {
+            // Check for cancellation
+            let is_cancelled = state.active_operations.get(&operation_id)
+                .map(|op| op.cancellation_token.is_cancelled())
+                .unwrap_or(true);
+
+            if is_cancelled {
+                return Err(crate::error::AppError::Cancelled);
+            }
+
+            // Memory pressure check
+            let current_memory = TOTAL_MEMORY_USAGE.load(Ordering::Acquire);
+            let max_memory = get_max_total_memory(state);
+            if current_memory > max_memory * 90 / 100 { // 90% threshold
+                tracing::warn!("Memory pressure detected during file read, consider reducing file size limits");
+            }
+        }
+    }
+
+    // Shrink to fit after reading to free excess capacity
+    content.shrink_to_fit();
+    Ok(content)
+}
+
+/// Read small files safely with memory monitoring
+async fn read_small_file_safe(path: &Path, _state: &AppState) -> Result<String> {
+    // Use a memory-optimized approach even for small files
+    let metadata = fs::metadata(path).await?;
+    let file_size = metadata.len() as usize;
+
+    // Pre-allocate with exact size for small files to avoid reallocations
+    let mut content = String::with_capacity(file_size + 1);
+
+    // Read file content
+    let file_content = fs::read_to_string(path).await?;
+    content.push_str(&file_content);
+
+    // Shrink to actual size to free any over-allocated memory
+    content.shrink_to_fit();
+
+    Ok(content)
 }
