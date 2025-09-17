@@ -2,7 +2,10 @@ use stratosort::error::AppError;
 use stratosort::commands::ai::{pull_model, analyze_with_ai, generate_embeddings, semantic_search};
 use stratosort::commands::files::{get_file_content, scan_directory, analyze_files};
 use stratosort::utils::security::{validate_and_sanitize_path_legacy, sanitize_filename};
+use stratosort::state::AppState;
+use stratosort::config::Config;
 use std::sync::Arc;
+use tauri::{AppHandle, Manager};
 use tauri::test::{MockRuntime, mock_app, mock_context};
 use tokio::runtime::Runtime;
 
@@ -14,7 +17,7 @@ fn test_model_name_injection_prevention() {
         // Create mock app state (simplified for testing)
         let app = mock_app();
         let state = create_mock_app_state().await;
-        let state_ref = tauri::State::<Arc<crate::state::AppState>>::from(&state);
+        let state_ref = tauri::State::<Arc<AppState>>::from(&state);
         
         let malicious_model_names = vec![
             "", // Empty
@@ -66,7 +69,7 @@ fn test_content_injection_prevention() {
     rt.block_on(async {
         let app = mock_app();
         let state = create_mock_app_state().await;
-        let state_ref = tauri::State::<Arc<crate::state::AppState>>::from(&state);
+        let state_ref = tauri::State::<Arc<AppState>>::from(&state);
         
         let malicious_content_tests = vec![
             ("a".repeat(11 * 1024 * 1024), "text/plain"), // Too large (>10MB)
@@ -111,7 +114,7 @@ fn test_search_query_injection_prevention() {
     rt.block_on(async {
         let app = mock_app();
         let state = create_mock_app_state().await;
-        let state_ref = tauri::State::<Arc<crate::state::AppState>>::from(&state);
+        let state_ref = tauri::State::<Arc<AppState>>::from(&state);
         
         let malicious_queries = vec![
             ("", 10), // Empty query
@@ -248,14 +251,14 @@ fn test_embedding_text_injection_prevention() {
     rt.block_on(async {
         let app = mock_app();
         let state = create_mock_app_state().await;
-        let state_ref = tauri::State::<Arc<crate::state::AppState>>::from(&state);
+        let state_ref = tauri::State::<Arc<AppState>>::from(&state);
         
         let malicious_texts = vec![
-            "", // Empty text
+            "".to_string(), // Empty text
             "a".repeat(200 * 1024), // Too long (>100KB)
-            "text\0with\0nulls", // Null bytes
-            "text with \u{202e} rtl override", // Unicode attacks
-            "very normal text", // This should pass
+            "text\0with\0nulls".to_string(), // Null bytes
+            "text with \u{202e} rtl override".to_string(), // Unicode attacks
+            "very normal text".to_string(), // This should pass
         ];
         
         for text in malicious_texts {
@@ -300,20 +303,21 @@ fn test_file_operation_injection_prevention() {
     
     rt.block_on(async {
         let app = mock_app();
+        let app_handle: AppHandle = app.handle().clone();
         let state = create_mock_app_state().await;
-        let state_ref = tauri::State::<Arc<crate::state::AppState>>::from(&state);
-        
+        let state_ref = tauri::State::<Arc<AppState>>::from(&state);
+
         let malicious_file_operations = vec![
             vec!["../../../etc/passwd".to_string()], // Path traversal in analysis
             vec!["/dev/null".to_string()], // Special device file
             vec!["C:\\Windows\\System32\\drivers\\etc\\hosts".to_string()], // Windows system file
-            vec!["file1.txt", "../escape.txt"].map(|s| s.to_string()).to_vec(), // Mixed safe/unsafe
+            vec!["file1.txt".to_string(), "../escape.txt".to_string()], // Mixed safe/unsafe
             vec!["a".repeat(1500)], // Extremely long path
             (0..2000).map(|i| format!("file{}.txt", i)).collect(), // Too many files
         ];
         
         for file_list in malicious_file_operations {
-            let result = analyze_files(file_list.clone(), state_ref.clone(), app.clone()).await;
+            let result = analyze_files(file_list.clone(), state_ref.clone(), app_handle.clone()).await;
             
             match result {
                 Err(AppError::SecurityError { message }) => {
@@ -340,17 +344,15 @@ fn test_file_operation_injection_prevention() {
 }
 
 // Helper function to create mock app state for testing
-async fn create_mock_app_state() -> Arc<crate::state::AppState> {
+async fn create_mock_app_state() -> Arc<AppState> {
     // This is a simplified mock - in real tests you'd want proper mock implementations
-    use crate::state::AppState;
-    use crate::config::Config;
-    
     let app = mock_app();
+    let app_handle: AppHandle = app.handle().clone();
     let config = Config::default();
-    
+
     // Create a real AppState for testing (this will fail if dependencies aren't available)
     // In practice, you'd want to create mock implementations
-    match AppState::new(app.clone(), config).await {
+    match AppState::new(app_handle, config).await {
         Ok(state) => Arc::new(state),
         Err(_) => {
             // Fallback to a minimal mock if real state creation fails
@@ -376,7 +378,8 @@ fn test_unicode_normalization_attacks() {
     ];
     
     for attack_path in unicode_attacks {
-        let result = validate_and_sanitize_path_legacy(attack_path, &app);
+        let app_handle: AppHandle = app.handle().clone();
+        let result = validate_and_sanitize_path_legacy(attack_path, &app_handle);
         
         match result {
             Ok(path) => {

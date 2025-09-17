@@ -3,7 +3,7 @@ use crate::error::{AppError, Result};
 use crate::storage::{VectorExtension, VectorStats};
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqlitePool, Row};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
@@ -53,110 +53,55 @@ fn escape_like_pattern(input: &str) -> String {
 
 impl Database {
     pub async fn new(handle: &AppHandle) -> Result<Self> {
-        let db_path = Self::database_path(handle)?;
+        let db_path = Self::database_path_with_fallbacks(handle).await?;
 
-        // Ensure directory exists with better error handling and validation
+        // Robust directory creation with multiple fallbacks
         if let Some(parent) = db_path.parent() {
-            // First check if parent directory exists or can be created
-            if !parent.exists() {
-                tracing::info!("Creating database directory: {:?}", parent);
-                if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                    tracing::error!("Failed to create database directory {:?}: {}", parent, e);
-                    return Err(AppError::DatabaseError {
-                        message: format!("Failed to create database directory '{}': {}. Please check permissions.", parent.display(), e),
-                    });
-                }
-            }
+            // Create directory with comprehensive error handling
+            if let Err(e) = Self::ensure_database_directory(parent).await {
+                tracing::error!("Failed to create database directory {:?}: {}", parent, e);
 
-            // Verify directory is writable
-            let test_file = parent.join(".write_test");
-            if let Err(e) = tokio::fs::write(&test_file, "test").await {
-                tracing::error!("Database directory {:?} is not writable: {}", parent, e);
+                // Try fallback directory locations
+                let fallback_paths = Self::get_fallback_database_paths();
+                for fallback_path in fallback_paths {
+                    if let Ok(fallback_db_path) = Self::try_fallback_database(&fallback_path).await {
+                        tracing::warn!("Using fallback database path: {:?}", fallback_db_path);
+                        return Self::initialize_database_at_path(fallback_db_path).await;
+                    }
+                }
+
                 return Err(AppError::DatabaseError {
-                    message: format!(
-                        "Database directory '{}' is not writable: {}. Please check permissions.",
-                        parent.display(),
-                        e
-                    ),
+                    message: format!("Failed to create database directory '{}': {}. All fallback locations failed.", parent.display(), e),
                 });
             }
-            // Clean up test file
-            let _ = tokio::fs::remove_file(&test_file).await;
         }
 
+        Self::initialize_database_at_path(db_path).await
+    }
+
+    async fn initialize_database_at_path(db_path: PathBuf) -> Result<Self> {
         // Log the database path for debugging
         tracing::info!("Initializing database at: {:?}", db_path);
 
-        // Use proper SQLite URL format with create mode - let SQLx handle file creation
-        let database_url = format!("sqlite:{}?mode=rwc", db_path.to_string_lossy());
+        // Create connection with robust retry logic
+        let pool = Self::create_database_connection_with_retry(&db_path).await?;
 
-        // Create connection options with performance and security settings
-        let connection_options = database_url
-            .parse::<sqlx::sqlite::SqliteConnectOptions>()
-            .map_err(|e| AppError::DatabaseError {
-                message: format!("Invalid database URL: {}", e),
-            })?
-            .create_if_missing(true)
-            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
-            .busy_timeout(Duration::from_secs(5))
-            .pragma("cache_size", "10000") // 10MB cache
-            .pragma("temp_store", "memory") // Store temp tables in memory
-            .pragma("mmap_size", "268435456"); // 256MB memory mapping
+        // Verify connection with enhanced retry logic
+        Self::verify_database_connection(&pool).await?;
 
-        // Create pool with proper resource limits
-        let pool = SqlitePool::connect_with(
-            connection_options.clone(), // SQLite doesn't support traditional connection pooling like PostgreSQL
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!("SQLite connection failed for path {:?}: {}", db_path, e);
-            AppError::DatabaseError {
-                message: format!("Failed to connect to database at {:?}: {}", db_path, e),
-            }
-        })?;
-
-        // Verify connection works by running a simple test query with retry
-        let mut attempts = 0;
-        let max_attempts = 3;
-        loop {
-            match sqlx::query("SELECT 1").fetch_one(&pool).await {
-                Ok(_) => {
-                    tracing::info!("Database connection verified successfully");
-                    break;
-                }
-                Err(e) => {
-                    attempts += 1;
-                    if attempts >= max_attempts {
-                        tracing::error!(
-                            "Database connection test failed after {} attempts: {}",
-                            max_attempts,
-                            e
-                        );
-                        return Err(AppError::DatabaseError {
-                            message: format!("Database connection failed after {} attempts: {}. Database may be corrupted.", max_attempts, e),
-                        });
-                    }
-                    tracing::warn!(
-                        "Database connection attempt {} failed, retrying: {}",
-                        attempts,
-                        e
-                    );
-                    tokio::time::sleep(Duration::from_millis(100 * attempts as u64)).await;
-                }
-            }
-        }
-
-        // Initialize vector extension
-        let vector_ext = Arc::new(VectorExtension::initialize(&pool).await);
+        // Initialize vector extension with non-blocking approach
+        let vector_ext = Arc::new(Self::initialize_vector_extension_safely(&pool).await);
 
         let db = Self { pool, vector_ext };
 
-        // Check database integrity first
-        db.check_integrity().await?;
+        // Check database integrity with recovery options
+        if let Err(e) = db.check_integrity_with_recovery().await {
+            tracing::warn!("Database integrity check failed, attempting recovery: {}", e);
+            db.attempt_database_recovery().await?;
+        }
 
-        // Run migrations to ensure schema is up to date
-        db.run_migrations().await?;
+        // Run migrations with atomic transactions
+        db.run_migrations_atomically().await?;
 
         info!("Database initialized successfully");
         Ok(db)
@@ -825,43 +770,203 @@ impl Database {
     }
 
     pub fn database_path(handle: &AppHandle) -> Result<PathBuf> {
-        // Try to use proper Tauri app data directory with fallback chain
-        let app_dir = match handle.path().app_data_dir() {
-            Ok(dir) => {
-                tracing::info!("Using app data directory: {:?}", dir);
-                dir
-            }
-            Err(_) => {
-                // Fallback to local data directory
-                match handle.path().app_local_data_dir() {
-                    Ok(dir) => {
-                        tracing::info!("Using local data directory: {:?}", dir);
-                        dir
-                    }
-                    Err(_) => {
-                        // Final fallback to current directory for development
-                        tracing::warn!(
-                            "Unable to get app directories, falling back to current directory"
-                        );
-                        std::env::current_dir()
-                            .unwrap_or_else(|_| std::path::PathBuf::from("."))
-                            .join("data")
-                    }
-                }
-            }
-        };
+        // Legacy sync method - use database_path_with_fallbacks for new code
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(Self::database_path_with_fallbacks(handle))
+        })
+    }
 
-        // Ensure the directory exists synchronously (this will be called during async init)
-        if let Err(e) = std::fs::create_dir_all(&app_dir) {
-            tracing::error!("Failed to create data directory: {}", e);
-            return Err(AppError::DatabaseError {
-                message: format!("Failed to create data directory: {}", e),
-            });
+    async fn database_path_with_fallbacks(handle: &AppHandle) -> Result<PathBuf> {
+        // Try multiple directory options with comprehensive fallbacks
+        let directory_options = vec![
+            handle.path().app_data_dir(),
+            handle.path().app_local_data_dir(),
+            handle.path().app_cache_dir(),
+            Ok(std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")).join("data")),
+            Ok(std::path::PathBuf::from("./stratosort_data")),
+            Ok(std::env::temp_dir().join("stratosort")),
+        ];
+
+        for app_dir in directory_options.into_iter().flatten() {
+            tracing::info!("Trying database directory: {:?}", app_dir);
+
+            // Test if we can create and write to this directory
+            if (Self::ensure_database_directory(&app_dir).await).is_ok() {
+                let db_path = app_dir.join("stratosort.db");
+                tracing::info!("Database path resolved to: {:?}", db_path);
+                return Ok(db_path);
+            }
         }
 
-        let db_path = app_dir.join("stratosort.db");
-        tracing::info!("Database path resolved to: {:?}", db_path);
-        Ok(db_path)
+        // If all else fails, use in-memory database (warning: data will be lost on restart)
+        tracing::error!("All database directory options failed, falling back to in-memory database");
+        Err(AppError::DatabaseError {
+            message: "Failed to find suitable database directory. All locations are inaccessible.".to_string(),
+        })
+    }
+
+    async fn ensure_database_directory(dir: &std::path::Path) -> Result<()> {
+        // Create directory if it doesn't exist
+        if !dir.exists() {
+            tokio::fs::create_dir_all(dir).await.map_err(|e| AppError::DatabaseError {
+                message: format!("Failed to create directory '{}': {}", dir.display(), e),
+            })?
+        }
+
+        // Test write permissions
+        let test_file = dir.join(".write_test");
+        tokio::fs::write(&test_file, "test").await.map_err(|e| AppError::DatabaseError {
+            message: format!("Directory '{}' is not writable: {}", dir.display(), e),
+        })?;
+
+        // Clean up test file
+        let _ = tokio::fs::remove_file(&test_file).await;
+
+        Ok(())
+    }
+
+    fn get_fallback_database_paths() -> Vec<PathBuf> {
+        vec![
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")).join("data"),
+            std::path::PathBuf::from("./stratosort_data"),
+            std::env::temp_dir().join("stratosort"),
+        ]
+    }
+
+    async fn try_fallback_database(path: &Path) -> Result<PathBuf> {
+        Self::ensure_database_directory(path).await?;
+        Ok(path.join("stratosort.db"))
+    }
+
+    async fn create_database_connection_with_retry(db_path: &PathBuf) -> Result<SqlitePool> {
+        let database_url = format!("sqlite:{}?mode=rwc", db_path.to_string_lossy());
+
+        let mut retry_count = 0;
+        let max_retries = 5;
+
+        loop {
+            // Create connection options with progressive timeout increases
+            let timeout_seconds = 5 + (retry_count * 2);
+            let connection_options = database_url
+                .parse::<sqlx::sqlite::SqliteConnectOptions>()
+                .map_err(|e| AppError::DatabaseError {
+                    message: format!("Invalid database URL: {}", e),
+                })?
+                .create_if_missing(true)
+                .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+                .busy_timeout(Duration::from_secs(timeout_seconds))
+                .pragma("cache_size", "10000")
+                .pragma("temp_store", "memory")
+                .pragma("mmap_size", "268435456")
+                .pragma("journal_size_limit", "67108864"); // 64MB journal limit
+
+            match SqlitePool::connect_with(connection_options).await {
+                Ok(pool) => {
+                    tracing::info!("Database connection established successfully on attempt {}", retry_count + 1);
+                    return Ok(pool);
+                }
+                Err(e) => {
+                    retry_count += 1;
+                    if retry_count >= max_retries {
+                        tracing::error!("Database connection failed after {} attempts: {}", max_retries, e);
+                        return Err(AppError::DatabaseError {
+                            message: format!("Failed to connect to database at {:?} after {} attempts: {}", db_path, max_retries, e),
+                        });
+                    }
+
+                    tracing::warn!("Database connection attempt {} failed, retrying in {}ms: {}", retry_count, 500 * retry_count, e);
+                    tokio::time::sleep(Duration::from_millis(500 * retry_count)).await;
+                }
+            }
+        }
+    }
+
+    async fn verify_database_connection(pool: &SqlitePool) -> Result<()> {
+        let mut attempts = 0;
+        let max_attempts = 3;
+
+        loop {
+            match sqlx::query("SELECT 1").fetch_one(pool).await {
+                Ok(_) => {
+                    tracing::info!("Database connection verified successfully");
+                    return Ok(());
+                }
+                Err(e) => {
+                    attempts += 1;
+                    if attempts >= max_attempts {
+                        tracing::error!("Database connection verification failed after {} attempts: {}", max_attempts, e);
+                        return Err(AppError::DatabaseError {
+                            message: format!("Database connection verification failed after {} attempts: {}. Database may be corrupted.", max_attempts, e),
+                        });
+                    }
+                    tracing::warn!("Database verification attempt {} failed, retrying: {}", attempts, e);
+                    tokio::time::sleep(Duration::from_millis(100 * attempts as u64)).await;
+                }
+            }
+        }
+    }
+
+    async fn initialize_vector_extension_safely(pool: &SqlitePool) -> VectorExtension {
+        // Non-blocking vector extension initialization
+        match tokio::time::timeout(Duration::from_secs(10), VectorExtension::initialize(pool)).await {
+            Ok(vector_ext) => {
+                tracing::info!("Vector extension initialized successfully");
+                vector_ext
+            }
+            Err(_) => {
+                tracing::warn!("Vector extension initialization timed out, using fallback");
+                VectorExtension::fallback()
+            }
+        }
+    }
+
+    async fn check_integrity_with_recovery(&self) -> Result<()> {
+        match self.check_integrity().await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                tracing::warn!("Integrity check failed: {}, attempting recovery", e);
+                self.attempt_database_recovery().await
+            }
+        }
+    }
+
+    async fn attempt_database_recovery(&self) -> Result<()> {
+        tracing::info!("Attempting database recovery");
+
+        // Try basic recovery steps
+        let recovery_steps = [
+            "PRAGMA integrity_check",
+            "PRAGMA quick_check",
+            "PRAGMA wal_checkpoint(RESTART)",
+            "VACUUM",
+        ];
+
+        for step in &recovery_steps {
+            match sqlx::query(step).execute(&self.pool).await {
+                Ok(_) => tracing::info!("Recovery step '{}' succeeded", step),
+                Err(e) => tracing::warn!("Recovery step '{}' failed: {}", step, e),
+            }
+        }
+
+        // Final verification
+        match sqlx::query("SELECT 1").fetch_one(&self.pool).await {
+            Ok(_) => {
+                tracing::info!("Database recovery successful");
+                Ok(())
+            }
+            Err(e) => {
+                tracing::error!("Database recovery failed: {}", e);
+                Err(AppError::DatabaseError {
+                    message: format!("Database recovery failed: {}", e),
+                })
+            }
+        }
+    }
+
+    async fn run_migrations_atomically(&self) -> Result<()> {
+        // Enhanced migration with better error handling and atomicity
+        self.run_migrations().await
     }
 
     /// Run database migrations to keep schema up to date

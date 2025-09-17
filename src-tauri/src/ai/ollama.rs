@@ -551,6 +551,91 @@ impl OllamaClient {
         .await
     }
 
+    /// Analyzes file content using Ollama's text model
+    pub async fn analyze_file(&self, content: &str, file_type: &str) -> Result<FileAnalysis> {
+        // Create a comprehensive analysis prompt
+        let prompt = format!(
+            r#"You are a file organization assistant. Analyze this file content thoroughly and provide a structured JSON response.
+
+IMPORTANT: Base your analysis on the actual file content, not just the file type.
+
+Categories to choose from:
+- Documents: Text documents, PDFs, Word docs, notes, reports
+- Code: Source code, scripts, configuration files, development files
+- Data: Spreadsheets, CSVs, databases, JSON data files
+- Presentations: PowerPoint, slides, keynotes
+- Spreadsheets: Excel files, calculation sheets, financial data
+- Images: Photos, graphics, screenshots, diagrams
+- Videos: Movie files, recordings, clips
+- Audio: Music, podcasts, recordings
+- Archives: Compressed files, backups, zip files
+- 3D Print Files: STL, OBJ, 3MF, GCODE, CAD files
+- Other: Files that don't fit above categories
+
+File type hint: {}
+Content excerpt (first 10000 characters):
+---
+{}
+---
+
+Analyze the content above and respond with ONLY this JSON structure (no additional text):
+{{
+    "path": "",
+    "category": "<one category from the list above that best matches the content>",
+    "tags": ["<tag1>", "<tag2>", "<tag3>", "up to 10 relevant descriptive tags based on actual content"],
+    "summary": "<detailed 1-2 sentence description of what this file contains and its purpose>",
+    "confidence": <0.0 to 1.0 based on how certain you are about the categorization>,
+    "metadata": {{}}
+}}"#,
+            file_type,
+            &content.chars().take(10000).collect::<String>()
+        );
+
+        // Get completion from text model
+        let response = self
+            .generate_completion(&prompt, &self.text_model)
+            .await?;
+
+        // Try to parse the JSON response
+        match serde_json::from_str::<FileAnalysis>(&response) {
+            Ok(mut analysis) => {
+                // Ensure confidence is in valid range
+                if analysis.confidence < 0.0 {
+                    analysis.confidence = 0.0;
+                } else if analysis.confidence > 1.0 {
+                    analysis.confidence = 1.0;
+                }
+                Ok(analysis)
+            }
+            Err(e) => {
+                // If JSON parsing fails, create a basic analysis
+                warn!("Failed to parse Ollama response as JSON: {} - Response: {}", e, response);
+
+                // Try to extract useful information from the response anyway
+                let category = if file_type.contains("text") || file_type.contains("document") {
+                    "Documents"
+                } else if file_type.contains("code") || file_type.contains("script") {
+                    "Code"
+                } else if file_type.contains("data") || file_type.contains("json") || file_type.contains("csv") {
+                    "Data"
+                } else {
+                    "Other"
+                };
+
+                Ok(FileAnalysis {
+                    path: String::new(),
+                    category: category.to_string(),
+                    tags: vec![file_type.to_string()],
+                    summary: response.chars().take(200).collect(),
+                    confidence: 0.5,
+                    extracted_text: None,
+                    detected_language: None,
+                    metadata: serde_json::Value::Object(serde_json::Map::new()),
+                })
+            }
+        }
+    }
+
     /// Analyzes an image file using Ollama's vision model (llava)
     pub async fn analyze_image(&self, image_path: &str) -> Result<FileAnalysis> {
         // Validate image path
@@ -869,47 +954,71 @@ Respond ONLY with valid JSON, no explanations."#,
         let files_list = files
             .iter()
             .take(20) // Limit to prevent prompt overflow
-            .map(|f| format!("- {}", f))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        // Build available smart folders context for the LLM
-        let smart_folders_context = smart_folders
-            .iter()
-            .filter(|folder| folder.enabled)
-            .map(|folder| {
-                format!(
-                    "* {}: {}",
-                    folder.name,
-                    folder
-                        .description
-                        .as_deref()
-                        .unwrap_or("No description available")
-                )
+            .map(|f| {
+                let filename = std::path::Path::new(f)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(f);
+                let extension = std::path::Path::new(f)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                format!("- File: {} (type: {})", filename, extension)
             })
             .collect::<Vec<_>>()
             .join("\n");
 
+        // Build available smart folders context for the LLM with more detail
+        let smart_folders_context = smart_folders
+            .iter()
+            .filter(|folder| folder.enabled)
+            .map(|folder| {
+                let rules_summary = folder.rules
+                    .iter()
+                    .filter(|r| r.enabled)
+                    .map(|r| format!("{:?}", r.rule_type))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                format!(
+                    "* Folder: '{}'\n  Description: {}\n  Rules: [{}]\n  Target Path: {}",
+                    folder.name,
+                    folder.description.as_deref().unwrap_or("General purpose folder"),
+                    if rules_summary.is_empty() { "No specific rules" } else { &rules_summary },
+                    folder.target_path
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
         let prompt = format!(
-            r#"Suggest organization for these files into the available smart folders.
+            r#"You are a file organization assistant. Analyze these files and match them to the most appropriate smart folders.
 
-Available Smart Folders:
+AVAILABLE SMART FOLDERS:
 {}
 
-Provide a JSON array where each item has:
-{{
-    "source_path": "original file path",
-    "target_folder": "folder name from available folders above",
-    "reason": "brief explanation based on folder description",
-    "confidence": 0.0 to 1.0
-}}
-
-Files to organize:
+FILES TO ORGANIZE:
 {}
 
-Match each file to the most appropriate folder based on the descriptions above. 
-If no folder fits perfectly, suggest the closest match with lower confidence.
-Respond ONLY with valid JSON array."#,
+INSTRUCTIONS:
+1. Read each file name and extension carefully
+2. Match files to folders based on:
+   - Folder name and description
+   - File type and extension
+   - Folder rules (if any)
+3. If a file clearly matches a folder's purpose, use high confidence (0.7-1.0)
+4. If unsure but there's a reasonable match, use medium confidence (0.4-0.6)
+5. If no good match exists, use low confidence (0.1-0.3) for the best available option
+
+Respond with ONLY a JSON array (no additional text):
+[
+  {{
+    "source_path": "<exact file path from the list>",
+    "target_folder": "<exact folder name from available folders>",
+    "reason": "<clear explanation why this file belongs in this folder>",
+    "confidence": <0.0 to 1.0>
+  }}
+]"#,
             smart_folders_context, files_list
         );
 

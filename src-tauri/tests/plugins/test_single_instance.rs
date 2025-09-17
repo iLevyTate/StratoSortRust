@@ -42,7 +42,7 @@ mod test_single_instance_plugin {
             *window_focused.write().await = true;
 
             // Send command line args to existing instance
-            let args = vec!["--open", "/path/to/file.txt"];
+            let args = ["--open", "/path/to/file.txt"];
 
             // Verify focus was triggered
             assert!(
@@ -164,7 +164,7 @@ mod test_single_instance_plugin {
         std::fs::write(&lock_file_path, "pid:99999").unwrap();
 
         // Check if process with PID exists
-        let pid = 99999;
+        let _pid = 99999;
         let process_exists = false; // Simulate process doesn't exist
 
         if !process_exists {
@@ -213,7 +213,7 @@ mod test_single_instance_plugin {
         let operations_queue = Arc::new(RwLock::new(Vec::new()));
 
         // New instance tries to perform operations
-        let operations = vec![
+        let operations = [
             json!({"action": "organize", "path": "/test/downloads"}),
             json!({"action": "analyze", "files": ["/test/doc1.pdf", "/test/doc2.pdf"]}),
         ];
@@ -235,7 +235,7 @@ mod test_single_instance_plugin {
     #[test]
     fn test_command_line_args_parsing() {
         // Test parsing command line arguments for existing instance
-        let args = vec![
+        let args = [
             "stratosort",
             "--organize",
             "/path/to/folder",
@@ -287,11 +287,11 @@ mod test_single_instance_plugin {
         match lock_mechanism {
             "mutex" => {
                 // Windows named mutex
-                assert!(true, "Windows uses named mutex for single instance");
+                // Windows uses named mutex for single instance
             }
             "lock_file" => {
                 // Unix lock file
-                assert!(true, "Unix systems use lock files");
+                // Unix systems use lock files
             }
             _ => {}
         }

@@ -87,4 +87,116 @@ impl NotificationService {
         let body = format!("Progress: {:.0}%", progress * 100.0);
         self.send(title, &body).await
     }
+
+    /// Send warning notification for operations that might have failed silently
+    pub async fn send_warning(&self, title: &str, body: &str) -> Result<String> {
+        let notification = Notification {
+            id: Uuid::new_v4().to_string(),
+            title: title.to_string(),
+            body: body.to_string(),
+            icon: Some("warning".to_string()),
+            sound: None,
+            urgency: NotificationUrgency::Normal,
+        };
+
+        self.send_notification(notification).await
+    }
+
+    /// Send operation failure notification with detailed context
+    pub async fn send_operation_failure(
+        &self,
+        operation: &str,
+        error: &str,
+        suggested_action: Option<&str>,
+    ) -> Result<String> {
+        let body = if let Some(action) = suggested_action {
+            format!("{} failed: {}. Suggested action: {}", operation, error, action)
+        } else {
+            format!("{} failed: {}", operation, error)
+        };
+
+        let notification = Notification {
+            id: Uuid::new_v4().to_string(),
+            title: format!("Operation Failed: {}", operation),
+            body,
+            icon: Some("error".to_string()),
+            sound: Some("error".to_string()),
+            urgency: NotificationUrgency::Critical,
+        };
+
+        // Also emit detailed failure event to frontend
+        self.app_handle.emit("operation-failure", serde_json::json!({
+            "operation": operation,
+            "error": error,
+            "suggested_action": suggested_action,
+            "timestamp": chrono::Utc::now().timestamp(),
+            "notification_id": notification.id
+        }))?;
+
+        self.send_notification(notification).await
+    }
+
+    /// Send timeout notification for operations that took too long
+    pub async fn send_timeout_notification(
+        &self,
+        operation: &str,
+        timeout_seconds: u64,
+    ) -> Result<String> {
+        let body = format!(
+            "{} timed out after {} seconds. The operation may still be running in the background.",
+            operation, timeout_seconds
+        );
+
+        let notification = Notification {
+            id: Uuid::new_v4().to_string(),
+            title: "Operation Timeout".to_string(),
+            body,
+            icon: Some("warning".to_string()),
+            sound: None,
+            urgency: NotificationUrgency::Normal,
+        };
+
+        // Emit timeout event to frontend
+        self.app_handle.emit("operation-timeout", serde_json::json!({
+            "operation": operation,
+            "timeout_seconds": timeout_seconds,
+            "timestamp": chrono::Utc::now().timestamp(),
+            "notification_id": notification.id
+        }))?;
+
+        self.send_notification(notification).await
+    }
+
+    /// Send resource limit notification
+    pub async fn send_resource_limit_notification(
+        &self,
+        resource_type: &str,
+        current: usize,
+        limit: usize,
+    ) -> Result<String> {
+        let body = format!(
+            "Resource limit reached for {}: {}/{} in use. Some operations may be delayed.",
+            resource_type, current, limit
+        );
+
+        let notification = Notification {
+            id: Uuid::new_v4().to_string(),
+            title: "Resource Limit Reached".to_string(),
+            body,
+            icon: Some("warning".to_string()),
+            sound: None,
+            urgency: NotificationUrgency::Normal,
+        };
+
+        // Emit resource limit event to frontend
+        self.app_handle.emit("resource-limit", serde_json::json!({
+            "resource_type": resource_type,
+            "current": current,
+            "limit": limit,
+            "timestamp": chrono::Utc::now().timestamp(),
+            "notification_id": notification.id
+        }))?;
+
+        self.send_notification(notification).await
+    }
 }
