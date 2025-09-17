@@ -1,10 +1,6 @@
-name: Test Suite
+name: Test Suite (manual only)
 
 on:
-  push:
-    branches: [main, develop, 'feature/**']
-  pull_request:
-    branches: [main, develop]
   workflow_dispatch:
 
 env:
