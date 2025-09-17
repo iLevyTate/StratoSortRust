@@ -62,10 +62,10 @@ export default defineConfig({
 	],
 
 	/* Run your local dev server before starting the tests */
-	webServer: {
-		command: 'npm run tauri:dev',
-		url: 'http://localhost:1431',
-		reuseExistingServer: !process.env.CI,
-		timeout: 120000 // 2 minutes for Tauri to start
-	}
+    webServer: {
+        command: 'npm run preview -- --port 1431',
+        url: 'http://localhost:1431',
+        reuseExistingServer: !process.env.CI,
+        timeout: 120000 // 2 minutes for preview to start
+    }
 });

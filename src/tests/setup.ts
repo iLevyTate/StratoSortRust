@@ -74,27 +74,42 @@ Object.defineProperty(window, 'matchMedia', {
 	}))
 });
 
-// Mock localStorage
-const localStorageMock = {
-	getItem: vi.fn(),
-	setItem: vi.fn(),
-	removeItem: vi.fn(),
-	clear: vi.fn(),
-	length: 0,
-	key: vi.fn()
-};
-global.localStorage = localStorageMock as any;
+// Mock localStorage with in-memory backing store
+(() => {
+    const store: Record<string, string> = {};
+    const localStorageMock = {
+        getItem: vi.fn((key: string) => (key in store ? store[key] : null)),
+        setItem: vi.fn((key: string, value: string) => {
+            store[key] = String(value);
+        }),
+        removeItem: vi.fn((key: string) => {
+            delete store[key];
+        }),
+        clear: vi.fn(() => {
+            for (const k of Object.keys(store)) delete store[k];
+        }),
+        get length() {
+            return Object.keys(store).length;
+        },
+        key: vi.fn((index: number) => Object.keys(store)[index] ?? null)
+    };
+    // @ts-ignore
+    global.localStorage = localStorageMock as any;
+})();
 
-// Mock performance API
+// Mock performance API (including now)
+// Some libs expect performance.now to exist in happy-dom
+const perf: any = global.performance || {};
 global.performance = {
-	...global.performance,
-	mark: vi.fn(),
-	measure: vi.fn(),
-	clearMarks: vi.fn(),
-	clearMeasures: vi.fn(),
-	getEntriesByName: vi.fn(() => []),
-	getEntriesByType: vi.fn(() => [])
-};
+	...perf,
+	now: perf.now || (() => Date.now()),
+	mark: perf.mark || vi.fn(),
+	measure: perf.measure || vi.fn(),
+	clearMarks: perf.clearMarks || vi.fn(),
+	clearMeasures: perf.clearMeasures || vi.fn(),
+	getEntriesByName: perf.getEntriesByName || vi.fn(() => []),
+	getEntriesByType: perf.getEntriesByType || vi.fn(() => [])
+} as any;
 
 // Mock document for DOM-dependent components
 if (typeof document !== 'undefined') {
