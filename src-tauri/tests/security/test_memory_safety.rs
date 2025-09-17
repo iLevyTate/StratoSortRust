@@ -1,12 +1,12 @@
-use stratosort::commands::files::*;
-use stratosort::state::AppState;
-use stratosort::error::AppError;
-use stratosort::config::Config;
-use tauri::test::{mock_app, MockRuntime};
-use tauri::{State, Emitter};
-use tempfile::tempdir;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use stratosort::commands::files::*;
+use stratosort::config::Config;
+use stratosort::error::AppError;
+use stratosort::state::AppState;
+use tauri::test::{mock_app, MockRuntime};
+use tauri::{Emitter, State};
+use tempfile::tempdir;
 use tokio::fs;
 use tokio::time::{timeout, Duration};
 
@@ -20,10 +20,10 @@ async fn test_large_file_memory_exhaustion_prevention() {
 
     // Create files of various sizes to test memory limits
     let test_files = vec![
-        ("small.txt", 1024),           // 1KB
-        ("medium.txt", 1024 * 1024),   // 1MB
-        ("large.txt", 10 * 1024 * 1024), // 10MB
-        ("huge.txt", 100 * 1024 * 1024), // 100MB - should trigger memory protection
+        ("small.txt", 1024),                 // 1KB
+        ("medium.txt", 1024 * 1024),         // 1MB
+        ("large.txt", 10 * 1024 * 1024),     // 10MB
+        ("huge.txt", 100 * 1024 * 1024),     // 100MB - should trigger memory protection
         ("enormous.txt", 500 * 1024 * 1024), // 500MB - should be rejected
     ];
 
@@ -40,15 +40,18 @@ async fn test_large_file_memory_exhaustion_prevention() {
             created_files.push((file_path, size));
             println!("Created {} successfully", filename);
         } else {
-            println!("Failed to create {} (size {}): {:?}", filename, size, result);
+            println!(
+                "Failed to create {} (size {}): {:?}",
+                filename, size, result
+            );
         }
     }
 
     // Initialize app state with restrictive memory limits for testing
     let mut config = Config::default();
     config.max_single_file_size_mb = 50; // 50MB limit
-    config.max_total_memory_mb = 100;    // 100MB total memory limit
-    config.max_concurrent_reads = 2;     // Limited concurrent operations
+    config.max_total_memory_mb = 100; // 100MB total memory limit
+    config.max_concurrent_reads = 2; // Limited concurrent operations
 
     let state = Arc::new(AppState::with_config(config).await.unwrap());
 
@@ -63,16 +66,26 @@ async fn test_large_file_memory_exhaustion_prevention() {
         // Test with timeout to prevent indefinite hanging
         let result = timeout(
             Duration::from_secs(30),
-            get_file_content(path_str, Some("test_user".to_string()), state_clone, app.clone())
-        ).await;
+            get_file_content(
+                path_str,
+                Some("test_user".to_string()),
+                state_clone,
+                app.clone(),
+            ),
+        )
+        .await;
 
         match result {
             Ok(Ok(content)) => {
                 println!("Successfully read {} ({} chars)", filename, content.len());
 
                 // Verify content length is reasonable
-                assert!(content.len() <= expected_size * 2,
-                       "Content longer than expected: {} vs {}", content.len(), expected_size);
+                assert!(
+                    content.len() <= expected_size * 2,
+                    "Content longer than expected: {} vs {}",
+                    content.len(),
+                    expected_size
+                );
 
                 // For large files, verify they were handled efficiently
                 if expected_size > 50 * 1024 * 1024 {
@@ -80,12 +93,22 @@ async fn test_large_file_memory_exhaustion_prevention() {
                 }
             }
             Ok(Err(AppError::SecurityError { message })) => {
-                println!("File {} properly rejected for security: {}", filename, message);
-                assert!(message.contains("too large") || message.contains("limit") || message.contains("Memory"),
-                       "Security error should mention size/memory limits");
+                println!(
+                    "File {} properly rejected for security: {}",
+                    filename, message
+                );
+                assert!(
+                    message.contains("too large")
+                        || message.contains("limit")
+                        || message.contains("Memory"),
+                    "Security error should mention size/memory limits"
+                );
             }
             Ok(Err(AppError::ResourceLimitExceeded { message })) => {
-                println!("File {} properly rejected for resource limits: {}", filename, message);
+                println!(
+                    "File {} properly rejected for resource limits: {}",
+                    filename, message
+                );
                 // This is the expected behavior for oversized files
             }
             Ok(Err(other_error)) => {
@@ -93,7 +116,10 @@ async fn test_large_file_memory_exhaustion_prevention() {
                 // Other errors may be acceptable depending on system state
             }
             Err(_timeout_error) => {
-                println!("File {} read timed out (acceptable for very large files)", filename);
+                println!(
+                    "File {} read timed out (acceptable for very large files)",
+                    filename
+                );
                 // Timeout is acceptable for memory safety
             }
         }
@@ -123,12 +149,15 @@ async fn test_concurrent_file_operations_memory_safety() {
         }
     }
 
-    println!("Created {} test files for concurrent operations", file_paths.len());
+    println!(
+        "Created {} test files for concurrent operations",
+        file_paths.len()
+    );
 
     // Configure restrictive limits to test memory management
     let mut config = Config::default();
-    config.max_concurrent_reads = 3;  // Very limited concurrency
-    config.max_total_memory_mb = 50;  // Limited total memory
+    config.max_concurrent_reads = 3; // Very limited concurrency
+    config.max_total_memory_mb = 50; // Limited total memory
 
     let state = Arc::new(AppState::with_config(config).await.unwrap());
 
@@ -145,8 +174,14 @@ async fn test_concurrent_file_operations_memory_safety() {
 
             let result = timeout(
                 Duration::from_secs(60),
-                get_file_content(path_clone.clone(), Some(format!("user_{}", i)), state_clone, app_clone)
-            ).await;
+                get_file_content(
+                    path_clone.clone(),
+                    Some(format!("user_{}", i)),
+                    state_clone,
+                    app_clone,
+                ),
+            )
+            .await;
 
             match result {
                 Ok(Ok(content)) => {
@@ -204,12 +239,17 @@ async fn test_concurrent_file_operations_memory_safety() {
     println!("  Errors: {}", errors);
 
     // Verify that resource limiting worked - some operations should have been limited
-    assert!(resource_limited > 0 || errors > 0,
-           "Resource limiting should have occurred with {} concurrent operations", file_count);
+    assert!(
+        resource_limited > 0 || errors > 0,
+        "Resource limiting should have occurred with {} concurrent operations",
+        file_count
+    );
 
     // Verify system didn't crash and some operations succeeded
-    assert!(successful_reads > 0,
-           "At least some operations should have succeeded");
+    assert!(
+        successful_reads > 0,
+        "At least some operations should have succeeded"
+    );
 
     // Verify final memory state
     verify_memory_usage(&state).await;
@@ -241,8 +281,14 @@ async fn test_memory_leak_detection_in_file_operations() {
         // Perform file operation
         let result = timeout(
             Duration::from_secs(10),
-            get_file_content(path_str.clone(), Some(format!("user_{}", i)), state_clone, app.clone())
-        ).await;
+            get_file_content(
+                path_str.clone(),
+                Some(format!("user_{}", i)),
+                state_clone,
+                app.clone(),
+            ),
+        )
+        .await;
 
         match result {
             Ok(Ok(_content)) => {
@@ -263,9 +309,12 @@ async fn test_memory_leak_detection_in_file_operations() {
 
             // Allow for some memory growth, but detect significant leaks
             let memory_growth = current_memory.saturating_sub(initial_memory);
-            assert!(memory_growth < 100, // Arbitrary threshold - adjust based on system
-                   "Potential memory leak detected: {} MB growth after {} iterations",
-                   memory_growth, i + 1);
+            assert!(
+                memory_growth < 100, // Arbitrary threshold - adjust based on system
+                "Potential memory leak detected: {} MB growth after {} iterations",
+                memory_growth,
+                i + 1
+            );
         }
 
         // Force garbage collection opportunity
@@ -278,11 +327,18 @@ async fn test_memory_leak_detection_in_file_operations() {
     let final_memory = get_memory_usage();
     let total_growth = final_memory.saturating_sub(initial_memory);
 
-    println!("Final memory usage: {} MB (growth: {} MB)", final_memory, total_growth);
+    println!(
+        "Final memory usage: {} MB (growth: {} MB)",
+        final_memory, total_growth
+    );
 
     // Allow some memory growth but detect significant leaks
-    assert!(total_growth < 200,
-           "Significant memory growth detected: {} MB after {} iterations", total_growth, iterations);
+    assert!(
+        total_growth < 200,
+        "Significant memory growth detected: {} MB after {} iterations",
+        total_growth,
+        iterations
+    );
 }
 
 #[tokio::test]
@@ -306,32 +362,54 @@ async fn test_directory_scanning_memory_safety() {
     let state = Arc::new(AppState::with_config(config).await.unwrap());
 
     let initial_memory = get_memory_usage();
-    println!("Starting directory scan with {} MB memory usage", initial_memory);
+    println!(
+        "Starting directory scan with {} MB memory usage",
+        initial_memory
+    );
 
     // Test recursive directory scanning with memory monitoring
     let state_clone = State::from(state.clone());
     let result = timeout(
         Duration::from_secs(120), // Generous timeout for large scans
-        scan_directory(temp_dir.path().display().to_string(), true, state_clone, app.clone())
-    ).await;
+        scan_directory(
+            temp_dir.path().display().to_string(),
+            true,
+            state_clone,
+            app.clone(),
+        ),
+    )
+    .await;
 
     match result {
         Ok(Ok(files)) => {
-            println!("Directory scan completed successfully: {} files found", files.len());
+            println!(
+                "Directory scan completed successfully: {} files found",
+                files.len()
+            );
 
             // Verify we got a reasonable number of files
             assert!(files.len() > 0, "Scan should find at least some files");
-            assert!(files.len() < 10000, "File count seems excessive: {}", files.len());
+            assert!(
+                files.len() < 10000,
+                "File count seems excessive: {}",
+                files.len()
+            );
 
             // Check memory usage after scan
             let post_scan_memory = get_memory_usage();
             let memory_growth = post_scan_memory.saturating_sub(initial_memory);
 
-            println!("Memory after scan: {} MB (growth: {} MB)", post_scan_memory, memory_growth);
+            println!(
+                "Memory after scan: {} MB (growth: {} MB)",
+                post_scan_memory, memory_growth
+            );
 
             // Verify memory usage is reasonable
-            assert!(memory_growth < 500, // Adjust threshold as needed
-                   "Excessive memory usage during directory scan: {} MB growth", memory_growth);
+            assert!(
+                memory_growth < 500, // Adjust threshold as needed
+                "Excessive memory usage during directory scan: {} MB growth",
+                memory_growth
+            );
         }
         Ok(Err(AppError::ResourceLimitExceeded { message })) => {
             println!("Directory scan properly limited: {}", message);
@@ -350,8 +428,15 @@ async fn test_directory_scanning_memory_safety() {
     let state_clone = State::from(state.clone());
     let stream_result = timeout(
         Duration::from_secs(120),
-        scan_directory_stream(temp_dir.path().display().to_string(), true, Some(50), state_clone, app.clone())
-    ).await;
+        scan_directory_stream(
+            temp_dir.path().display().to_string(),
+            true,
+            Some(50),
+            state_clone,
+            app.clone(),
+        ),
+    )
+    .await;
 
     match stream_result {
         Ok(Ok(operation_id)) => {
@@ -363,11 +448,17 @@ async fn test_directory_scanning_memory_safety() {
             let final_memory = get_memory_usage();
             let total_growth = final_memory.saturating_sub(initial_memory);
 
-            println!("Memory after streaming: {} MB (total growth: {} MB)", final_memory, total_growth);
+            println!(
+                "Memory after streaming: {} MB (total growth: {} MB)",
+                final_memory, total_growth
+            );
 
             // Streaming should use less memory than batch loading
-            assert!(total_growth < 300,
-                   "Streaming scan used too much memory: {} MB growth", total_growth);
+            assert!(
+                total_growth < 300,
+                "Streaming scan used too much memory: {} MB growth",
+                total_growth
+            );
         }
         Ok(Err(error)) => {
             println!("Streaming scan error: {:?}", error);
@@ -388,7 +479,10 @@ async fn test_batch_operations_memory_safety() {
     let file_size = 1024; // 1KB each
     let mut created_files = Vec::new();
 
-    println!("Creating {} files for batch operation testing...", file_count);
+    println!(
+        "Creating {} files for batch operation testing...",
+        file_count
+    );
     for i in 0..file_count {
         let file_path = temp_dir.path().join(format!("batch_{:04}.txt", i));
         if let Ok(_) = create_test_file(&file_path, file_size).await {
@@ -400,7 +494,10 @@ async fn test_batch_operations_memory_safety() {
 
     // Test batch file analysis for memory safety
     let initial_memory = get_memory_usage();
-    println!("Starting batch analysis with {} MB memory usage", initial_memory);
+    println!(
+        "Starting batch analysis with {} MB memory usage",
+        initial_memory
+    );
 
     // Split files into smaller batches to simulate realistic usage
     let batch_size = 50;
@@ -410,16 +507,21 @@ async fn test_batch_operations_memory_safety() {
         let state_clone = State::from(state.clone());
         let result = timeout(
             Duration::from_secs(60),
-            analyze_files(batch.to_vec(), state_clone, app.clone())
-        ).await;
+            analyze_files(batch.to_vec(), state_clone, app.clone()),
+        )
+        .await;
 
         match result {
             Ok(Ok(analyses)) => {
                 println!("Batch {} completed: {} analyses", batch_num, analyses.len());
 
                 // Verify analyses are reasonable
-                assert!(analyses.len() <= batch.len(),
-                       "More analyses than files: {} vs {}", analyses.len(), batch.len());
+                assert!(
+                    analyses.len() <= batch.len(),
+                    "More analyses than files: {} vs {}",
+                    analyses.len(),
+                    batch.len()
+                );
             }
             Ok(Err(AppError::ResourceLimitExceeded { message })) => {
                 println!("Batch {} limited: {}", batch_num, message);
@@ -438,7 +540,10 @@ async fn test_batch_operations_memory_safety() {
         let memory_growth = current_memory.saturating_sub(initial_memory);
 
         if memory_growth > 200 {
-            println!("WARNING: High memory usage after batch {}: {} MB growth", batch_num, memory_growth);
+            println!(
+                "WARNING: High memory usage after batch {}: {} MB growth",
+                batch_num, memory_growth
+            );
         }
 
         // Allow memory cleanup between batches
@@ -448,11 +553,17 @@ async fn test_batch_operations_memory_safety() {
     let final_memory = get_memory_usage();
     let total_growth = final_memory.saturating_sub(initial_memory);
 
-    println!("Final memory after all batches: {} MB (total growth: {} MB)", final_memory, total_growth);
+    println!(
+        "Final memory after all batches: {} MB (total growth: {} MB)",
+        final_memory, total_growth
+    );
 
     // Verify memory usage remained reasonable
-    assert!(total_growth < 500,
-           "Excessive memory usage in batch operations: {} MB growth", total_growth);
+    assert!(
+        total_growth < 500,
+        "Excessive memory usage in batch operations: {} MB growth",
+        total_growth
+    );
 }
 
 #[tokio::test]
@@ -463,9 +574,8 @@ async fn test_malicious_file_size_attacks() {
     // Test various file size attack scenarios
     let attack_scenarios = vec![
         // Extremely large files that should be rejected
-        ("huge_dos.txt", 1_000_000_000), // 1GB
+        ("huge_dos.txt", 1_000_000_000),    // 1GB
         ("memory_bomb.txt", 5_000_000_000), // 5GB
-
         // Files that claim to be small but are actually large (if possible to simulate)
         ("deceptive.txt", 100_000_000), // 100MB
     ];
@@ -475,7 +585,10 @@ async fn test_malicious_file_size_attacks() {
     for (filename, attack_size) in attack_scenarios {
         let file_path = temp_dir.path().join(filename);
 
-        println!("Testing file size attack: {} ({} bytes)", filename, attack_size);
+        println!(
+            "Testing file size attack: {} ({} bytes)",
+            filename, attack_size
+        );
 
         // Try to create the attack file (may fail due to disk space)
         match create_test_file(&file_path, attack_size).await {
@@ -486,8 +599,14 @@ async fn test_malicious_file_size_attacks() {
                 let state_clone = State::from(state.clone());
                 let result = timeout(
                     Duration::from_secs(30),
-                    get_file_content(file_path.display().to_string(), Some("attacker".to_string()), state_clone, app.clone())
-                ).await;
+                    get_file_content(
+                        file_path.display().to_string(),
+                        Some("attacker".to_string()),
+                        state_clone,
+                        app.clone(),
+                    ),
+                )
+                .await;
 
                 match result {
                     Ok(Ok(_content)) => {
@@ -495,14 +614,22 @@ async fn test_malicious_file_size_attacks() {
                     }
                     Ok(Err(AppError::SecurityError { message })) => {
                         println!("Attack file {} properly rejected: {}", filename, message);
-                        assert!(message.contains("too large") || message.contains("limit"),
-                               "Security message should mention file size limits");
+                        assert!(
+                            message.contains("too large") || message.contains("limit"),
+                            "Security message should mention file size limits"
+                        );
                     }
                     Ok(Err(AppError::ResourceLimitExceeded { message })) => {
-                        println!("Attack file {} rejected for resource limits: {}", filename, message);
+                        println!(
+                            "Attack file {} rejected for resource limits: {}",
+                            filename, message
+                        );
                     }
                     Ok(Err(other_error)) => {
-                        println!("Attack file {} rejected with error: {:?}", filename, other_error);
+                        println!(
+                            "Attack file {} rejected with error: {:?}",
+                            filename, other_error
+                        );
                     }
                     Err(_timeout) => {
                         println!("Attack file {} read timed out (good)", filename);
@@ -513,7 +640,10 @@ async fn test_malicious_file_size_attacks() {
                 let _ = fs::remove_file(&file_path).await;
             }
             Err(e) => {
-                println!("Could not create attack file {} ({}): {:?}", filename, attack_size, e);
+                println!(
+                    "Could not create attack file {} ({}): {:?}",
+                    filename, attack_size, e
+                );
                 // This is acceptable - system may not have enough disk space
             }
         }
@@ -521,7 +651,10 @@ async fn test_malicious_file_size_attacks() {
 }
 
 // Helper function to create a test file of specified size
-async fn create_test_file(path: &std::path::Path, size: usize) -> Result<(), Box<dyn std::error::Error>> {
+async fn create_test_file(
+    path: &std::path::Path,
+    size: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
     use tokio::io::AsyncWriteExt;
 
     // For very large files, write in chunks to avoid memory exhaustion
@@ -576,10 +709,18 @@ fn create_directory_recursive(
 
         // Create subdirectories if depth remains
         if remaining_depth > 0 {
-            for i in 0..3 { // Create 3 subdirs per level to limit total size
+            for i in 0..3 {
+                // Create 3 subdirs per level to limit total size
                 let sub_dir = current_dir.join(format!("subdir_{}_{}", current_level, i));
                 if let Ok(_) = tokio::fs::create_dir_all(&sub_dir).await {
-                    create_directory_recursive(&sub_dir, remaining_depth - 1, files_per_dir, file_size, current_level + 1).await;
+                    create_directory_recursive(
+                        &sub_dir,
+                        remaining_depth - 1,
+                        files_per_dir,
+                        file_size,
+                        current_level + 1,
+                    )
+                    .await;
                 }
             }
         }
@@ -609,7 +750,10 @@ async fn verify_memory_usage(state: &AppState) {
     let current_usage = get_memory_usage();
     let limit = state.config.read().max_total_memory_mb;
 
-    println!("Current memory usage: {} MB, Limit: {} MB", current_usage, limit);
+    println!(
+        "Current memory usage: {} MB, Limit: {} MB",
+        current_usage, limit
+    );
 
     // Allow some overhead but verify we're not completely ignoring limits
     if current_usage > limit * 2 {
