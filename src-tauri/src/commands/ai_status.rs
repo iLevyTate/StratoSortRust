@@ -3,8 +3,16 @@ use tauri::{AppHandle, Emitter, State};
 
 /// Get current AI service status
 #[tauri::command]
-pub async fn get_ai_status(state: State<'_, AppState>) -> Result<AiServiceStatus> {
-    let status = state.ai_service.get_status().await;
+pub async fn get_ai_status(state: State<'_, std::sync::Arc<AppState>>) -> Result<AiServiceStatus> {
+    // Add timeout to prevent indefinite blocking
+    let status = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        state.ai_service.get_status(),
+    )
+    .await
+    .map_err(|_| crate::error::AppError::Timeout {
+        message: "AI status check timed out".to_string(),
+    })?;
 
     // Emit status change event to frontend
     let _ = state.handle.emit("ai-status-changed", &status);
@@ -14,7 +22,10 @@ pub async fn get_ai_status(state: State<'_, AppState>) -> Result<AiServiceStatus
 
 /// Try to connect to Ollama with a specific host
 #[tauri::command]
-pub async fn connect_ollama(host: String, state: State<'_, AppState>) -> Result<AiServiceStatus> {
+pub async fn connect_ollama(
+    host: String,
+    state: State<'_, std::sync::Arc<AppState>>,
+) -> Result<AiServiceStatus> {
     tracing::info!("Attempting to connect to Ollama at: {}", host);
 
     // Get current status first
@@ -26,37 +37,54 @@ pub async fn connect_ollama(host: String, state: State<'_, AppState>) -> Result<
         return Ok(current_status);
     }
 
-    // Attempt to connect to new host
-    match state.ai_service.reconnect_ollama(&host).await {
-        Ok(new_status) => {
-            // Update config with new host if connection successful
-            if new_status.ollama_connected {
-                let mut config = state.config.write();
-                config.ollama_host = host.clone();
+    // Attempt to connect to new host with timeout
+    match tokio::time::timeout(
+        tokio::time::Duration::from_secs(30),
+        state.ai_service.reconnect_ollama(&host),
+    )
+    .await
+    {
+        Ok(connection_result) => match connection_result {
+            Ok(new_status) => {
+                // Update config with new host if connection successful
+                if new_status.ollama_connected {
+                    let mut config = state.config.write();
+                    config.ollama_host = host.clone();
 
-                // Save updated config
-                if let Err(e) = config.save(&state.handle) {
-                    tracing::warn!("Failed to save updated config: {}", e);
+                    // Save updated config
+                    if let Err(e) = config.save(&state.handle) {
+                        tracing::warn!("Failed to save updated config: {}", e);
+                    }
+
+                    // Emit status change event to frontend
+                    let _ = state.handle.emit("ai-status-changed", &new_status);
+
+                    tracing::info!("Successfully connected to Ollama at {}", host);
+                } else {
+                    tracing::warn!(
+                        "Failed to connect to Ollama at {}: {:?}",
+                        host,
+                        new_status.last_error
+                    );
                 }
 
-                // Emit status change event to frontend
-                let _ = state.handle.emit("ai-status-changed", &new_status);
-
-                tracing::info!("Successfully connected to Ollama at {}", host);
-            } else {
-                tracing::warn!(
-                    "Failed to connect to Ollama at {}: {:?}",
-                    host,
-                    new_status.last_error
-                );
+                Ok(new_status)
             }
-
-            Ok(new_status)
-        }
-        Err(e) => {
-            tracing::error!("Error connecting to Ollama at {}: {}", host, e);
+            Err(e) => {
+                tracing::error!("Error connecting to Ollama at {}: {}", host, e);
+                let mut status = current_status;
+                status.last_error = Some(format!("Failed to connect to {}: {}", host, e));
+                Ok(status)
+            }
+        },
+        Err(_) => {
+            // Timeout occurred
+            tracing::error!(
+                "Connection to Ollama at {} timed out after 30 seconds",
+                host
+            );
             let mut status = current_status;
-            status.last_error = Some(format!("Failed to connect to {}: {}", host, e));
+            status.last_error = Some(format!("Connection to {} timed out after 30 seconds", host));
             Ok(status)
         }
     }
@@ -64,7 +92,9 @@ pub async fn connect_ollama(host: String, state: State<'_, AppState>) -> Result<
 
 /// Switch to fallback AI provider
 #[tauri::command]
-pub async fn use_fallback_ai(state: State<'_, AppState>) -> Result<AiServiceStatus> {
+pub async fn use_fallback_ai(
+    state: State<'_, std::sync::Arc<AppState>>,
+) -> Result<AiServiceStatus> {
     let status = state.ai_service.use_fallback();
 
     // Emit status change event to frontend
@@ -75,27 +105,37 @@ pub async fn use_fallback_ai(state: State<'_, AppState>) -> Result<AiServiceStat
 
 /// Test AI functionality with a sample analysis
 #[tauri::command]
-pub async fn test_ai_analysis(state: State<'_, AppState>) -> Result<String> {
-    let test_content = "This is a test document to verify AI analysis functionality.";
+pub async fn test_ai_analysis(
+    state: State<'_, std::sync::Arc<AppState>>,
+    test_content: Option<String>,
+) -> Result<String> {
+    let test_content = test_content.unwrap_or_else(|| {
+        "This is a test document to verify AI analysis functionality.".to_string()
+    });
 
-    match state
-        .ai_service
-        .analyze_file(test_content, "text/plain")
-        .await
+    // Add timeout to prevent indefinite blocking during AI analysis
+    match tokio::time::timeout(
+        tokio::time::Duration::from_secs(60), // Longer timeout for AI analysis
+        state.ai_service.analyze_file(&test_content, "text/plain"),
+    )
+    .await
     {
-        Ok(analysis) => Ok(format!(
+        Ok(Ok(analysis)) => Ok(format!(
             "AI analysis successful! Category: {}, Tags: {:?}, Confidence: {:.1}%",
             analysis.category,
             analysis.tags,
             analysis.confidence * 100.0
         )),
-        Err(e) => Ok(format!("AI analysis failed: {}", e)),
+        Ok(Err(e)) => Ok(format!("AI analysis failed: {}", e)),
+        Err(_) => Ok("AI analysis timed out after 60 seconds".to_string()),
     }
 }
 
 /// Get detailed AI capabilities and model information
 #[tauri::command]
-pub async fn get_ai_capabilities(state: State<'_, AppState>) -> Result<serde_json::Value> {
+pub async fn get_ai_capabilities(
+    state: State<'_, std::sync::Arc<AppState>>,
+) -> Result<serde_json::Value> {
     let status = state.ai_service.get_status().await;
 
     let capabilities = serde_json::json!({
@@ -120,7 +160,7 @@ pub async fn get_ai_capabilities(state: State<'_, AppState>) -> Result<serde_jso
 }
 
 /// Monitor AI service health and emit status updates
-pub async fn start_ai_status_monitoring(app_handle: AppHandle, state: AppState) {
+pub async fn start_ai_status_monitoring(app_handle: AppHandle, state: std::sync::Arc<AppState>) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
 
     tokio::spawn(async move {

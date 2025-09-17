@@ -25,6 +25,8 @@ pub struct ModelInfo {
 pub async fn check_ollama_status(
     state: State<'_, std::sync::Arc<AppState>>,
 ) -> Result<OllamaStatus> {
+    use tauri::Emitter;
+
     // Check if Ollama is available
     let is_running = state.ai_service.is_available().await;
 
@@ -52,7 +54,7 @@ pub async fn check_ollama_status(
         vec![]
     };
 
-    Ok(OllamaStatus {
+    let status = OllamaStatus {
         is_installed: is_running, // Simplified check
         is_running,
         version: if is_running {
@@ -63,7 +65,18 @@ pub async fn check_ollama_status(
         models,
         default_model: Some(state.config.read().ollama_model.clone()),
         host: state.config.read().ollama_host.clone(),
-    })
+    };
+
+    // Emit status event to frontend
+    let _ = state.handle.emit(
+        "ollama-status-checked",
+        serde_json::json!({
+            "status": &status,
+            "timestamp": chrono::Utc::now().timestamp()
+        }),
+    );
+
+    Ok(status)
 }
 
 #[tauri::command]

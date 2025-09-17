@@ -12,7 +12,7 @@ mod test_plugin_integration {
     #[tokio::test]
     async fn test_full_plugin_stack_initialization() {
         // Test all plugins initialize together correctly
-        let mock_app = MockAppHandle::new();
+        let _mock_app = MockAppHandle::new();
 
         // Initialize all plugin states
         let process_info = MockProcessInfo::new("stratosort");
@@ -76,8 +76,10 @@ mod test_plugin_integration {
         assert!(process.memory_usage > 0, "Process should be using memory");
 
         // 7. Update window state to show progress
-        let mut window_state = MockWindowState::default();
-        window_state.focused = true;
+        let _window_state = MockWindowState {
+            focused: true,
+            ..Default::default()
+        };
 
         // 8. Check for updates after operation
         let update_available = MockUpdateInfo::default().version.as_str() > "0.1.0";
@@ -107,13 +109,13 @@ mod test_plugin_integration {
         let test_file = mock_app.create_test_file("report.pdf", "Annual report content");
 
         // 4. Make HTTP request to AI service (http plugin)
-        let analysis_request = json!({
+        let _analysis_request = json!({
             "model": "llama2",
             "file": test_file.to_str().unwrap(),
             "task": "categorize"
         });
 
-        let response = MockHttpResponse::ok_json(json!({
+        let _response = MockHttpResponse::ok_json(json!({
             "category": "Financial",
             "confidence": 0.92,
             "tags": ["annual", "report", "2024"]
@@ -142,7 +144,7 @@ mod test_plugin_integration {
     async fn test_watch_mode_with_plugins() {
         // Test file watch mode using integrated plugins
         let mock_app = MockAppHandle::new();
-        let watched_dir = mock_app.data_dir.clone();
+        let _watched_dir = mock_app.data_dir.clone();
 
         // 1. Single instance ensures only one watcher
         let instance_lock = Arc::new(tokio::sync::Mutex::new(true));
@@ -156,14 +158,14 @@ mod test_plugin_integration {
 
         // 3. Monitor system resources during watching
         let os_info = MockOsInfo::default();
-        let resource_usage = HashMap::from([
+        let _resource_usage = HashMap::from([
             ("memory_used", watcher_process.memory_usage),
             ("memory_available", os_info.available_memory),
             ("cpu_usage", watcher_process.cpu_usage as u64),
         ]);
 
         // 4. Detect new file
-        let new_file = mock_app.create_test_file("new_doc.txt", "New content");
+        let _new_file = mock_app.create_test_file("new_doc.txt", "New content");
 
         // 5. Send notification via localhost server
         let server = MockLocalhostServer::new(3030);
@@ -188,7 +190,7 @@ mod test_plugin_integration {
         // Test update process with all plugins
 
         // 1. Check for updates (updater plugin)
-        let update_info = MockUpdateInfo::default();
+        let _update_info = MockUpdateInfo::default();
 
         // 2. Verify single instance before update
         let instance_lock = Arc::new(tokio::sync::Mutex::new(true));
@@ -212,16 +214,17 @@ mod test_plugin_integration {
         });
 
         // 5. Download update via HTTP (http plugin)
-        let download_response = MockHttpResponse::ok_json(json!({
+        let _download_response = MockHttpResponse::ok_json(json!({
             "download_complete": true,
             "size": 50_000_000
         }));
 
         // 6. Stop all processes before update (process plugin)
-        let processes_to_stop = vec!["file-watcher", "ai-service", "localhost-server"];
+        let processes_to_stop = ["file-watcher", "ai-service", "localhost-server"];
         for process_name in processes_to_stop {
             // Simulate stopping process
-            assert!(true, "Process {} should be stopped", process_name);
+            // Process should be stopped
+            let _ = process_name;
         }
 
         // 7. Apply update and restart

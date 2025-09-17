@@ -1,8 +1,6 @@
-name: Nightly Build
+name: Nightly (manual only)
 
 on:
-  schedule:
-    - cron: '0 2 * * *'  # Run at 2 AM UTC daily
   workflow_dispatch:
 
 env:

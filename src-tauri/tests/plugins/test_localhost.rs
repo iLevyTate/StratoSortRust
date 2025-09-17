@@ -84,7 +84,7 @@ mod test_localhost_plugin {
         server.add_route("/ws", "websocket_upgrade").await;
 
         // Simulate WebSocket messages
-        let messages = vec![
+        let messages = [
             json!({"type": "file_added", "path": "/test/document.pdf"}),
             json!({"type": "analysis_complete", "file_id": "123", "category": "Documents"}),
             json!({"type": "organization_update", "moved": 5, "remaining": 10}),
@@ -130,7 +130,7 @@ mod test_localhost_plugin {
     #[tokio::test]
     async fn test_cors_headers() {
         // Test CORS headers for frontend access
-        let server = MockLocalhostServer::new(3030);
+        let _server = MockLocalhostServer::new(3030);
 
         // Simulate CORS preflight
         let cors_headers = json!({
@@ -184,7 +184,7 @@ mod test_localhost_plugin {
     #[tokio::test]
     async fn test_api_rate_limiting() {
         // Test rate limiting for API endpoints
-        let server = MockLocalhostServer::new(3030);
+        let _server = MockLocalhostServer::new(3030);
         let mut request_count = 0;
         let rate_limit = 100; // 100 requests per minute
 
@@ -194,7 +194,7 @@ mod test_localhost_plugin {
 
             if request_count > rate_limit {
                 // Should be rate limited
-                assert!(false, "Should not exceed rate limit");
+                panic!("Should not exceed rate limit");
             }
         }
 
@@ -228,11 +228,11 @@ mod test_localhost_plugin {
     #[tokio::test]
     async fn test_request_logging() {
         // Test request logging for debugging
-        let server = MockLocalhostServer::new(3030);
+        let _server = MockLocalhostServer::new(3030);
         let logs = Arc::new(RwLock::new(Vec::new()));
 
         // Log requests
-        let endpoints = vec![
+        let endpoints = [
             ("/api/analyze", "POST"),
             ("/api/files", "GET"),
             ("/api/organize", "POST"),
@@ -255,7 +255,7 @@ mod test_localhost_plugin {
     #[tokio::test]
     async fn test_graceful_shutdown() {
         // Test graceful server shutdown
-        let server = MockLocalhostServer::new(3030);
+        let _server = MockLocalhostServer::new(3030);
         let active_connections = Arc::new(RwLock::new(5));
 
         // Start shutdown
@@ -280,7 +280,7 @@ mod test_localhost_plugin {
     async fn test_port_conflict_handling() {
         // Test handling port conflicts
         let primary_port = 3030;
-        let fallback_ports = vec![3031, 3032, 3033];
+        let fallback_ports = [3031, 3032, 3033];
 
         // Simulate port 3030 is in use
         let port_in_use = true;
