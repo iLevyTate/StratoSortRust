@@ -1,13 +1,13 @@
-use stratosort::config::Config;
+use serde_json::json;
+use std::sync::Arc;
 use stratosort::ai::AiService;
 use stratosort::commands::setup::*;
-use stratosort::state::AppState;
+use stratosort::config::Config;
 use stratosort::error::AppError;
+use stratosort::state::AppState;
 use tauri::test::{mock_app, MockRuntime};
-use tauri::{State, Emitter};
+use tauri::{Emitter, State};
 use tempfile::tempdir;
-use std::sync::Arc;
-use serde_json::json;
 use tokio::fs;
 
 /// Critical security tests for input validation vulnerabilities
@@ -88,7 +88,11 @@ async fn test_config_loading_malformed_json_attacks() {
     ];
 
     for (i, malformed_json) in malformed_configs.iter().enumerate() {
-        println!("Testing malformed config #{}: {} chars", i, malformed_json.len());
+        println!(
+            "Testing malformed config #{}: {} chars",
+            i,
+            malformed_json.len()
+        );
 
         // Write malformed config to file
         if let Ok(_) = fs::write(&config_path, malformed_json).await {
@@ -101,30 +105,80 @@ async fn test_config_loading_malformed_json_attacks() {
                     println!("Config #{} loaded (hopefully sanitized)", i);
 
                     // Verify URL is safe
-                    assert!(!config.ollama_url.contains("'"), "SQL injection in URL: {}", config.ollama_url);
-                    assert!(!config.ollama_url.contains(";"), "Command injection in URL: {}", config.ollama_url);
-                    assert!(!config.ollama_url.contains("rm "), "Command injection in URL: {}", config.ollama_url);
-                    assert!(!config.ollama_url.contains("curl "), "Command injection in URL: {}", config.ollama_url);
+                    assert!(
+                        !config.ollama_url.contains("'"),
+                        "SQL injection in URL: {}",
+                        config.ollama_url
+                    );
+                    assert!(
+                        !config.ollama_url.contains(";"),
+                        "Command injection in URL: {}",
+                        config.ollama_url
+                    );
+                    assert!(
+                        !config.ollama_url.contains("rm "),
+                        "Command injection in URL: {}",
+                        config.ollama_url
+                    );
+                    assert!(
+                        !config.ollama_url.contains("curl "),
+                        "Command injection in URL: {}",
+                        config.ollama_url
+                    );
                     assert!(!config.ollama_url.contains("\0"), "Null byte in URL");
-                    assert!(!config.ollama_url.starts_with("file://"), "File protocol injection");
-                    assert!(!config.ollama_url.starts_with("javascript:"), "JavaScript injection");
+                    assert!(
+                        !config.ollama_url.starts_with("file://"),
+                        "File protocol injection"
+                    );
+                    assert!(
+                        !config.ollama_url.starts_with("javascript:"),
+                        "JavaScript injection"
+                    );
 
                     // Verify model name is safe
-                    assert!(!config.ollama_model.contains("\0"), "Null byte in model name");
-                    assert!(!config.ollama_model.contains("\u{202e}"), "Unicode attack in model name");
+                    assert!(
+                        !config.ollama_model.contains("\0"),
+                        "Null byte in model name"
+                    );
+                    assert!(
+                        !config.ollama_model.contains("\u{202e}"),
+                        "Unicode attack in model name"
+                    );
 
                     // Verify numeric values are reasonable
-                    assert!(config.max_concurrent_reads > 0 && config.max_concurrent_reads < 1000,
-                           "Suspicious concurrent reads value: {}", config.max_concurrent_reads);
-                    assert!(config.max_total_memory_mb > 0 && config.max_total_memory_mb < 1_000_000,
-                           "Suspicious memory limit: {}", config.max_total_memory_mb);
+                    assert!(
+                        config.max_concurrent_reads > 0 && config.max_concurrent_reads < 1000,
+                        "Suspicious concurrent reads value: {}",
+                        config.max_concurrent_reads
+                    );
+                    assert!(
+                        config.max_total_memory_mb > 0 && config.max_total_memory_mb < 1_000_000,
+                        "Suspicious memory limit: {}",
+                        config.max_total_memory_mb
+                    );
 
                     // Verify directory paths are safe
                     if let Some(ref dir) = config.default_scan_directory {
-                        assert!(!dir.contains("../"), "Path traversal in scan directory: {}", dir);
-                        assert!(!dir.contains("..\\"), "Path traversal in scan directory: {}", dir);
-                        assert!(!dir.contains("/etc/"), "System directory in scan path: {}", dir);
-                        assert!(!dir.contains("\\Windows\\"), "System directory in scan path: {}", dir);
+                        assert!(
+                            !dir.contains("../"),
+                            "Path traversal in scan directory: {}",
+                            dir
+                        );
+                        assert!(
+                            !dir.contains("..\\"),
+                            "Path traversal in scan directory: {}",
+                            dir
+                        );
+                        assert!(
+                            !dir.contains("/etc/"),
+                            "System directory in scan path: {}",
+                            dir
+                        );
+                        assert!(
+                            !dir.contains("\\Windows\\"),
+                            "System directory in scan path: {}",
+                            dir
+                        );
                     }
                 }
                 Err(e) => {
@@ -218,26 +272,48 @@ async fn test_ai_prompt_injection_attacks() {
     ];
 
     for (i, malicious_prompt) in prompt_injections.iter().enumerate() {
-        println!("Testing AI prompt injection #{}: {} chars", i, malicious_prompt.len());
+        println!(
+            "Testing AI prompt injection #{}: {} chars",
+            i,
+            malicious_prompt.len()
+        );
 
         // Test file analysis with malicious content
-        let result = state.ai_service.analyze_file(malicious_prompt, "text/plain").await;
+        let result = state
+            .ai_service
+            .analyze_file(malicious_prompt, "text/plain")
+            .await;
 
         match result {
             Ok(analysis) => {
                 println!("Prompt injection #{} analyzed (content filtered)", i);
 
                 // Verify analysis doesn't contain sensitive information
-                assert!(!analysis.summary.contains("password"),
-                       "Password leaked in analysis: {}", analysis.summary);
-                assert!(!analysis.summary.contains("/etc/passwd"),
-                       "System file reference in analysis: {}", analysis.summary);
-                assert!(!analysis.summary.contains("root:"),
-                       "System user info in analysis: {}", analysis.summary);
-                assert!(!analysis.summary.contains("DROP TABLE"),
-                       "SQL injection in analysis: {}", analysis.summary);
-                assert!(!analysis.summary.contains("<script>"),
-                       "Script injection in analysis: {}", analysis.summary);
+                assert!(
+                    !analysis.summary.contains("password"),
+                    "Password leaked in analysis: {}",
+                    analysis.summary
+                );
+                assert!(
+                    !analysis.summary.contains("/etc/passwd"),
+                    "System file reference in analysis: {}",
+                    analysis.summary
+                );
+                assert!(
+                    !analysis.summary.contains("root:"),
+                    "System user info in analysis: {}",
+                    analysis.summary
+                );
+                assert!(
+                    !analysis.summary.contains("DROP TABLE"),
+                    "SQL injection in analysis: {}",
+                    analysis.summary
+                );
+                assert!(
+                    !analysis.summary.contains("<script>"),
+                    "Script injection in analysis: {}",
+                    analysis.summary
+                );
 
                 // Verify tags don't contain dangerous content
                 for tag in &analysis.tags {
@@ -251,20 +327,38 @@ async fn test_ai_prompt_injection_attacks() {
                 if let Some(ref metadata) = analysis.metadata {
                     for (key, value) in metadata {
                         assert!(!key.contains("'"), "SQL injection in metadata key: {}", key);
-                        assert!(!value.contains("password"), "Password in metadata: {}", value);
-                        assert!(!value.contains("/etc/"), "System path in metadata: {}", value);
-                        assert!(key.len() < 100 && value.len() < 1000,
-                               "Metadata too long: {}={}", key, value);
+                        assert!(
+                            !value.contains("password"),
+                            "Password in metadata: {}",
+                            value
+                        );
+                        assert!(
+                            !value.contains("/etc/"),
+                            "System path in metadata: {}",
+                            value
+                        );
+                        assert!(
+                            key.len() < 100 && value.len() < 1000,
+                            "Metadata too long: {}={}",
+                            key,
+                            value
+                        );
                     }
                 }
 
-                println!("Analysis summary (safe): {}", analysis.summary.chars().take(100).collect::<String>());
+                println!(
+                    "Analysis summary (safe): {}",
+                    analysis.summary.chars().take(100).collect::<String>()
+                );
             }
             Err(AppError::SecurityError { message }) => {
                 println!("Prompt injection #{} properly blocked: {}", i, message);
             }
             Err(AppError::InvalidInput { message }) => {
-                println!("Prompt injection #{} blocked as invalid input: {}", i, message);
+                println!(
+                    "Prompt injection #{} blocked as invalid input: {}",
+                    i, message
+                );
             }
             Err(other) => {
                 println!("Prompt injection #{} failed with: {:?}", i, other);
@@ -276,16 +370,34 @@ async fn test_ai_prompt_injection_attacks() {
 
         match embedding_result {
             Ok(embedding) => {
-                println!("Embedding generated for injection #{} ({} dims)", i, embedding.len());
+                println!(
+                    "Embedding generated for injection #{} ({} dims)",
+                    i,
+                    embedding.len()
+                );
 
                 // Verify embedding is reasonable
                 assert!(!embedding.is_empty(), "Empty embedding generated");
-                assert!(embedding.len() <= 2048, "Embedding too large: {} dimensions", embedding.len());
+                assert!(
+                    embedding.len() <= 2048,
+                    "Embedding too large: {} dimensions",
+                    embedding.len()
+                );
 
                 // Check for NaN or infinite values that could break vector operations
                 for (j, &value) in embedding.iter().enumerate() {
-                    assert!(value.is_finite(), "Non-finite value at position {}: {}", j, value);
-                    assert!(value.abs() <= 10.0, "Extreme embedding value at position {}: {}", j, value);
+                    assert!(
+                        value.is_finite(),
+                        "Non-finite value at position {}: {}",
+                        j,
+                        value
+                    );
+                    assert!(
+                        value.abs() <= 10.0,
+                        "Extreme embedding value at position {}: {}",
+                        j,
+                        value
+                    );
                 }
             }
             Err(e) => {
@@ -309,77 +421,70 @@ async fn test_setup_command_injection_vulnerabilities() {
             model_name: "llama2".to_string(),
             scan_directory: Some(temp_dir.path().display().to_string()),
         },
-
         // Command injection in model name
         SetupRequest {
             ollama_url: "http://localhost:11434".to_string(),
             model_name: "llama2 && rm -rf /".to_string(),
             scan_directory: Some(temp_dir.path().display().to_string()),
         },
-
         // Path traversal in scan directory
         SetupRequest {
             ollama_url: "http://localhost:11434".to_string(),
             model_name: "llama2".to_string(),
             scan_directory: Some("../../../etc".to_string()),
         },
-
         // Null byte injection
         SetupRequest {
             ollama_url: "http://localhost:11434\0".to_string(),
             model_name: "llama2\0malicious".to_string(),
             scan_directory: Some(format!("{}\0", temp_dir.path().display())),
         },
-
         // Unicode attacks
         SetupRequest {
             ollama_url: "http://localhost:11434".to_string(),
             model_name: "llama2\u{202e}suoicilam\u{202c}".to_string(),
             scan_directory: Some(format!("{}\u{200b}", temp_dir.path().display())),
         },
-
         // Protocol injection
         SetupRequest {
             ollama_url: "file:///etc/passwd".to_string(),
             model_name: "llama2".to_string(),
             scan_directory: Some(temp_dir.path().display().to_string()),
         },
-
         // JavaScript injection
         SetupRequest {
             ollama_url: "javascript:alert('XSS')".to_string(),
             model_name: "llama2".to_string(),
             scan_directory: Some(temp_dir.path().display().to_string()),
         },
-
         // SQL injection
         SetupRequest {
             ollama_url: "http://localhost:11434".to_string(),
             model_name: "'; DROP TABLE config; --".to_string(),
             scan_directory: Some(temp_dir.path().display().to_string()),
         },
-
         // Very long values (DoS)
         SetupRequest {
             ollama_url: format!("http://localhost:11434/{}", "A".repeat(10000)),
             model_name: "B".repeat(10000),
-            scan_directory: Some(format!("{}/{}", temp_dir.path().display(), "C".repeat(1000))),
+            scan_directory: Some(format!(
+                "{}/{}",
+                temp_dir.path().display(),
+                "C".repeat(1000)
+            )),
         },
-
         // Invalid URL schemes
         SetupRequest {
             ollama_url: "ftp://malicious.com".to_string(),
             model_name: "llama2".to_string(),
             scan_directory: Some(temp_dir.path().display().to_string()),
         },
-
         // Windows UNC path injection
         SetupRequest {
             ollama_url: "http://localhost:11434".to_string(),
             model_name: "llama2".to_string(),
             scan_directory: Some("\\\\malicious\\share\\evil".to_string()),
         },
-
         // Device file access
         SetupRequest {
             ollama_url: "http://localhost:11434".to_string(),
@@ -392,8 +497,22 @@ async fn test_setup_command_injection_vulnerabilities() {
 
     for (i, malicious_setup) in malicious_setups.iter().enumerate() {
         println!("Testing setup injection #{}", i);
-        println!("  URL: {}", malicious_setup.ollama_url.chars().take(50).collect::<String>());
-        println!("  Model: {}", malicious_setup.model_name.chars().take(50).collect::<String>());
+        println!(
+            "  URL: {}",
+            malicious_setup
+                .ollama_url
+                .chars()
+                .take(50)
+                .collect::<String>()
+        );
+        println!(
+            "  Model: {}",
+            malicious_setup
+                .model_name
+                .chars()
+                .take(50)
+                .collect::<String>()
+        );
         if let Some(ref dir) = malicious_setup.scan_directory {
             println!("  Dir: {}", dir.chars().take(50).collect::<String>());
         }
@@ -406,7 +525,10 @@ async fn test_setup_command_injection_vulnerabilities() {
                 println!("Setup #{} succeeded (hopefully sanitized)", i);
 
                 // Verify the setup result is safe
-                assert!(!setup_result.config_saved, "Config should not be saved with malicious input");
+                assert!(
+                    !setup_result.config_saved,
+                    "Config should not be saved with malicious input"
+                );
 
                 // Check that no command injection occurred by verifying system state
                 // This is a basic check - in a real system you'd want more comprehensive verification
@@ -427,15 +549,14 @@ async fn test_setup_command_injection_vulnerabilities() {
         }
 
         // Verify no malicious files were created
-        let malicious_indicators = vec![
-            "/tmp/evil",
-            "/tmp/malicious",
-            "C:\\temp\\evil",
-        ];
+        let malicious_indicators = vec!["/tmp/evil", "/tmp/malicious", "C:\\temp\\evil"];
 
         for indicator in malicious_indicators {
             if Path::new(indicator).exists() {
-                panic!("Malicious file created by setup injection #{}: {}", i, indicator);
+                panic!(
+                    "Malicious file created by setup injection #{}: {}",
+                    i, indicator
+                );
             }
         }
     }
@@ -454,85 +575,72 @@ async fn test_config_validation_edge_cases() {
             "max_total_memory_mb": f64::INFINITY,
             "max_concurrent_reads": f64::NAN
         }),
-
         // Negative values
         json!({
             "ollama_url": "http://localhost:11434",
             "max_total_memory_mb": -1,
             "max_concurrent_reads": -100
         }),
-
         // Zero values
         json!({
             "ollama_url": "http://localhost:11434",
             "max_total_memory_mb": 0,
             "max_concurrent_reads": 0
         }),
-
         // String numbers (type confusion)
         json!({
             "ollama_url": "http://localhost:11434",
             "max_total_memory_mb": "999999999999999999999",
             "max_concurrent_reads": "0x41414141"
         }),
-
         // Boolean as string (type confusion)
         json!({
             "ollama_url": "http://localhost:11434",
             "auto_analyze": "false",
             "startup_scan": "true"
         }),
-
         // Array as string
         json!({
             "ollama_url": "http://localhost:11434",
             "allowed_extensions": "[\"exe\", \"bat\", \"sh\"]"
         }),
-
         // Empty strings
         json!({
             "ollama_url": "",
             "ollama_model": "",
             "ollama_embedding_model": ""
         }),
-
         // Whitespace-only strings
         json!({
             "ollama_url": "   ",
             "ollama_model": "\t\t",
             "ollama_embedding_model": "\n\n"
         }),
-
         // Mixed case in URLs (normalization bypass)
         json!({
             "ollama_url": "HTTP://LOCALHOST:11434",
             "ollama_model": "LLAMA2"
         }),
-
         // URL encoding in config values
         json!({
             "ollama_url": "http://localhost:11434%2e%2e%2f%2e%2e%2f",
             "ollama_model": "llama%32"
         }),
-
         // International domain names / Unicode
         json!({
             "ollama_url": "http://xn--n3h.com:11434",
             "ollama_model": "模型"
         }),
-
         // IPv6 addresses
         json!({
             "ollama_url": "http://[::1]:11434",
             "backup_url": "http://[2001:db8::1]:11434"
         }),
-
         // Extremely precise floating point
         json!({
             "max_total_memory_mb": 1.7976931348623157e308,
             "performance_multiplier": 4.9406564584124654e-324
         }),
-
         // Scientific notation
         json!({
             "max_total_memory_mb": 1e308,
@@ -553,22 +661,38 @@ async fn test_config_validation_edge_cases() {
                     println!("Edge case config #{} loaded", i);
 
                     // Validate the loaded config has safe values
-                    assert!(!config.ollama_url.is_empty() || config.ollama_url == "http://localhost:11434",
-                           "Empty or default URL not handled properly");
+                    assert!(
+                        !config.ollama_url.is_empty()
+                            || config.ollama_url == "http://localhost:11434",
+                        "Empty or default URL not handled properly"
+                    );
 
                     if config.ollama_url.starts_with("http") {
-                        assert!(config.ollama_url.len() < 1000,
-                               "URL too long after validation: {}", config.ollama_url.len());
+                        assert!(
+                            config.ollama_url.len() < 1000,
+                            "URL too long after validation: {}",
+                            config.ollama_url.len()
+                        );
                     }
 
-                    assert!(config.max_concurrent_reads > 0 && config.max_concurrent_reads < 1000,
-                           "Invalid concurrent reads after validation: {}", config.max_concurrent_reads);
+                    assert!(
+                        config.max_concurrent_reads > 0 && config.max_concurrent_reads < 1000,
+                        "Invalid concurrent reads after validation: {}",
+                        config.max_concurrent_reads
+                    );
 
-                    assert!(config.max_total_memory_mb > 0 && config.max_total_memory_mb < 1_000_000,
-                           "Invalid memory limit after validation: {}", config.max_total_memory_mb);
+                    assert!(
+                        config.max_total_memory_mb > 0 && config.max_total_memory_mb < 1_000_000,
+                        "Invalid memory limit after validation: {}",
+                        config.max_total_memory_mb
+                    );
 
-                    println!("  Safe values: URL len={}, reads={}, memory={}MB",
-                            config.ollama_url.len(), config.max_concurrent_reads, config.max_total_memory_mb);
+                    println!(
+                        "  Safe values: URL len={}, reads={}, memory={}MB",
+                        config.ollama_url.len(),
+                        config.max_concurrent_reads,
+                        config.max_total_memory_mb
+                    );
                 }
                 Err(e) => {
                     println!("Edge case config #{} rejected: {:?}", i, e);

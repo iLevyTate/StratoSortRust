@@ -249,7 +249,7 @@ mod test_positioner_plugin {
                 fullscreen: false,
                 focused: false,
             },
-];
+        ];
 
         // Find non-overlapping position for new window
         let new_width = 500;
