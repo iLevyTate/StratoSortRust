@@ -103,7 +103,7 @@ json5 = { version = "0.4", optional = true }        # JSON5 format support
 # File processing - Images & Media
 image = { version = "0.25", features = ["jpeg", "png", "gif", "webp", "tiff", "bmp", "ico", "avif"] }
 imageproc = { version = "0.25", optional = true }   # Advanced image processing
-fast_image_resize = { version = "4.2", optional = true } # High-performance resizing (updated)
+fast_image_resize = { version = "5.3", optional = true } # High-performance resizing (updated)
 webp = { version = "0.3", optional = true }         # WebP format support
 # avif-decode = { version = "0.2", optional = true }  # AVIF support - removed due to security advisory in owning_ref
 kamadak-exif = { version = "0.5", optional = true } # EXIF metadata extraction
