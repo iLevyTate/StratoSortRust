@@ -5,6 +5,15 @@ description = "AI-powered file organization"
 authors = ["StratoSort Team"]
 edition = "2021"
 rust-version = "1.75"
+default-run = "stratosort-app"
+
+[lib]
+name = "stratosort"
+crate-type = ["lib", "cdylib"]
+
+[[bin]]
+name = "stratosort-app"
+path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -24,11 +33,9 @@ tauri-plugin-global-shortcut = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-process = "2"
 tauri-plugin-os = "2"
-tauri-plugin-updater = "2"
 tauri-plugin-window-state = "2"
 tauri-plugin-positioner = "2"
 tauri-plugin-localhost = "2"
-tauri-plugin-single-instance = "2"
 tauri-plugin-http = "2"
 
 # Async runtime
@@ -48,6 +55,9 @@ url = "2.5"
 # Error handling
 anyhow = "1"
 thiserror = "1"
+
+# Environment configuration
+dotenv = "0.15"
 
 # Database & Embeddings
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono"] }
@@ -208,8 +218,46 @@ tokio-test = "0.4"
 num_cpus = "1.16"
 # Test dependencies for archive/compression handling
 zip = "2.2"
-tar = "0.4" 
+tar = "0.4"
 flate2 = "1.0"
+# Add tauri with test feature for security tests
+tauri = { version = "2", features = ["test"] }
+
+# CI test configuration
+[profile.ci]
+inherits = "dev"
+opt-level = 0
+codegen-units = 256
+lto = false
+incremental = false
+
+[[test]]
+name = "test_vector_ext_sql_injection"
+path = "tests/security/test_vector_ext_sql_injection.rs"
+
+[[test]]
+name = "test_files_command_security"
+path = "tests/security/test_files_command_security.rs"
+
+[[test]]
+name = "test_input_validation_security"
+path = "tests/security/test_input_validation_security.rs"
+
+[[test]]
+name = "test_memory_safety"
+path = "tests/security/test_memory_safety.rs"
+
+[[test]]
+name = "test_injection_prevention"
+path = "tests/security/test_injection_prevention.rs"
+
+[[test]]
+name = "test_path_traversal_comprehensive"
+path = "tests/security/test_path_traversal_comprehensive.rs"
+
+[[test]]
+name = "test_sql_injection_comprehensive"
+path = "tests/security/test_sql_injection_comprehensive.rs"
 
 [profile.release]
 panic = "abort"  # Immediate abort prevents resource leaks and info disclosure

@@ -30,8 +30,18 @@
         "$DOCUMENT/**",
         "$PICTURE",
         "$PICTURE/**",
-        "$HOME",
-        "$HOME/**"
+        "$DESKTOP",
+        "$DESKTOP/**",
+        "$VIDEO",
+        "$VIDEO/**",
+        "$MUSIC",
+        "$MUSIC/**"
+      ],
+      "deny": [
+        "$HOME/.ssh/**",
+        "$HOME/.gnupg/**",
+        "$HOME/.config/**",
+        "$HOME/.*"
       ]
     },
     "notification:default",

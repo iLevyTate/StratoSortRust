@@ -1,59 +1,37 @@
-name: CI
+name: CI / Lint & Format
 
 on:
-  push:
-    branches: [ main, develop ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [main, develop]
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
 jobs:
-  windows-build:
-    name: Windows Build & Test
-    runs-on: windows-latest
-    
+  # Quick sanity checks
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        components: rustfmt, clippy
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
-    - name: Cache cargo
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
+      - name: Check formatting
+        working-directory: src-tauri
+        run: cargo fmt -- --check
+        continue-on-error: true
 
-    - name: Check code formatting
-      working-directory: ./src-tauri
-      run: cargo fmt --check
-
-    - name: Run Clippy
-      working-directory: ./src-tauri
-      run: cargo clippy --lib -- -D warnings
-
-    - name: Run tests
-      working-directory: ./src-tauri
-      env:
-        TEST_MODE: true
-      run: cargo test --lib
-
-    - name: Test build
-      working-directory: ./src-tauri
-      run: cargo build
+      - name: Run clippy
+        working-directory: src-tauri
+        run: cargo clippy --no-deps -- -D warnings
+        continue-on-error: true

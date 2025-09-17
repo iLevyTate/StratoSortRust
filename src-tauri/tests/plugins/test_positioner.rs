@@ -80,8 +80,8 @@ mod test_positioner_plugin {
         let dialog_height = 300;
 
         // Center dialog over parent window
-        let dialog_x = parent_state.x + (parent_state.width as i32 - dialog_width as i32) / 2;
-        let dialog_y = parent_state.y + (parent_state.height as i32 - dialog_height as i32) / 2;
+        let dialog_x = parent_state.x + (parent_state.width as i32 - dialog_width) / 2;
+        let dialog_y = parent_state.y + (parent_state.height as i32 - dialog_height) / 2;
 
         assert_eq!(
             dialog_x, 600,
@@ -140,8 +140,8 @@ mod test_positioner_plugin {
 
         for i in 0..num_windows {
             let state = MockWindowState {
-                x: base_x + (cascade_offset * i as i32),
-                y: base_y + (cascade_offset * i as i32),
+                x: base_x + (cascade_offset * i),
+                y: base_y + (cascade_offset * i),
                 width: 800,
                 height: 600,
                 maximized: false,
@@ -210,8 +210,8 @@ mod test_positioner_plugin {
         let file_list_x = 100;
         let file_list_y = 100;
         let file_list_width = 600;
-        let preview_width = 400;
-        let preview_height = 500;
+        let _preview_width = 400;
+        let _preview_height = 500;
 
         // Position preview to the right of file list
         let preview_x = file_list_x + file_list_width + 20; // 20px gap
@@ -230,7 +230,7 @@ mod test_positioner_plugin {
     #[test]
     fn test_smart_positioning_avoid_overlap() {
         // Test smart positioning to avoid window overlap
-        let existing_windows = vec![
+        let existing_windows = [
             MockWindowState {
                 x: 100,
                 y: 100,
@@ -255,14 +255,14 @@ mod test_positioner_plugin {
         let new_width = 500;
         let new_height = 300;
         let mut new_x = 750; // Start after existing windows
-        let mut new_y = 100;
+        let new_y = 100;
 
         // Check for overlaps and adjust
         for window in &existing_windows {
             let would_overlap = new_x < window.x + window.width as i32
-                && new_x + new_width as i32 > window.x
+                && new_x + new_width > window.x
                 && new_y < window.y + window.height as i32
-                && new_y + new_height as i32 > window.y;
+                && new_y + new_height > window.y;
 
             if would_overlap {
                 // Adjust position to avoid overlap

@@ -18,7 +18,7 @@ mod test_updater_plugin {
 
         // Check version comparison
         let current_version = "0.1.0";
-        let update_available = update_info.version > current_version.to_string();
+        let update_available = update_info.version.as_str() > current_version;
 
         assert!(update_available, "Update should be available");
     }
@@ -26,12 +26,12 @@ mod test_updater_plugin {
     #[tokio::test]
     async fn test_update_download_progress() {
         // Test tracking update download progress
-        let update_info = MockUpdateInfo::default();
+        let _update_info = MockUpdateInfo::default();
         let total_size = 50_000_000u64; // 50MB update
         let mut downloaded = 0u64;
 
         // Simulate download progress
-        let progress_updates = vec![10, 25, 50, 75, 90, 100];
+        let progress_updates = [10, 25, 50, 75, 90, 100];
 
         for progress in progress_updates {
             downloaded = total_size * progress / 100;
@@ -77,7 +77,7 @@ mod test_updater_plugin {
         // Test update dialog user interaction
         let update_info = MockUpdateInfo::default();
 
-        let dialog_options = json!({
+        let _dialog_options = json!({
             "title": "Update Available",
             "message": format!("Version {} is available. Would you like to update?", update_info.version),
             "buttons": ["Update Now", "Later", "Skip This Version"],
@@ -85,21 +85,19 @@ mod test_updater_plugin {
         });
 
         // Simulate user response
-        let user_responses = vec!["Update Now", "Later", "Skip This Version"];
+        let user_responses = ["Update Now", "Later", "Skip This Version"];
 
         for response in user_responses {
             match response {
                 "Update Now" => {
-                    // Immediate update
-                    assert!(true, "Should start update immediately");
+                    // Immediate update - should start update immediately
                 }
                 "Later" => {
-                    // Postpone update
-                    assert!(true, "Should postpone update");
+                    // Postpone update - should postpone update
                 }
                 "Skip This Version" => {
-                    // Skip this version
-                    assert!(true, "Should skip version {}", update_info.version);
+                    // Skip this version - should skip version
+                    let _ = &update_info.version;
                 }
                 _ => panic!("Unknown response"),
             }
@@ -109,18 +107,18 @@ mod test_updater_plugin {
     #[tokio::test]
     async fn test_update_rollback_on_failure() {
         // Test rollback mechanism if update fails
-        let mut update_state = "idle";
+        let update_state;
         let backup_created = true;
 
         // Attempt update
-        update_state = "downloading";
+        // update_state = "downloading";
 
         // Simulate failure during installation
         let installation_failed = true;
 
         if installation_failed && backup_created {
             // Rollback to previous version
-            update_state = "rolling_back";
+            // update_state = "rolling_back";
 
             // Restore from backup
             update_state = "rollback_complete";
@@ -135,8 +133,8 @@ mod test_updater_plugin {
     #[tokio::test]
     async fn test_incremental_updates() {
         // Test incremental/delta updates for efficiency
-        let current_version = "0.1.0";
-        let target_version = "0.2.0";
+        let _current_version = "0.1.0";
+        let _target_version = "0.2.0";
 
         // Check if incremental update is available
         let full_update_size = 50_000_000u64; // 50MB
@@ -157,10 +155,10 @@ mod test_updater_plugin {
     #[tokio::test]
     async fn test_update_scheduling() {
         // Test scheduling updates for convenient times
-        let update_info = MockUpdateInfo::default();
+        let _update_info = MockUpdateInfo::default();
 
         // Define update schedule preferences
-        let schedule_options = json!({
+        let _schedule_options = json!({
             "preferred_time": "02:00", // 2 AM
             "preferred_days": ["Saturday", "Sunday"],
             "avoid_working_hours": true,
@@ -222,7 +220,7 @@ mod test_updater_plugin {
 
         if has_critical_operations {
             // Defer update until operations complete
-            assert!(true, "Should defer update during critical operations");
+            // Should defer update during critical operations
 
             // Wait for operations to complete
             drop(operations);
