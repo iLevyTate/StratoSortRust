@@ -223,8 +223,16 @@ impl AppState {
             });
 
             // Emit events using standardized macro
-            crate::emit_event!(self.handle, crate::events::operation::PROGRESS, serde_json::json!(progress_event));
-            crate::emit_event!(self.handle, crate::events::operation::COMPLETE, complete_event);
+            crate::emit_event!(
+                self.handle,
+                crate::events::operation::PROGRESS,
+                serde_json::json!(progress_event)
+            );
+            crate::emit_event!(
+                self.handle,
+                crate::events::operation::COMPLETE,
+                complete_event
+            );
         }
     }
 
@@ -250,7 +258,11 @@ impl AppState {
             });
 
             // Emit events using standardized macro
-            crate::emit_event!(self.handle, crate::events::operation::PROGRESS, serde_json::json!(progress_event));
+            crate::emit_event!(
+                self.handle,
+                crate::events::operation::PROGRESS,
+                serde_json::json!(progress_event)
+            );
             crate::emit_event!(self.handle, crate::events::operation::ERROR, error_event);
         }
     }
@@ -287,7 +299,11 @@ impl AppState {
 
         // Emit event outside of any locks to prevent deadlocks
         if let Some(event) = progress_event {
-            crate::emit_event!(self.handle, crate::events::operation::PROGRESS, serde_json::json!(event));
+            crate::emit_event!(
+                self.handle,
+                crate::events::operation::PROGRESS,
+                serde_json::json!(event)
+            );
         }
     }
 
@@ -304,7 +320,11 @@ impl AppState {
         };
 
         // Emit using standardized macro
-        crate::emit_event!(self.handle, crate::events::operation::PROGRESS, serde_json::json!(progress_event));
+        crate::emit_event!(
+            self.handle,
+            crate::events::operation::PROGRESS,
+            serde_json::json!(progress_event)
+        );
 
         id
     }
@@ -339,7 +359,11 @@ impl AppState {
         self.file_cache.clear();
 
         // Cancel non-critical operations
-        let active_ops: Vec<_> = self.active_operations.iter().map(|entry| *entry.key()).collect();
+        let active_ops: Vec<_> = self
+            .active_operations
+            .iter()
+            .map(|entry| *entry.key())
+            .collect();
         let mut cancelled_count = 0;
 
         for op_id in &active_ops {
@@ -353,7 +377,10 @@ impl AppState {
         }
 
         // Force garbage collection hint
-        tracing::info!("Emergency cleanup completed, {} operations cancelled", cancelled_count);
+        tracing::info!(
+            "Emergency cleanup completed, {} operations cancelled",
+            cancelled_count
+        );
         Ok(())
     }
 
@@ -442,8 +469,8 @@ impl FileCache {
 
         while self.current_size() + required_space > self.max_size
             && !self.entries.is_empty()
-            && iterations < MAX_EVICTION_ITERATIONS {
-
+            && iterations < MAX_EVICTION_ITERATIONS
+        {
             // Try to evict multiple items at once for efficiency
             let current_size = self.current_size();
             let target_size = self.max_size - required_space;
@@ -461,7 +488,8 @@ impl FileCache {
 
     fn evict_multiple_entries(&self, target_bytes: usize) {
         // Collect entries sorted by access time (oldest first)
-        let mut entries: Vec<_> = self.entries
+        let mut entries: Vec<_> = self
+            .entries
             .iter()
             .map(|entry| (entry.key().clone(), entry.accessed, entry.size))
             .collect();
@@ -516,7 +544,8 @@ impl FileCache {
 
         // If still not enough space, remove largest entries first
         if to_remove.len() < self.entries.len() / 2 {
-            let mut entries: Vec<_> = self.entries
+            let mut entries: Vec<_> = self
+                .entries
                 .iter()
                 .map(|entry| (entry.key().clone(), entry.size))
                 .collect();
@@ -533,7 +562,10 @@ impl FileCache {
             }
         }
 
-        tracing::info!("Aggressive cleanup removing {} cache entries", to_remove.len());
+        tracing::info!(
+            "Aggressive cleanup removing {} cache entries",
+            to_remove.len()
+        );
 
         for key in to_remove {
             self.entries.remove(&key);

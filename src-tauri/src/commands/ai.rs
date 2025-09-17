@@ -68,10 +68,13 @@ pub async fn check_ollama_status(
     };
 
     // Emit status event to frontend
-    let _ = state.handle.emit("ollama-status-checked", serde_json::json!({
-        "status": &status,
-        "timestamp": chrono::Utc::now().timestamp()
-    }));
+    let _ = state.handle.emit(
+        "ollama-status-checked",
+        serde_json::json!({
+            "status": &status,
+            "timestamp": chrono::Utc::now().timestamp()
+        }),
+    );
 
     Ok(status)
 }
