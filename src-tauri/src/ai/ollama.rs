@@ -592,9 +592,7 @@ Analyze the content above and respond with ONLY this JSON structure (no addition
         );
 
         // Get completion from text model
-        let response = self
-            .generate_completion(&prompt, &self.text_model)
-            .await?;
+        let response = self.generate_completion(&prompt, &self.text_model).await?;
 
         // Try to parse the JSON response
         match serde_json::from_str::<FileAnalysis>(&response) {
@@ -609,14 +607,20 @@ Analyze the content above and respond with ONLY this JSON structure (no addition
             }
             Err(e) => {
                 // If JSON parsing fails, create a basic analysis
-                warn!("Failed to parse Ollama response as JSON: {} - Response: {}", e, response);
+                warn!(
+                    "Failed to parse Ollama response as JSON: {} - Response: {}",
+                    e, response
+                );
 
                 // Try to extract useful information from the response anyway
                 let category = if file_type.contains("text") || file_type.contains("document") {
                     "Documents"
                 } else if file_type.contains("code") || file_type.contains("script") {
                     "Code"
-                } else if file_type.contains("data") || file_type.contains("json") || file_type.contains("csv") {
+                } else if file_type.contains("data")
+                    || file_type.contains("json")
+                    || file_type.contains("csv")
+                {
                     "Data"
                 } else {
                     "Other"
@@ -973,7 +977,8 @@ Respond ONLY with valid JSON, no explanations."#,
             .iter()
             .filter(|folder| folder.enabled)
             .map(|folder| {
-                let rules_summary = folder.rules
+                let rules_summary = folder
+                    .rules
                     .iter()
                     .filter(|r| r.enabled)
                     .map(|r| format!("{:?}", r.rule_type))
@@ -983,8 +988,15 @@ Respond ONLY with valid JSON, no explanations."#,
                 format!(
                     "* Folder: '{}'\n  Description: {}\n  Rules: [{}]\n  Target Path: {}",
                     folder.name,
-                    folder.description.as_deref().unwrap_or("General purpose folder"),
-                    if rules_summary.is_empty() { "No specific rules" } else { &rules_summary },
+                    folder
+                        .description
+                        .as_deref()
+                        .unwrap_or("General purpose folder"),
+                    if rules_summary.is_empty() {
+                        "No specific rules"
+                    } else {
+                        &rules_summary
+                    },
                     folder.target_path
                 )
             })

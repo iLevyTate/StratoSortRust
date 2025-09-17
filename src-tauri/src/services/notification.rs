@@ -110,7 +110,10 @@ impl NotificationService {
         suggested_action: Option<&str>,
     ) -> Result<String> {
         let body = if let Some(action) = suggested_action {
-            format!("{} failed: {}. Suggested action: {}", operation, error, action)
+            format!(
+                "{} failed: {}. Suggested action: {}",
+                operation, error, action
+            )
         } else {
             format!("{} failed: {}", operation, error)
         };
@@ -125,13 +128,16 @@ impl NotificationService {
         };
 
         // Also emit detailed failure event to frontend
-        self.app_handle.emit("operation-failure", serde_json::json!({
-            "operation": operation,
-            "error": error,
-            "suggested_action": suggested_action,
-            "timestamp": chrono::Utc::now().timestamp(),
-            "notification_id": notification.id
-        }))?;
+        self.app_handle.emit(
+            "operation-failure",
+            serde_json::json!({
+                "operation": operation,
+                "error": error,
+                "suggested_action": suggested_action,
+                "timestamp": chrono::Utc::now().timestamp(),
+                "notification_id": notification.id
+            }),
+        )?;
 
         self.send_notification(notification).await
     }
@@ -157,12 +163,15 @@ impl NotificationService {
         };
 
         // Emit timeout event to frontend
-        self.app_handle.emit("operation-timeout", serde_json::json!({
-            "operation": operation,
-            "timeout_seconds": timeout_seconds,
-            "timestamp": chrono::Utc::now().timestamp(),
-            "notification_id": notification.id
-        }))?;
+        self.app_handle.emit(
+            "operation-timeout",
+            serde_json::json!({
+                "operation": operation,
+                "timeout_seconds": timeout_seconds,
+                "timestamp": chrono::Utc::now().timestamp(),
+                "notification_id": notification.id
+            }),
+        )?;
 
         self.send_notification(notification).await
     }
@@ -189,13 +198,16 @@ impl NotificationService {
         };
 
         // Emit resource limit event to frontend
-        self.app_handle.emit("resource-limit", serde_json::json!({
-            "resource_type": resource_type,
-            "current": current,
-            "limit": limit,
-            "timestamp": chrono::Utc::now().timestamp(),
-            "notification_id": notification.id
-        }))?;
+        self.app_handle.emit(
+            "resource-limit",
+            serde_json::json!({
+                "resource_type": resource_type,
+                "current": current,
+                "limit": limit,
+                "timestamp": chrono::Utc::now().timestamp(),
+                "notification_id": notification.id
+            }),
+        )?;
 
         self.send_notification(notification).await
     }

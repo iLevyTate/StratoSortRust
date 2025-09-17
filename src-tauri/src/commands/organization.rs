@@ -323,7 +323,10 @@ pub async fn apply_smart_folder_rules(
                         }
                         ActionType::Rename => {
                             // Use the rename_pattern if provided, otherwise fall back to target_folder
-                            let rename_pattern = rule.action.rename_pattern.as_ref()
+                            let rename_pattern = rule
+                                .action
+                                .rename_pattern
+                                .as_ref()
                                 .unwrap_or(&rule.action.target_folder);
 
                             // Process rename pattern with placeholders
@@ -509,7 +512,7 @@ pub async fn auto_organize_directory(
                 action: ActionType::Move,
                 rule_id: "ai-suggestion".to_string(),
                 confidence: suggestion.confidence,
-                rename_pattern: None,  // AI suggestions don't use rename patterns by default
+                rename_pattern: None, // AI suggestions don't use rename patterns by default
             });
         }
     }
@@ -535,7 +538,7 @@ pub struct OrganizationPreview {
     pub action: ActionType,
     pub rule_id: String,
     pub confidence: f32,
-    pub rename_pattern: Option<String>,  // Optional rename pattern for preview
+    pub rename_pattern: Option<String>, // Optional rename pattern for preview
 }
 
 #[tauri::command]
@@ -744,7 +747,7 @@ pub struct OrganizationOperation {
     pub source_path: String,
     pub target_path: String,
     pub action: ActionType,
-    pub rename_pattern: Option<String>,  // Optional rename pattern for Rename actions
+    pub rename_pattern: Option<String>, // Optional rename pattern for Rename actions
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -783,7 +786,8 @@ async fn perform_organization_operation(op: &OrganizationOperation) -> Result<()
             parent.join(&new_name)
         } else {
             // Use source parent directory
-            source.parent()
+            source
+                .parent()
                 .unwrap_or(std::path::Path::new("."))
                 .join(&new_name)
         }
@@ -1053,7 +1057,7 @@ async fn apply_smart_folder_rules_enhanced(
                 action: ActionType::Move,
                 rule_id: folder_id.clone(),
                 confidence,
-                rename_pattern: None,  // This function uses Move action by default
+                rename_pattern: None, // This function uses Move action by default
             });
         }
     }
@@ -1113,7 +1117,8 @@ pub async fn preview_rename_pattern(
         RENAME_COUNTER.store(options.counter_start, std::sync::atomic::Ordering::SeqCst);
     }
 
-    for file_path in file_paths.iter().take(100) {  // Limit preview to 100 files
+    for file_path in file_paths.iter().take(100) {
+        // Limit preview to 100 files
         let new_name = apply_rename_pattern_with_options(file_path, &pattern, &options);
 
         let valid = validate_filename(&new_name);
@@ -1181,16 +1186,19 @@ impl Default for RenameOptions {
 static RENAME_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
 
 /// Apply rename pattern with additional options
-fn apply_rename_pattern_with_options(file_path: &str, pattern: &str, options: &RenameOptions) -> String {
+fn apply_rename_pattern_with_options(
+    file_path: &str,
+    pattern: &str,
+    options: &RenameOptions,
+) -> String {
     let path = std::path::Path::new(file_path);
 
     // Extract file components
-    let name_without_ext = path.file_stem()
+    let name_without_ext = path
+        .file_stem()
         .and_then(|n| n.to_str())
         .unwrap_or("unnamed");
-    let extension = path.extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     // Apply text transformations to name if requested
     let mut processed_name = name_without_ext.to_string();
@@ -1295,9 +1303,8 @@ fn get_filename_error(name: &str) -> String {
 
     // Check for reserved Windows names
     let reserved_names = [
-        "CON", "PRN", "AUX", "NUL",
-        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     ];
 
     let name_upper = name.to_uppercase();
@@ -1307,7 +1314,7 @@ fn get_filename_error(name: &str) -> String {
         &name_upper
     };
 
-    if reserved_names.contains(&base_name.as_ref()) {
+    if reserved_names.contains(&base_name) {
         return format!("'{}' is a reserved filename on Windows", base_name);
     }
 
@@ -1337,9 +1344,8 @@ fn validate_filename(name: &str) -> bool {
 
     // Check for reserved Windows names
     let reserved_names = [
-        "CON", "PRN", "AUX", "NUL",
-        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     ];
 
     let name_upper = name.to_uppercase();
@@ -1349,7 +1355,7 @@ fn validate_filename(name: &str) -> bool {
         &name_upper
     };
 
-    if reserved_names.contains(&base_name.as_ref()) {
+    if reserved_names.contains(&base_name) {
         return false;
     }
 
@@ -1366,12 +1372,11 @@ fn apply_rename_pattern(file_path: &str, pattern: &str) -> String {
     let path = std::path::Path::new(file_path);
 
     // Extract file components
-    let name_without_ext = path.file_stem()
+    let name_without_ext = path
+        .file_stem()
         .and_then(|n| n.to_str())
         .unwrap_or("unnamed");
-    let extension = path.extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     // Get current date/time components
     let now = chrono::Local::now();
@@ -2020,7 +2025,6 @@ fn get_naming_presets() -> Vec<NamingPreset> {
             example_before: "data.csv".to_string(),
             example_after: "archive_20240315-143045_data.csv".to_string(),
         },
-
         // Sequential formats
         NamingPreset {
             id: "sequential_numbered".to_string(),
@@ -2040,7 +2044,6 @@ fn get_naming_presets() -> Vec<NamingPreset> {
             example_before: "document.txt".to_string(),
             example_after: "0001_document.txt".to_string(),
         },
-
         // Organization formats
         NamingPreset {
             id: "year_month_folders".to_string(),
@@ -2060,7 +2063,6 @@ fn get_naming_presets() -> Vec<NamingPreset> {
             example_before: "photo.jpg".to_string(),
             example_after: "2024-03-15/photo.jpg".to_string(),
         },
-
         // Professional formats
         NamingPreset {
             id: "project_versioned".to_string(),
@@ -2080,7 +2082,6 @@ fn get_naming_presets() -> Vec<NamingPreset> {
             example_before: "proposal.docx".to_string(),
             example_after: "2024-03-15-proposal-FINAL.docx".to_string(),
         },
-
         // Photo/Media formats
         NamingPreset {
             id: "photo_datetime".to_string(),
@@ -2100,7 +2101,6 @@ fn get_naming_presets() -> Vec<NamingPreset> {
             example_before: "image.jpg".to_string(),
             example_after: "DSC_0001.jpg".to_string(),
         },
-
         // Simple formats
         NamingPreset {
             id: "keep_original".to_string(),
@@ -2150,9 +2150,14 @@ pub async fn test_smart_folder_rule(
     // Add suggestions based on test results
     let mut suggestions = validation.suggestions;
     if test_result.matched_files == 0 {
-        suggestions.push("This rule didn't match any sample files. Consider adjusting the conditions.".to_string());
+        suggestions.push(
+            "This rule didn't match any sample files. Consider adjusting the conditions."
+                .to_string(),
+        );
     } else if test_result.matched_files == test_result.total_files {
-        suggestions.push("This rule matches all sample files. Consider making it more specific.".to_string());
+        suggestions.push(
+            "This rule matches all sample files. Consider making it more specific.".to_string(),
+        );
     }
 
     Ok(RuleValidationResult {

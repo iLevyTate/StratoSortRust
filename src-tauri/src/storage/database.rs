@@ -64,7 +64,8 @@ impl Database {
                 // Try fallback directory locations
                 let fallback_paths = Self::get_fallback_database_paths();
                 for fallback_path in fallback_paths {
-                    if let Ok(fallback_db_path) = Self::try_fallback_database(&fallback_path).await {
+                    if let Ok(fallback_db_path) = Self::try_fallback_database(&fallback_path).await
+                    {
                         tracing::warn!("Using fallback database path: {:?}", fallback_db_path);
                         return Self::initialize_database_at_path(fallback_db_path).await;
                     }
@@ -96,7 +97,10 @@ impl Database {
 
         // Check database integrity with recovery options
         if let Err(e) = db.check_integrity_with_recovery().await {
-            tracing::warn!("Database integrity check failed, attempting recovery: {}", e);
+            tracing::warn!(
+                "Database integrity check failed, attempting recovery: {}",
+                e
+            );
             db.attempt_database_recovery().await?;
         }
 
@@ -782,7 +786,9 @@ impl Database {
             handle.path().app_data_dir(),
             handle.path().app_local_data_dir(),
             handle.path().app_cache_dir(),
-            Ok(std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")).join("data")),
+            Ok(std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                .join("data")),
             Ok(std::path::PathBuf::from("./stratosort_data")),
             Ok(std::env::temp_dir().join("stratosort")),
         ];
@@ -799,25 +805,32 @@ impl Database {
         }
 
         // If all else fails, use in-memory database (warning: data will be lost on restart)
-        tracing::error!("All database directory options failed, falling back to in-memory database");
+        tracing::error!(
+            "All database directory options failed, falling back to in-memory database"
+        );
         Err(AppError::DatabaseError {
-            message: "Failed to find suitable database directory. All locations are inaccessible.".to_string(),
+            message: "Failed to find suitable database directory. All locations are inaccessible."
+                .to_string(),
         })
     }
 
     async fn ensure_database_directory(dir: &std::path::Path) -> Result<()> {
         // Create directory if it doesn't exist
         if !dir.exists() {
-            tokio::fs::create_dir_all(dir).await.map_err(|e| AppError::DatabaseError {
-                message: format!("Failed to create directory '{}': {}", dir.display(), e),
-            })?
+            tokio::fs::create_dir_all(dir)
+                .await
+                .map_err(|e| AppError::DatabaseError {
+                    message: format!("Failed to create directory '{}': {}", dir.display(), e),
+                })?
         }
 
         // Test write permissions
         let test_file = dir.join(".write_test");
-        tokio::fs::write(&test_file, "test").await.map_err(|e| AppError::DatabaseError {
-            message: format!("Directory '{}' is not writable: {}", dir.display(), e),
-        })?;
+        tokio::fs::write(&test_file, "test")
+            .await
+            .map_err(|e| AppError::DatabaseError {
+                message: format!("Directory '{}' is not writable: {}", dir.display(), e),
+            })?;
 
         // Clean up test file
         let _ = tokio::fs::remove_file(&test_file).await;
@@ -827,7 +840,9 @@ impl Database {
 
     fn get_fallback_database_paths() -> Vec<PathBuf> {
         vec![
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")).join("data"),
+            std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                .join("data"),
             std::path::PathBuf::from("./stratosort_data"),
             std::env::temp_dir().join("stratosort"),
         ]
@@ -863,19 +878,34 @@ impl Database {
 
             match SqlitePool::connect_with(connection_options).await {
                 Ok(pool) => {
-                    tracing::info!("Database connection established successfully on attempt {}", retry_count + 1);
+                    tracing::info!(
+                        "Database connection established successfully on attempt {}",
+                        retry_count + 1
+                    );
                     return Ok(pool);
                 }
                 Err(e) => {
                     retry_count += 1;
                     if retry_count >= max_retries {
-                        tracing::error!("Database connection failed after {} attempts: {}", max_retries, e);
+                        tracing::error!(
+                            "Database connection failed after {} attempts: {}",
+                            max_retries,
+                            e
+                        );
                         return Err(AppError::DatabaseError {
-                            message: format!("Failed to connect to database at {:?} after {} attempts: {}", db_path, max_retries, e),
+                            message: format!(
+                                "Failed to connect to database at {:?} after {} attempts: {}",
+                                db_path, max_retries, e
+                            ),
                         });
                     }
 
-                    tracing::warn!("Database connection attempt {} failed, retrying in {}ms: {}", retry_count, 500 * retry_count, e);
+                    tracing::warn!(
+                        "Database connection attempt {} failed, retrying in {}ms: {}",
+                        retry_count,
+                        500 * retry_count,
+                        e
+                    );
                     tokio::time::sleep(Duration::from_millis(500 * retry_count)).await;
                 }
             }
@@ -895,12 +925,20 @@ impl Database {
                 Err(e) => {
                     attempts += 1;
                     if attempts >= max_attempts {
-                        tracing::error!("Database connection verification failed after {} attempts: {}", max_attempts, e);
+                        tracing::error!(
+                            "Database connection verification failed after {} attempts: {}",
+                            max_attempts,
+                            e
+                        );
                         return Err(AppError::DatabaseError {
                             message: format!("Database connection verification failed after {} attempts: {}. Database may be corrupted.", max_attempts, e),
                         });
                     }
-                    tracing::warn!("Database verification attempt {} failed, retrying: {}", attempts, e);
+                    tracing::warn!(
+                        "Database verification attempt {} failed, retrying: {}",
+                        attempts,
+                        e
+                    );
                     tokio::time::sleep(Duration::from_millis(100 * attempts as u64)).await;
                 }
             }
@@ -909,7 +947,8 @@ impl Database {
 
     async fn initialize_vector_extension_safely(pool: &SqlitePool) -> VectorExtension {
         // Non-blocking vector extension initialization
-        match tokio::time::timeout(Duration::from_secs(10), VectorExtension::initialize(pool)).await {
+        match tokio::time::timeout(Duration::from_secs(10), VectorExtension::initialize(pool)).await
+        {
             Ok(vector_ext) => {
                 tracing::info!("Vector extension initialized successfully");
                 vector_ext

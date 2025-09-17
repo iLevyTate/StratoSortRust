@@ -23,18 +23,17 @@ static CONCURRENT_READS: AtomicUsize = AtomicUsize::new(0);
 static TOTAL_MEMORY_USAGE: AtomicUsize = AtomicUsize::new(0);
 
 // Helper function to add timeout to long-running file operations
-async fn with_timeout<T, F>(
-    future: F,
-    timeout_secs: u64,
-    operation_name: &str,
-) -> Result<T>
+async fn with_timeout<T, F>(future: F, timeout_secs: u64, operation_name: &str) -> Result<T>
 where
     F: std::future::Future<Output = Result<T>>,
 {
     tokio::time::timeout(tokio::time::Duration::from_secs(timeout_secs), future)
         .await
         .map_err(|_| crate::error::AppError::Timeout {
-            message: format!("{} operation timed out after {} seconds", operation_name, timeout_secs),
+            message: format!(
+                "{} operation timed out after {} seconds",
+                operation_name, timeout_secs
+            ),
         })?
 }
 
@@ -106,7 +105,10 @@ impl Drop for OperationGuard {
     fn drop(&mut self) {
         // Ensure operation is always completed, even on panic or early return
         if !self.completed {
-            tracing::warn!("Operation {} was not properly completed, cleaning up", self.operation_id);
+            tracing::warn!(
+                "Operation {} was not properly completed, cleaning up",
+                self.operation_id
+            );
             self.state.complete_operation(self.operation_id);
         }
     }
@@ -272,7 +274,9 @@ async fn scan_directory_internal(
             .filter_map(|e| e.ok())
         {
             // Check for cancellation atomically
-            let is_cancelled = state.active_operations.get(&operation_id)
+            let is_cancelled = state
+                .active_operations
+                .get(&operation_id)
                 .map(|op| op.cancellation_token.is_cancelled())
                 .unwrap_or(true); // Consider cancelled if operation no longer exists
 
@@ -382,10 +386,13 @@ pub async fn scan_directory_stream(
                 // Check for cancellation
                 if let Some(status) = state_clone.active_operations.get(&operation_id_clone) {
                     if status.cancellation_token.is_cancelled() {
-                        let _ = app_clone.emit("scan-cancelled", serde_json::json!({
-                            "operation_id": operation_id_str,
-                            "reason": "User cancelled operation"
-                        }));
+                        let _ = app_clone.emit(
+                            "scan-cancelled",
+                            serde_json::json!({
+                                "operation_id": operation_id_str,
+                                "reason": "User cancelled operation"
+                            }),
+                        );
                         return;
                     }
                 }
@@ -396,12 +403,15 @@ pub async fn scan_directory_stream(
 
                     // Emit when batch is full
                     if batch.len() >= batch_size {
-                        let _ = app_clone.emit("scan-batch", serde_json::json!({
-                            "operation_id": operation_id_str,
-                            "files": batch,
-                            "total_processed": total_processed,
-                            "batch_size": batch.len()
-                        }));
+                        let _ = app_clone.emit(
+                            "scan-batch",
+                            serde_json::json!({
+                                "operation_id": operation_id_str,
+                                "files": batch,
+                                "total_processed": total_processed,
+                                "batch_size": batch.len()
+                            }),
+                        );
                         batch.clear();
                     }
                 }
@@ -423,12 +433,16 @@ pub async fn scan_directory_stream(
                 Ok(mut entries) => {
                     while let Ok(Some(entry)) = entries.next_entry().await {
                         // Check for cancellation
-                        if let Some(status) = state_clone.active_operations.get(&operation_id_clone) {
+                        if let Some(status) = state_clone.active_operations.get(&operation_id_clone)
+                        {
                             if status.cancellation_token.is_cancelled() {
-                                let _ = app_clone.emit("scan-cancelled", serde_json::json!({
-                                    "operation_id": operation_id_str,
-                                    "reason": "User cancelled operation"
-                                }));
+                                let _ = app_clone.emit(
+                                    "scan-cancelled",
+                                    serde_json::json!({
+                                        "operation_id": operation_id_str,
+                                        "reason": "User cancelled operation"
+                                    }),
+                                );
                                 return;
                             }
                         }
@@ -439,28 +453,30 @@ pub async fn scan_directory_stream(
 
                             // Emit when batch is full
                             if batch.len() >= batch_size {
-                                let _ = app_clone.emit("scan-batch", serde_json::json!({
-                                    "operation_id": operation_id_str,
-                                    "files": batch,
-                                    "total_processed": total_processed,
-                                    "batch_size": batch.len()
-                                }));
+                                let _ = app_clone.emit(
+                                    "scan-batch",
+                                    serde_json::json!({
+                                        "operation_id": operation_id_str,
+                                        "files": batch,
+                                        "total_processed": total_processed,
+                                        "batch_size": batch.len()
+                                    }),
+                                );
                                 batch.clear();
                             }
                         }
                     }
-                },
+                }
                 Err(e) => {
-                    let _ = app_clone.emit("scan-error", serde_json::json!({
-                        "operation_id": operation_id_str,
-                        "error": e.to_string()
-                    }));
-                    // Update operation with error and complete it
-                    state_clone.update_progress(
-                        operation_id_clone,
-                        0.0,
-                        format!("Error: {}", e),
+                    let _ = app_clone.emit(
+                        "scan-error",
+                        serde_json::json!({
+                            "operation_id": operation_id_str,
+                            "error": e.to_string()
+                        }),
                     );
+                    // Update operation with error and complete it
+                    state_clone.update_progress(operation_id_clone, 0.0, format!("Error: {}", e));
                     state_clone.complete_operation(operation_id_clone);
                     return;
                 }
@@ -469,19 +485,25 @@ pub async fn scan_directory_stream(
 
         // Emit final batch if any remain
         if !batch.is_empty() {
-            let _ = app_clone.emit("scan-batch", serde_json::json!({
-                "operation_id": operation_id_str,
-                "files": batch,
-                "total_processed": total_processed,
-                "batch_size": batch.len()
-            }));
+            let _ = app_clone.emit(
+                "scan-batch",
+                serde_json::json!({
+                    "operation_id": operation_id_str,
+                    "files": batch,
+                    "total_processed": total_processed,
+                    "batch_size": batch.len()
+                }),
+            );
         }
 
         // Emit completion
-        let _ = app_clone.emit("scan-complete", serde_json::json!({
-            "operation_id": operation_id_str,
-            "total_files": total_processed
-        }));
+        let _ = app_clone.emit(
+            "scan-complete",
+            serde_json::json!({
+                "operation_id": operation_id_str,
+                "total_files": total_processed
+            }),
+        );
 
         state_clone.update_progress(
             operation_id_clone,
@@ -2136,7 +2158,11 @@ async fn validate_file_access(
 }
 
 /// Stream large files to avoid memory exhaustion
-async fn read_large_file_streaming(path: &Path, state: &AppState, operation_id: uuid::Uuid) -> Result<String> {
+async fn read_large_file_streaming(
+    path: &Path,
+    state: &AppState,
+    operation_id: uuid::Uuid,
+) -> Result<String> {
     let file = fs::File::open(path).await?;
     let mut reader = BufReader::new(file);
 
@@ -2179,7 +2205,9 @@ async fn read_large_file_streaming(path: &Path, state: &AppState, operation_id: 
         // Periodic memory pressure and cancellation checks
         if total_read % (CHUNK_SIZE as u64 * 64) == 0 {
             // Check for cancellation
-            let is_cancelled = state.active_operations.get(&operation_id)
+            let is_cancelled = state
+                .active_operations
+                .get(&operation_id)
                 .map(|op| op.cancellation_token.is_cancelled())
                 .unwrap_or(true);
 
@@ -2190,8 +2218,11 @@ async fn read_large_file_streaming(path: &Path, state: &AppState, operation_id: 
             // Memory pressure check
             let current_memory = TOTAL_MEMORY_USAGE.load(Ordering::Acquire);
             let max_memory = get_max_total_memory(state);
-            if current_memory > max_memory * 90 / 100 { // 90% threshold
-                tracing::warn!("Memory pressure detected during file read, consider reducing file size limits");
+            if current_memory > max_memory * 90 / 100 {
+                // 90% threshold
+                tracing::warn!(
+                    "Memory pressure detected during file read, consider reducing file size limits"
+                );
             }
         }
     }

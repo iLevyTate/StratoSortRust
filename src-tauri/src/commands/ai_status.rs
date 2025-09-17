@@ -7,7 +7,7 @@ pub async fn get_ai_status(state: State<'_, std::sync::Arc<AppState>>) -> Result
     // Add timeout to prevent indefinite blocking
     let status = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        state.ai_service.get_status()
+        state.ai_service.get_status(),
     )
     .await
     .map_err(|_| crate::error::AppError::Timeout {
@@ -22,7 +22,10 @@ pub async fn get_ai_status(state: State<'_, std::sync::Arc<AppState>>) -> Result
 
 /// Try to connect to Ollama with a specific host
 #[tauri::command]
-pub async fn connect_ollama(host: String, state: State<'_, std::sync::Arc<AppState>>) -> Result<AiServiceStatus> {
+pub async fn connect_ollama(
+    host: String,
+    state: State<'_, std::sync::Arc<AppState>>,
+) -> Result<AiServiceStatus> {
     tracing::info!("Attempting to connect to Ollama at: {}", host);
 
     // Get current status first
@@ -37,7 +40,7 @@ pub async fn connect_ollama(host: String, state: State<'_, std::sync::Arc<AppSta
     // Attempt to connect to new host with timeout
     match tokio::time::timeout(
         tokio::time::Duration::from_secs(30),
-        state.ai_service.reconnect_ollama(&host)
+        state.ai_service.reconnect_ollama(&host),
     )
     .await
     {
@@ -76,7 +79,10 @@ pub async fn connect_ollama(host: String, state: State<'_, std::sync::Arc<AppSta
         },
         Err(_) => {
             // Timeout occurred
-            tracing::error!("Connection to Ollama at {} timed out after 30 seconds", host);
+            tracing::error!(
+                "Connection to Ollama at {} timed out after 30 seconds",
+                host
+            );
             let mut status = current_status;
             status.last_error = Some(format!("Connection to {} timed out after 30 seconds", host));
             Ok(status)
@@ -86,7 +92,9 @@ pub async fn connect_ollama(host: String, state: State<'_, std::sync::Arc<AppSta
 
 /// Switch to fallback AI provider
 #[tauri::command]
-pub async fn use_fallback_ai(state: State<'_, std::sync::Arc<AppState>>) -> Result<AiServiceStatus> {
+pub async fn use_fallback_ai(
+    state: State<'_, std::sync::Arc<AppState>>,
+) -> Result<AiServiceStatus> {
     let status = state.ai_service.use_fallback();
 
     // Emit status change event to frontend
@@ -101,12 +109,14 @@ pub async fn test_ai_analysis(
     state: State<'_, std::sync::Arc<AppState>>,
     test_content: Option<String>,
 ) -> Result<String> {
-    let test_content = test_content.unwrap_or_else(|| "This is a test document to verify AI analysis functionality.".to_string());
+    let test_content = test_content.unwrap_or_else(|| {
+        "This is a test document to verify AI analysis functionality.".to_string()
+    });
 
     // Add timeout to prevent indefinite blocking during AI analysis
     match tokio::time::timeout(
         tokio::time::Duration::from_secs(60), // Longer timeout for AI analysis
-        state.ai_service.analyze_file(&test_content, "text/plain")
+        state.ai_service.analyze_file(&test_content, "text/plain"),
     )
     .await
     {
@@ -123,7 +133,9 @@ pub async fn test_ai_analysis(
 
 /// Get detailed AI capabilities and model information
 #[tauri::command]
-pub async fn get_ai_capabilities(state: State<'_, std::sync::Arc<AppState>>) -> Result<serde_json::Value> {
+pub async fn get_ai_capabilities(
+    state: State<'_, std::sync::Arc<AppState>>,
+) -> Result<serde_json::Value> {
     let status = state.ai_service.get_status().await;
 
     let capabilities = serde_json::json!({

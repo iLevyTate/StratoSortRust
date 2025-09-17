@@ -4,7 +4,6 @@ use tracing::{debug, info, warn};
 /// Initialize sqlite-vec extension at the SQLite connection level
 /// This should be called early in the application lifecycle
 pub fn initialize_sqlite_vec() -> Result<()> {
-
     // Register sqlite-vec extension with SQLite
     // Note: sqlite-vec init function returns void, so we handle errors differently
     // SAFETY: This call initializes the sqlite-vec extension in the SQLite library.
