@@ -3,10 +3,12 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use sysinfo::System;
 use tokio::time::{interval, Duration};
-use tracing::{debug, warn};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, warn, info};
 
 pub struct MemoryMonitor {
     threshold: f32,
+    shutdown_token: CancellationToken,
 }
 
 impl Default for MemoryMonitor {
@@ -17,20 +19,36 @@ impl Default for MemoryMonitor {
 
 impl MemoryMonitor {
     pub fn new() -> Self {
-        Self { threshold: 80.0 }
+        Self {
+            threshold: 80.0,
+            shutdown_token: CancellationToken::new(),
+        }
     }
 
-    pub async fn start(self: Arc<Self>) -> Result<()> {
+    pub async fn start(self: Arc<Self>) -> Result<tokio::task::JoinHandle<()>> {
         let mut interval = interval(Duration::from_secs(30));
+        let shutdown_token = self.shutdown_token.clone();
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
+            info!("Memory monitor started");
             loop {
-                interval.tick().await;
-                self.check_memory();
+                tokio::select! {
+                    _ = interval.tick() => {
+                        self.check_memory();
+                    }
+                    _ = shutdown_token.cancelled() => {
+                        info!("Memory monitor shutting down");
+                        break;
+                    }
+                }
             }
         });
 
-        Ok(())
+        Ok(handle)
+    }
+
+    pub fn shutdown(&self) {
+        self.shutdown_token.cancel();
     }
 
     fn check_memory(&self) {

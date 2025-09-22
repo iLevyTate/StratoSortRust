@@ -269,25 +269,96 @@ pub struct ConnectionPoolStats {
 
 /// Health check for Ollama server
 pub async fn check_ollama_health(host: &str, port: u16) -> Result<bool> {
-    use std::net::{TcpStream, ToSocketAddrs};
+    use std::net::SocketAddr;
+    use tokio::net::TcpStream;
 
-    let addr = format!("{}:{}", host, port);
+    tracing::debug!("Checking Ollama health at {}:{}", host, port);
 
-    // Try to connect with timeout
-    let result = tokio::task::spawn_blocking(move || match addr.to_socket_addrs() {
-        Ok(mut addrs) => {
-            if let Some(socket_addr) = addrs.next() {
-                TcpStream::connect_timeout(&socket_addr, Duration::from_secs(2)).is_ok()
-            } else {
-                false
+    // Try direct connection first with better timeout handling
+    let addr = if host == "localhost" {
+        format!("127.0.0.1:{}", port)
+    } else {
+        format!("{}:{}", host, port)
+    };
+
+    tracing::debug!("Attempting TCP connection to {}", addr);
+
+    // Parse the socket address directly
+    let socket_addr: SocketAddr = match addr.parse() {
+        Ok(addr) => addr,
+        Err(e) => {
+            tracing::warn!("Failed to parse address {}: {}", addr, e);
+            return Ok(false);
+        }
+    };
+
+    // Try to connect with async TCP stream and proper timeout
+    let connection_result = tokio::time::timeout(
+        Duration::from_secs(5),
+        TcpStream::connect(socket_addr)
+    ).await;
+
+    match connection_result {
+        Ok(Ok(stream)) => {
+            drop(stream); // Close the connection immediately
+            tracing::debug!("Successfully connected to Ollama at {}", addr);
+            
+            // Also try a quick HTTP health check to make sure it's actually Ollama
+            match check_ollama_http_health(host, port).await {
+                Ok(true) => {
+                    tracing::debug!("Ollama HTTP health check passed");
+                    Ok(true)
+                }
+                Ok(false) => {
+                    tracing::warn!("TCP connection succeeded but HTTP health check failed");
+                    Ok(false)
+                }
+                Err(e) => {
+                    tracing::warn!("HTTP health check error: {}", e);
+                    // Still return true since TCP connection worked
+                    Ok(true)
+                }
             }
         }
-        Err(_) => false,
-    })
-    .await;
+        Ok(Err(e)) => {
+            tracing::warn!("Failed to connect to Ollama at {}: {}", addr, e);
+            Ok(false)
+        }
+        Err(_) => {
+            tracing::warn!("Connection timeout when trying to connect to Ollama at {}", addr);
+            Ok(false)
+        }
+    }
+}
 
-    match result {
-        Ok(is_connected) => Ok(is_connected),
-        Err(_) => Ok(false),
+/// HTTP-based health check for Ollama server
+async fn check_ollama_http_health(host: &str, port: u16) -> Result<bool> {
+    use reqwest::Client;
+    
+    let client = Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|e| AppError::AiError {
+            message: format!("Failed to create HTTP client: {}", e),
+        })?;
+
+    let url = if host == "localhost" {
+        format!("http://127.0.0.1:{}/", port)
+    } else {
+        format!("http://{}:{}/", host, port)
+    };
+
+    tracing::debug!("Trying HTTP health check at {}", url);
+
+    match client.get(&url).send().await {
+        Ok(response) => {
+            let is_healthy = response.status().is_success() || response.status() == 404;
+            tracing::debug!("HTTP health check response status: {} (healthy: {})", response.status(), is_healthy);
+            Ok(is_healthy)
+        }
+        Err(e) => {
+            tracing::warn!("HTTP health check failed: {}", e);
+            Ok(false)
+        }
     }
 }

@@ -63,21 +63,32 @@ pub fn initialize_with_rusqlite() -> Result<()> {
     use rusqlite::{ffi::sqlite3_auto_extension, Connection};
 
     // Register sqlite-vec extension to auto-load with new connections
-    // SAFETY: This transmute is required for SQLite's C FFI auto-extension mechanism.
-    // The sqlite3_vec_init function has the correct signature for SQLite extensions,
-    // but Rust's type system requires explicit casting. This is a well-established
-    // pattern in SQLite extension loading. The function pointer remains valid for
-    // the lifetime of the application.
+    // SAFETY: This is safe because:
+    // 1. sqlite3_vec_init has the correct C signature for SQLite extension init
+    // 2. We're using a proper function pointer cast (not transmute) for type safety
+    // 3. The extension function is provided by the sqlite-vec crate, not arbitrary code
+    // 4. SQLite manages the extension lifecycle internally after registration
     unsafe {
-        let result = sqlite3_auto_extension(Some(std::mem::transmute(
-            sqlite_vec::sqlite3_vec_init as *const (),
-        )));
+        // Validate that the extension function pointer is not null
+        let extension_fn: unsafe extern "C" fn(
+            *mut rusqlite::ffi::sqlite3,
+            *mut *const std::os::raw::c_char,
+            *const rusqlite::ffi::sqlite3_api_routines,
+        ) -> std::os::raw::c_int = sqlite_vec::sqlite3_vec_init;
+        
+        // sqlite3_auto_extension can fail if memory allocation fails or if too many extensions are registered
+        let result = sqlite3_auto_extension(Some(extension_fn));
 
         if result != 0 {
-            return Err(AppError::DatabaseError {
-                message: format!("Failed to auto-register sqlite-vec extension: {}", result),
+            return Err(crate::error::AppError::DatabaseError {
+                message: format!(
+                    "Failed to auto-register sqlite-vec extension (SQLite error code: {}). This may indicate memory issues or too many extensions.", 
+                    result
+                ),
             });
         }
+        
+        tracing::debug!("sqlite-vec extension auto-registration successful");
     }
 
     // Test the extension works

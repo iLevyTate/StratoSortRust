@@ -1,7 +1,14 @@
-use crate::{error::Result, state::AppState};
+use crate::{
+    ai::ollama::FolderSuggestion,
+    error::{Result, AppError},
+    state::AppState,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use tauri::State;
+use tokio::fs;
 use tracing::error;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -19,6 +26,30 @@ pub struct ModelInfo {
     pub name: String,
     pub size: u64,
     pub modified_at: String,
+}
+
+/// Validate and sanitize file path
+fn validate_path(path_str: &str) -> Result<PathBuf> {
+    use crate::utils::security::sanitize_path;
+    let path = sanitize_path(path_str)?;
+    Ok(path)
+}
+
+/// Read file content with size limit
+async fn read_file_content(path: &Path, max_bytes: usize) -> Result<String> {
+    let metadata = fs::metadata(path).await?;
+
+    if metadata.len() > max_bytes as u64 {
+        // Read only first max_bytes
+        let mut file = fs::File::open(path).await?;
+        use tokio::io::AsyncReadExt;
+        let mut buffer = vec![0; max_bytes];
+        let n = file.read(&mut buffer).await?;
+        buffer.truncate(n);
+        Ok(String::from_utf8_lossy(&buffer).to_string())
+    } else {
+        Ok(fs::read_to_string(path).await?)
+    }
 }
 
 #[tauri::command]
@@ -54,11 +85,14 @@ pub async fn check_ollama_status(
         vec![]
     };
 
+    // Check if Ollama is actually installed (not just running)
+    let is_installed = check_ollama_installation().await;
+
     let status = OllamaStatus {
-        is_installed: is_running, // Simplified check
+        is_installed,
         is_running,
         version: if is_running {
-            Some("latest".to_string())
+            get_ollama_version(&state.ai_service).await
         } else {
             None
         },
@@ -131,6 +165,357 @@ pub async fn list_models(state: State<'_, std::sync::Arc<AppState>>) -> Result<V
         Ok(models)
     } else {
         Ok(vec![])
+    }
+}
+
+#[tauri::command]
+pub async fn analyze_document_enhanced(
+    content: String,
+    file_path: String,
+    state: State<'_, std::sync::Arc<AppState>>,
+) -> Result<crate::ai::ollama::DocumentAnalysisEnhanced> {
+    // Input validation
+    if content.len() > 10 * 1024 * 1024 {
+        return Err(crate::error::AppError::SecurityError {
+            message: "Content too large for analysis (max 10MB)".to_string(),
+        });
+    }
+
+    if file_path.is_empty() || file_path.len() > 500 {
+        return Err(crate::error::AppError::InvalidPath {
+            message: "Invalid file path".to_string(),
+        });
+    }
+
+    // Get smart folders for context
+    let smart_folders = state.database.list_smart_folders().await.unwrap_or_default();
+
+    if let Some(client) = state.ai_service.get_ollama_client() {
+        client.analyze_document_enhanced(&content, &file_path, &smart_folders).await
+    } else {
+        Err(crate::error::AppError::AiError {
+            message: "Ollama client not available".to_string(),
+        })
+    }
+}
+
+#[tauri::command]
+pub async fn analyze_image_enhanced(
+    base64_image: String,
+    state: State<'_, std::sync::Arc<AppState>>,
+) -> Result<crate::ai::ollama::ImageAnalysisEnhanced> {
+    // Input validation
+    if base64_image.len() > 100 * 1024 * 1024 {
+        return Err(crate::error::AppError::SecurityError {
+            message: "Image too large (max 100MB base64)".to_string(),
+        });
+    }
+
+    // Get smart folders for context
+    let smart_folders = state.database.list_smart_folders().await.unwrap_or_default();
+
+    if let Some(client) = state.ai_service.get_ollama_client() {
+        client.analyze_image_enhanced(&base64_image, &smart_folders).await
+    } else {
+        Err(crate::error::AppError::AiError {
+            message: "Ollama client not available".to_string(),
+        })
+    }
+}
+
+#[tauri::command]
+pub async fn suggest_folders_creative(
+    file_path: String,
+    state: State<'_, std::sync::Arc<AppState>>,
+) -> Result<Vec<crate::ai::ollama::FolderSuggestion>> {
+    // Input validation
+    if file_path.is_empty() || file_path.len() > 500 {
+        return Err(crate::error::AppError::InvalidPath {
+            message: "Invalid file path".to_string(),
+        });
+    }
+
+    // Get file analysis
+    let analysis = match state.database.get_analysis(&file_path).await? {
+        Some(analysis) => analysis,
+        None => {
+            // Analyze file first if not already analyzed
+            let content = tokio::fs::read_to_string(&file_path).await?;
+            let mime_type = mime_guess::from_path(&file_path)
+                .first_or_octet_stream()
+                .to_string();
+            state.ai_service.analyze_file(&content, &mime_type).await?
+        }
+    };
+
+    // Get smart folders
+    let smart_folders = state.database.list_smart_folders().await.unwrap_or_default();
+
+    if let Some(client) = state.ai_service.get_ollama_client() {
+        client.suggest_folders_creative(&analysis, &smart_folders).await
+    } else {
+        Err(crate::error::AppError::AiError {
+            message: "Ollama client not available".to_string(),
+        })
+    }
+}
+
+/// Get creative folder suggestions using LLM
+#[tauri::command]
+pub async fn get_creative_folder_suggestions(
+    file_path: String,
+    state: State<'_, std::sync::Arc<AppState>>,
+) -> Result<Vec<FolderSuggestion>> {
+    // Validate path
+    let path = validate_path(&file_path)?;
+
+    // Get AI service
+    let client = state.ai_service.get_ollama_client()
+        .ok_or(AppError::AiError {
+            message: "Ollama not connected".to_string(),
+        })?;
+
+    // Get smart folders from database
+    let smart_folders = state.database.list_smart_folders().await?;
+
+    // Analyze file first
+    let file_content = read_file_content(&path, 8000).await?;
+    let file_analysis = client.analyze_file(&file_content, "text").await?;
+
+    // Get creative suggestions
+    let suggestions = client.suggest_folders_creative(&file_analysis, &smart_folders).await?;
+
+    Ok(suggestions)
+}
+
+/// Get contextual folder suggestions with deep understanding
+#[tauri::command]
+pub async fn get_contextual_folder_suggestions(
+    file_path: String,
+    state: State<'_, std::sync::Arc<AppState>>,
+) -> Result<Vec<FolderSuggestion>> {
+    // Validate path
+    let path = validate_path(&file_path)?;
+
+    // Get AI service
+    let client = state.ai_service.get_ollama_client()
+        .ok_or(AppError::AiError {
+            message: "Ollama not connected".to_string(),
+        })?;
+
+    // Get smart folders from database
+    let smart_folders = state.database.list_smart_folders().await?;
+
+    // Analyze file
+    let file_content = read_file_content(&path, 8000).await?;
+    let file_analysis = client.analyze_file(&file_content, "text").await?;
+
+    // Get contextual suggestions
+    let suggestions = client.get_contextual_suggestions(&file_analysis, &smart_folders).await?;
+
+    Ok(suggestions)
+}
+
+/// Get semantic folder matches using embeddings
+#[tauri::command]
+pub async fn get_semantic_folder_matches(
+    file_path: String,
+    state: State<'_, std::sync::Arc<AppState>>,
+) -> Result<Vec<FolderSuggestion>> {
+    use crate::core::semantic_matcher::SemanticMatcher;
+
+    // Validate path
+    let path = validate_path(&file_path)?;
+
+    // Get AI service
+    let client = state.ai_service.get_ollama_client()
+        .ok_or(AppError::AiError {
+            message: "Ollama not connected".to_string(),
+        })?;
+
+    // Get smart folders from database
+    let smart_folders = state.database.list_smart_folders().await?;
+
+    // Analyze file
+    let file_content = read_file_content(&path, 8000).await?;
+    let file_analysis = client.analyze_file(&file_content, "text").await?;
+
+    // Generate embedding
+    let file_embedding = client.generate_embeddings(&file_analysis.summary).await?;
+
+    // Use semantic matcher
+    let matcher = SemanticMatcher::with_ollama(
+        state.database.clone(),
+        client.clone()
+    );
+
+    // Find matches
+    let matches = matcher.find_best_matches(
+        &file_path,
+        Some(&file_embedding),
+        &file_analysis,
+        &smart_folders,
+    ).await?;
+
+    // Convert to FolderSuggestion format
+    Ok(matches.into_iter().map(|m| FolderSuggestion {
+        folder_name: m.folder.name,
+        confidence: m.confidence,
+        reasoning: m.reason,
+    }).collect())
+}
+
+#[tauri::command]
+pub async fn generate_smart_name_llm(
+    file_path: String,
+    content: Option<String>,
+    state: State<'_, std::sync::Arc<AppState>>,
+) -> Result<String> {
+    use crate::services::naming_service::NamingService;
+    use std::path::Path;
+
+    // Input validation
+    if file_path.is_empty() || file_path.len() > 500 {
+        return Err(crate::error::AppError::InvalidPath {
+            message: "Invalid file path".to_string(),
+        });
+    }
+
+    let path = Path::new(&file_path);
+    let smart_folders = state.database.list_smart_folders().await.unwrap_or_default();
+
+    // Get or generate content
+    let file_content = if let Some(content) = content {
+        content
+    } else {
+        tokio::fs::read_to_string(&file_path).await?
+    };
+
+    if let Some(client) = state.ai_service.get_ollama_client() {
+        // Get enhanced analysis
+        let analysis = client.analyze_document_enhanced(&file_content, &file_path, &smart_folders).await?;
+
+        // Generate smart name
+        let naming_service = NamingService::new();
+        naming_service.generate_smart_name_from_llm(&analysis, path)
+    } else {
+        Err(crate::error::AppError::AiError {
+            message: "Ollama client not available".to_string(),
+        })
+    }
+}
+
+#[tauri::command]
+pub async fn organize_file_with_llm(
+    file_path: String,
+    state: State<'_, std::sync::Arc<AppState>>,
+) -> Result<crate::commands::organization::OrganizationResult> {
+    use crate::services::naming_service::NamingService;
+    use std::path::{Path, PathBuf};
+
+    // Input validation
+    if file_path.is_empty() || file_path.len() > 500 {
+        return Err(crate::error::AppError::InvalidPath {
+            message: "Invalid file path".to_string(),
+        });
+    }
+
+    let path = Path::new(&file_path);
+    if !path.exists() {
+        return Err(crate::error::AppError::FileNotFound {
+            path: file_path.clone(),
+        });
+    }
+
+    // 1. Extract content
+    let content_extractor = crate::core::content_extractor::ContentExtractor::new();
+    let content = content_extractor.extract_content(path).await?;
+
+    // 2. Get smart folders
+    let smart_folders = state.database.list_smart_folders().await.unwrap_or_default();
+
+    if let Some(client) = state.ai_service.get_ollama_client() {
+        // 3. Enhanced analysis
+        let analysis = client.analyze_document_enhanced(&content, &file_path, &smart_folders).await?;
+
+        // 4. Generate embeddings
+        let embedding = state.ai_service.generate_embeddings(&format!(
+            "{} {} {}",
+            analysis.summary,
+            analysis.keywords.join(" "),
+            analysis.document_type
+        )).await?;
+
+        // 5. Find best folder matches
+        let semantic_matcher = crate::core::semantic_matcher::SemanticMatcher::with_ollama(
+            state.database.clone(),
+            client.clone()
+        );
+
+        let basic_analysis = crate::ai::FileAnalysis {
+            path: file_path.clone(),
+            category: analysis.category.clone(),
+            tags: analysis.keywords.clone(),
+            summary: analysis.summary.clone(),
+            confidence: analysis.confidence,
+            extracted_text: Some(content.chars().take(1000).collect()),
+            detected_language: None,
+            metadata: serde_json::json!({
+                "document_type": analysis.document_type,
+                "client": analysis.client,
+                "project": analysis.project,
+                "date": analysis.date
+            }),
+        };
+
+        let matches = semantic_matcher.find_best_matches(
+            &file_path,
+            Some(&embedding),
+            &basic_analysis,
+            &smart_folders
+        ).await?;
+
+        // 6. Generate smart name
+        let naming_service = NamingService::new();
+        let new_name = naming_service.generate_smart_name_from_llm(&analysis, path)?;
+
+        // 7. Select best folder
+        if let Some(best_match) = matches.first() {
+            let target_dir = PathBuf::from(&best_match.folder.path);
+            let target_path = target_dir.join(&new_name);
+
+            // 8. Move file
+            if !target_dir.exists() {
+                tokio::fs::create_dir_all(&target_dir).await?;
+            }
+
+            tokio::fs::rename(&file_path, &target_path).await?;
+
+            // 9. Save analysis and embedding
+            state.database.save_analysis(&basic_analysis).await?;
+            let model_name = state.config.read().ollama_embedding_model.clone();
+            state.database.save_embedding(&target_path.to_string_lossy(), &embedding, Some(&model_name)).await?;
+
+            Ok(crate::commands::organization::OrganizationResult {
+                source_path: file_path,
+                target_path: target_path.to_string_lossy().to_string(),
+                action: crate::commands::organization::ActionType::Move,
+                success: true,
+                error: None,
+                folder_name: Some(best_match.folder.name.clone()),
+                new_name: Some(new_name),
+                confidence: Some(best_match.confidence),
+                reason: Some(best_match.reason.clone()),
+            })
+        } else {
+            Err(crate::error::AppError::NotFound {
+                message: "No suitable folder found for file".to_string(),
+            })
+        }
+    } else {
+        Err(crate::error::AppError::AiError {
+            message: "Ollama client not available".to_string(),
+        })
     }
 }
 
@@ -390,6 +775,57 @@ pub async fn semantic_search(
         .collect();
 
     Ok(enhanced_results)
+}
+
+/// Check if Ollama is actually installed on the system (not just running)
+async fn check_ollama_installation() -> bool {
+    // Try to execute 'ollama --version' or 'ollama version' to check installation
+    let version_check = if cfg!(target_os = "windows") {
+        Command::new("ollama.exe").arg("--version").output()
+    } else {
+        Command::new("ollama").arg("--version").output()
+    };
+
+    match version_check {
+        Ok(output) => output.status.success(),
+        Err(_) => {
+            // Try alternative command format
+            let alt_check = if cfg!(target_os = "windows") {
+                Command::new("ollama.exe").arg("version").output()
+            } else {
+                Command::new("ollama").arg("version").output()
+            };
+            
+            match alt_check {
+                Ok(output) => output.status.success(),
+                Err(_) => false, // Not found in PATH or not executable
+            }
+        }
+    }
+}
+
+/// Get actual Ollama version if available
+async fn get_ollama_version(_ai_service: &crate::ai::AiService) -> Option<String> {
+    // Note: ollama-rs doesn't provide a version method, so we check via command
+    // Fallback to command-line version check
+    let version_check = if cfg!(target_os = "windows") {
+        Command::new("ollama.exe").arg("--version").output()
+    } else {
+        Command::new("ollama").arg("--version").output()
+    };
+
+    match version_check {
+        Ok(output) if output.status.success() => {
+            let version_str = String::from_utf8_lossy(&output.stdout);
+            // Extract version number from output like "ollama version is 0.1.47"
+            if let Some(version) = version_str.split_whitespace().last() {
+                Some(version.to_string())
+            } else {
+                Some("unknown".to_string())
+            }
+        }
+        _ => None,
+    }
 }
 
 #[tauri::command]
@@ -1269,6 +1705,57 @@ pub struct SearchHistoryEntry {
     pub search_type: String,
     pub result_count: usize,
     pub timestamp: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OrganizationProgress {
+    pub current_file: String,
+    pub processed: usize,
+    pub total: usize,
+    pub status: String,
+}
+
+#[tauri::command]
+pub async fn batch_organize_with_llm(
+    file_paths: Vec<String>,
+    state: State<'_, std::sync::Arc<AppState>>,
+) -> Result<Vec<crate::commands::organization::OrganizationResult>> {
+    use tauri::Emitter;
+
+    if file_paths.len() > 100 {
+        return Err(crate::error::AppError::SecurityError {
+            message: "Too many files for batch organization (max 100)".to_string(),
+        });
+    }
+
+    let mut results = Vec::new();
+    let total = file_paths.len();
+
+    for (index, file_path) in file_paths.iter().enumerate() {
+        // Emit progress
+        let progress = OrganizationProgress {
+            current_file: file_path.clone(),
+            processed: index,
+            total,
+            status: format!("Organizing file {} of {}", index + 1, total),
+        };
+
+        let _ = state.handle.emit("organization-progress", &progress);
+
+        // Organize the file
+        match organize_file_with_llm(file_path.clone(), state.clone()).await {
+            Ok(result) => results.push(result),
+            Err(e) => {
+                tracing::warn!("Failed to organize {}: {}", file_path, e);
+                // Continue with other files
+            }
+        }
+    }
+
+    // Emit completion
+    let _ = state.handle.emit("organization-complete", &results);
+
+    Ok(results)
 }
 
 #[derive(Debug, Serialize, Deserialize)]

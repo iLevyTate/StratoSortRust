@@ -5,8 +5,10 @@ pub mod core;
 pub mod error;
 pub mod events;
 pub mod services;
+pub mod shutdown;
 pub mod state;
 pub mod storage;
+pub mod system_tray;
 pub mod utils;
 
 use crate::storage::CURRENT_SCHEMA_VERSION;
@@ -70,17 +72,34 @@ async fn initialize_app_state_with_retry(
 
                 // For database errors, ensure directories exist before retry
                 if matches!(e, crate::error::AppError::DatabaseError { .. }) {
+                    // CRITICAL FIX: Don't ignore directory creation failures
                     if let Ok(app_data_dir) = handle.path().app_data_dir() {
-                        let _ = tokio::fs::create_dir_all(&app_data_dir).await;
+                        if let Err(dir_err) = tokio::fs::create_dir_all(&app_data_dir).await {
+                            error!("Failed to create app data directory {:?}: {}", app_data_dir, dir_err);
+                        }
                     }
+                    
                     let fallback_dir = std::env::current_dir()
                         .unwrap_or_else(|_| std::path::PathBuf::from("."))
                         .join("data");
-                    let _ = tokio::fs::create_dir_all(&fallback_dir).await;
+                    
+                    if let Err(dir_err) = tokio::fs::create_dir_all(&fallback_dir).await {
+                        error!("Failed to create fallback data directory {:?}: {}", fallback_dir, dir_err);
+                        // This is critical - if we can't create any directories, we should fail
+                        return Err(crate::error::AppError::DatabaseError {
+                            message: format!("Cannot create any data directories. App data dir and fallback failed: {}", dir_err)
+                        });
+                    }
                 }
 
-                // Exponential backoff: 1s, 2s, 4s
-                let backoff_ms = 1000 * (1 << (retry_count - 1));
+                // Exponential backoff: 1s, 2s, 4s - FIXED OVERFLOW BUG
+                // Cap at reasonable maximum to prevent arithmetic overflow
+                let backoff_seconds = if retry_count > 0 {
+                    (1u64 << (retry_count.min(10) - 1)).min(30)
+                } else {
+                    1u64
+                };
+                let backoff_ms = backoff_seconds.saturating_mul(1000);
                 tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
                 continue;
             }
@@ -202,7 +221,7 @@ pub fn run() -> crate::error::Result<()> {
             app.manage(state.clone());
 
             // Setup system tray
-            setup_system_tray(app)?;
+            system_tray::init_system_tray(app.handle())?;
 
             // Setup global shortcuts
             setup_global_shortcuts(app)?;
@@ -360,6 +379,10 @@ pub fn run() -> crate::error::Result<()> {
                 }
             });
 
+            // Set up graceful shutdown handler
+            let state_for_shutdown = state.clone();
+            shutdown::setup_shutdown_handler(state_for_shutdown);
+
             info!("StratoSort initialized successfully");
             Ok(())
         })
@@ -405,6 +428,12 @@ pub fn run() -> crate::error::Result<()> {
             commands::ai::clear_search_history,
             commands::ai::batch_analyze_files,
             commands::ai::get_analysis_history,
+            commands::ai::analyze_document_enhanced,
+            commands::ai::analyze_image_enhanced,
+            commands::ai::generate_smart_name_llm,
+            commands::ai::get_creative_folder_suggestions,
+            commands::ai::get_contextual_folder_suggestions,
+            commands::ai::get_semantic_folder_matches,
 
             // AI Status commands
             commands::ai_status::get_ai_status,
@@ -412,6 +441,11 @@ pub fn run() -> crate::error::Result<()> {
             commands::ai_status::use_fallback_ai,
             commands::ai_status::test_ai_analysis,
             commands::ai_status::get_ai_capabilities,
+
+            // AI Streaming commands
+            crate::ai::streaming::start_ai_stream,
+            crate::ai::streaming::stop_ai_stream,
+            crate::ai::streaming::is_stream_active,
 
             // Organization commands
             commands::organization::create_smart_folder,
@@ -430,6 +464,10 @@ pub fn run() -> crate::error::Result<()> {
             commands::organization::test_smart_folder_rule,
             commands::organization::get_rename_pattern_info,
             commands::organization::preview_rename_pattern,
+
+            // Enhanced organization commands
+            commands::organization_enhanced::organize_files_with_ai,
+            commands::organization_enhanced::preview_organization,
 
 
             // Settings commands
@@ -496,8 +534,18 @@ pub fn run() -> crate::error::Result<()> {
             commands::history::undo,
             commands::history::redo,
             commands::history::get_history,
+            commands::history::get_operation_history,
             commands::history::clear_history,
             commands::history::get_history_state,
+
+            // Pattern learning commands
+            commands::patterns::save_patterns_to_storage,
+            commands::patterns::load_patterns_from_storage,
+            commands::patterns::get_learned_patterns,
+            commands::patterns::clear_learned_patterns,
+            commands::patterns::cleanup_old_patterns,
+            commands::patterns::record_pattern_choice,
+            commands::patterns::get_pattern_suggestions,
             commands::history::batch_undo,
             commands::history::batch_redo,
             commands::history::jump_to_history,
@@ -542,56 +590,6 @@ pub fn run() -> crate::error::Result<()> {
     Ok(())
 }
 
-fn setup_system_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    use tauri::{
-        menu::{MenuBuilder, MenuItemBuilder},
-        tray::TrayIconBuilder,
-    };
-
-    let quit = MenuItemBuilder::new("Quit").id("quit").build(app)?;
-    let hide = MenuItemBuilder::new("Hide").id("hide").build(app)?;
-    let show = MenuItemBuilder::new("Show").id("show").build(app)?;
-
-    let menu = MenuBuilder::new(app)
-        .items(&[&show, &hide, &quit])
-        .build()?;
-
-    let _tray = TrayIconBuilder::new()
-        .menu(&menu)
-        .on_menu_event(move |app, event| match event.id().as_ref() {
-            "quit" => {
-                app.exit(0);
-            }
-            "hide" => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.hide();
-                }
-            }
-            "show" => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
-            }
-            _ => {}
-        })
-        .on_tray_icon_event(|tray, event| {
-            if let tauri::tray::TrayIconEvent::Click {
-                button: tauri::tray::MouseButton::Left,
-                ..
-            } = event
-            {
-                let app = tray.app_handle();
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
-            }
-        })
-        .build(app)?;
-
-    Ok(())
-}
 
 fn setup_global_shortcuts(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
@@ -658,7 +656,7 @@ fn initialize_services(
     // Send a welcome notification asynchronously
     {
         let app_handle = app.handle().clone();
-        async_runtime::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             let notifier = NotificationService::new(app_handle);
             let _ = notifier
                 .send_success("StratoSort Ready", "Background services initialized")
@@ -666,46 +664,72 @@ fn initialize_services(
         });
     }
 
-    // Start periodic tasks
+    // Start periodic tasks (every 5 minutes)
     let state_clone = state.clone();
-    async_runtime::spawn(async move {
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(300));
+        let mut maintenance_counter = 0u32;
+        
         loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(300)).await;
+            // Check for cancellation
+            tokio::select! {
+                _ = interval.tick() => {
+                    maintenance_counter += 1;
+                    
+                    // Cleanup old cache entries
+                    if let Err(e) = state_clone.cleanup_cache().await {
+                        error!("Cache cleanup failed: {}", e);
+                    }
 
-            // Cleanup old cache entries
-            if let Err(e) = state_clone.cleanup_cache().await {
-                error!("Cache cleanup failed: {}", e);
-            }
-
-            // Save state periodically
-            if let Err(e) = state_clone.save_state().await {
-                error!("State save failed: {}", e);
+                    // Save state periodically
+                    if let Err(e) = state_clone.save_state().await {
+                        error!("State save failed: {}", e);
+                    }
+                    
+                    // Perform database maintenance every hour (12 * 5min intervals)
+                    if maintenance_counter % 12 == 0 {
+                        if let Err(e) = state_clone.periodic_database_maintenance().await {
+                            error!("Database maintenance failed: {}", e);
+                        }
+                    }
+                }
+                _ = tokio::task::yield_now() => {
+                    // Allow task cancellation - yield point reached
+                    break;
+                }
             }
         }
+        info!("Periodic cleanup task terminated gracefully");
     });
 
     // Start memory monitoring
     let monitor = Arc::new(MemoryMonitor::new());
     {
         let monitor_clone = monitor.clone();
-        async_runtime::spawn(async move {
-            let _ = monitor_clone.start().await;
+        tauri::async_runtime::spawn(async move {
+            let result = monitor_clone.start().await;
+            if let Err(e) = result {
+                error!("Memory monitor failed: {}", e);
+            }
+            info!("Memory monitor task terminated");
         });
     }
 
     // Run basic health checks once after startup
-    async_runtime::spawn(async move {
-        match HealthChecker::check_all().await {
-            Ok(status) => {
-                if status.healthy {
-                    info!("Health checks passed");
-                } else {
-                    warn!("Health checks reported issues: {:?}", status.checks);
+    {
+        tauri::async_runtime::spawn(async move {
+            match HealthChecker::check_all().await {
+                Ok(status) => {
+                    if status.healthy {
+                        info!("Health checks passed");
+                    } else {
+                        warn!("Health checks reported issues: {:?}", status.checks);
+                    }
                 }
+                Err(e) => warn!("Health checks failed to run: {}", e),
             }
-            Err(e) => warn!("Health checks failed to run: {}", e),
-        }
-    });
+        });
+    }
 
     Ok(())
 }

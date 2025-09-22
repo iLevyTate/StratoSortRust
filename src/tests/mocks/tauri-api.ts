@@ -102,7 +102,12 @@ export const mockAppSettings = (): AppSettings => ({
 	debug_mode: false,
 	log_level: 'info',
 	history_retention: 30,
-	undo_history_size: 50
+	undo_history_size: 50,
+
+	// Naming Convention Settings
+	naming_convention: 'kebab-case',
+	date_format: 'YYYY-MM-DD',
+	case_style: 'lower'
 });
 
 export const mockSmartFolder = (overrides?: Partial<SmartFolder>): SmartFolder => ({

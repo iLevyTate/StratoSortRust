@@ -150,7 +150,8 @@
       "Bash(timeout 60 cargo clippy --all-targets -- -D warnings)",
       "Bash(timeout 60 cargo clippy --no-deps -- -D warnings)",
       "Bash(npx svelte-check:*)",
-      "Bash(timeout 60 npm run test:ci:*)"
+      "Bash(timeout 60 npm run test:ci:*)",
+      "Read(//c/**)"
     ],
     "deny": [],
     "ask": []

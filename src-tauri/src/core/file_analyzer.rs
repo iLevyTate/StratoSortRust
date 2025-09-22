@@ -1,18 +1,25 @@
 use crate::{
     ai::{AiService, FileAnalysis},
     config::Config,
+    core::ContentExtractor,
     error::{AppError, Result},
 };
+use std::path::Path;
 use std::sync::Arc;
 
 pub struct FileAnalyzer {
     ai_service: Arc<AiService>,
     config: Arc<parking_lot::RwLock<Config>>,
+    content_extractor: ContentExtractor,
 }
 
 impl FileAnalyzer {
     pub fn new(ai_service: Arc<AiService>, config: Arc<parking_lot::RwLock<Config>>) -> Self {
-        Self { ai_service, config }
+        Self {
+            ai_service,
+            config,
+            content_extractor: ContentExtractor::new(),
+        }
     }
 
     pub async fn analyze_file(&self, path: &str) -> Result<FileAnalysis> {
@@ -29,8 +36,8 @@ impl FileAnalyzer {
             return self.ai_service.analyze_image(path).await;
         }
 
-        // For non-image files, read content and use text analysis
-        let content = self.read_file_content(path).await?;
+        // For non-image files, use content extractor for better text extraction
+        let content = self.content_extractor.extract_content(Path::new(path)).await?;
         self.ai_service.analyze_file(&content, &mime_type).await
     }
 
@@ -66,6 +73,7 @@ impl FileAnalyzer {
         Ok(())
     }
 
+    #[allow(dead_code)] // Reserved for future content analysis features
     async fn read_file_content(&self, path: &str) -> Result<String> {
         use tokio::io::{AsyncReadExt, BufReader};
 
@@ -89,6 +97,7 @@ impl FileAnalyzer {
         Ok(String::from_utf8_lossy(&buffer).to_string())
     }
 
+    #[allow(dead_code)] // Reserved for future content analysis features
     fn get_max_read_size(&self, path: &str) -> usize {
         let config = self.config.read();
         let base_size = 10240; // 10KB default
@@ -114,6 +123,7 @@ impl FileAnalyzer {
         }
     }
 
+    #[allow(dead_code)] // Reserved for future content analysis features
     fn is_binary_content(&self, buffer: &[u8]) -> bool {
         // Simple heuristic: if more than 10% of the first 512 bytes are non-printable, consider it binary
         let sample_size = std::cmp::min(buffer.len(), 512);

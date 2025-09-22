@@ -1,14 +1,13 @@
 use crate::error::{AppError, Result};
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use tauri::AppHandle;
+use tauri::{AppHandle, Runtime};
 
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 
-/// Securely validates and sanitizes file paths to prevent TOCTOU and path traversal attacks
-/// Uses file descriptors and atomic operations to minimize race conditions
-pub fn validate_and_sanitize_path(path: &str, app: &AppHandle) -> Result<ValidatedPath> {
+/// Validates and sanitizes a path for safe access
+pub fn validate_path<R: Runtime>(path: &str, app: &AppHandle<R>) -> Result<ValidatedPath> {
     // Reject empty paths
     if path.is_empty() {
         return Err(AppError::SecurityError {
@@ -151,7 +150,7 @@ impl ValidatedPath {
     }
 
     /// Securely open a file with re-validation (preferred method)
-    pub fn open_file_validated(&self, app: &AppHandle) -> Result<File> {
+    pub fn open_file_validated<R: Runtime>(&self, app: &AppHandle<R>) -> Result<File> {
         // Re-validate just before opening to minimize TOCTOU window
         if !is_path_allowed(&self.canonical_path, app)? {
             return Err(AppError::SecurityError {
@@ -164,7 +163,7 @@ impl ValidatedPath {
 }
 
 /// Checks if a path is allowed to be accessed
-pub fn is_path_allowed(path: &Path, _app: &AppHandle) -> Result<bool> {
+pub fn is_path_allowed<R: Runtime>(path: &Path, _app: &AppHandle<R>) -> Result<bool> {
     let path_str = path.to_string_lossy();
 
     // Block access to sensitive system directories
@@ -226,9 +225,46 @@ pub fn validate_file_size(size: u64, max_size: u64) -> Result<()> {
     Ok(())
 }
 
+/// Legacy validation function - kept for backward compatibility
+#[deprecated(note = "Use validate_path for better security")]
+pub fn validate_and_sanitize_path<R: Runtime>(path: &str, app: &AppHandle<R>) -> Result<ValidatedPath> {
+    validate_path(path, app)
+}
+
 /// Legacy compatibility function - returns PathBuf for existing code
-/// Consider migrating to validate_and_sanitize_path for better security
-pub fn validate_and_sanitize_path_legacy(path: &str, app: &AppHandle) -> Result<PathBuf> {
-    let validated = validate_and_sanitize_path(path, app)?;
+#[deprecated(note = "Use validate_path for better security")]
+pub fn validate_and_sanitize_path_legacy<R: Runtime>(path: &str, app: &AppHandle<R>) -> Result<PathBuf> {
+    let validated = validate_path(path, app)?;
     Ok(validated.into_path_buf())
+}
+
+/// Sanitizes a path string to create a safe PathBuf
+pub fn sanitize_path(path_str: &str) -> Result<PathBuf> {
+    // Reject empty paths
+    if path_str.is_empty() {
+        return Err(AppError::InvalidPath {
+            message: "Path cannot be empty".to_string(),
+        });
+    }
+
+    // Reject null bytes and dangerous characters
+    if path_str.contains('\0') || path_str.contains("..")
+        || path_str.chars().any(|c| c.is_control() && c != '\r' && c != '\n') {
+        return Err(AppError::InvalidPath {
+            message: "Invalid path: contains null bytes or path traversal".to_string(),
+        });
+    }
+
+    let path_buf = PathBuf::from(path_str);
+
+    // Check for path traversal attempts
+    for component in path_buf.components() {
+        if matches!(component, std::path::Component::ParentDir) {
+            return Err(AppError::InvalidPath {
+                message: "Path traversal attempt detected".to_string(),
+            });
+        }
+    }
+
+    Ok(path_buf)
 }

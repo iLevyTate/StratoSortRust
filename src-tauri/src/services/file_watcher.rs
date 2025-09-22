@@ -442,7 +442,7 @@ impl FileWatcher {
         // 3. Auto-organize if confidence is high enough
         if highest_confidence >= confidence_threshold {
             if let Some(target_folder) = best_match {
-                let target_dir = Path::new(&target_folder.target_path);
+                let target_dir = Path::new(target_folder.target_path.as_ref().unwrap_or(&target_folder.path));
 
                 // Create target directory if needed
                 if let Some(parent) = target_dir.parent() {
@@ -496,6 +496,37 @@ impl FileWatcher {
         }
 
         Ok(())
+    }
+}
+
+// Add proper cleanup implementation to fix memory leaks
+impl Drop for FileWatcher {
+    fn drop(&mut self) {
+        // Immediately stop watcher - synchronous cleanup only
+        if let Ok(mut guard) = self.watcher.try_lock() {
+            if let Some(_watcher) = guard.take() {
+                // Watcher is dropped here, automatically stops watching
+            }
+        }
+
+        // Clear data structures synchronously
+        if let Ok(mut pending) = self.pending_files.try_write() {
+            pending.clear();
+        }
+
+        if let Ok(mut events) = self.recent_events.try_write() {
+            events.clear();
+        }
+
+        if let Ok(mut actions) = self.user_actions.try_write() {
+            actions.clear();
+        }
+
+        if let Ok(mut operations) = self.recent_operations.try_write() {
+            operations.clear();
+        }
+
+        // Note: shutdown_tx signal will be sent when the channel is dropped
     }
 }
 

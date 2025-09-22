@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+pub mod error_handler;
+
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error("File not found: {path}")]
@@ -35,6 +37,9 @@ pub enum AppError {
     #[error("Processing error: {message}")]
     ProcessingError { message: String },
 
+    #[error("Operation error: {message}")]
+    OperationError { message: String },
+
     #[error("Operation cancelled")]
     Cancelled,
 
@@ -43,6 +48,9 @@ pub enum AppError {
 
     #[error("Invalid input: {message}")]
     InvalidInput { message: String },
+
+    #[error("Invalid operation: {message}")]
+    InvalidOperation { message: String },
 
     #[error("Security error: {message}")]
     SecurityError { message: String },
@@ -138,6 +146,8 @@ impl AppError {
             Self::ResourceLimitExceeded { message } => message.clone(),
             Self::Timeout { message } => message.clone(),
             Self::ValidationError { field: _, message } => message.clone(),
+            Self::OperationError { message } => message.clone(),
+            Self::InvalidOperation { message } => message.clone(),
         }
     }
 
@@ -171,6 +181,8 @@ impl AppError {
             Self::Other(_) => "UNKNOWN_ERROR",
             Self::ResourceLimitExceeded { .. } => "RESOURCE_LIMIT_EXCEEDED",
             Self::ValidationError { .. } => "VALIDATION_ERROR",
+            Self::OperationError { .. } => "OPERATION_ERROR",
+            Self::InvalidOperation { .. } => "INVALID_OPERATION",
         }
         .to_string()
     }

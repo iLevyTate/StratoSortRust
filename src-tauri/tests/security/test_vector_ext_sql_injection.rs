@@ -17,6 +17,9 @@ async fn test_vector_table_name_injection_vulnerabilities() {
     // Initialize vector extension
     let vector_ext = VectorExtension::initialize(&pool).await;
 
+    // Large payload for buffer overflow attempt
+    let large_payload = format!("files'; {}", "A".repeat(10000));
+
     // Test malicious table names that could exploit format! macro vulnerabilities
     let malicious_table_names = vec![
         // SQL injection attempts via table name
@@ -55,7 +58,7 @@ async fn test_vector_table_name_injection_vulnerabilities() {
         "files'; PRAGMA compile_options; --",
         "files'; ATTACH DATABASE ':memory:' AS evil; --",
         // Large payload (buffer overflow attempt)
-        &format!("files'; {}", "A".repeat(10000)),
+        &large_payload,
         // Null byte injection
         "files'; DROP TABLE files; --\0",
         "files\0'; DROP TABLE files; --",
@@ -564,7 +567,7 @@ async fn test_manual_vector_search_sql_injection() {
     let pool = SqlitePool::connect(&database_url).await.unwrap();
 
     // Create database with analysis table
-    let db = Database::new(pool.clone()).await.unwrap();
+    let db = Database::new_test(&db_path).await.unwrap();
 
     // Store some test data with potentially vulnerable paths
     let test_data = vec![
@@ -574,10 +577,18 @@ async fn test_manual_vector_search_sql_injection() {
         ("test' OR '1'='1.txt", "Boolean injection filename"),
     ];
 
-    for (path, content) in test_data {
-        let _ = db
-            .store_file_analysis(path, content, "text/plain", None)
-            .await;
+    for (path, summary) in test_data {
+        let analysis = stratosort::ai::FileAnalysis {
+            path: path.to_string(),
+            category: "test".to_string(),
+            tags: vec!["test".to_string()],
+            summary: summary.to_string(),
+            confidence: 0.9,
+            extracted_text: None,
+            detected_language: None,
+            metadata: serde_json::Value::Null,
+        };
+        let _ = db.save_analysis(&analysis).await;
     }
 
     // Test manual vector search with malicious embeddings

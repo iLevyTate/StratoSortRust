@@ -1,8 +1,10 @@
 import '@testing-library/jest-dom';
-import { vi, afterEach } from 'vitest';
+import { vi, afterEach, beforeAll, afterAll } from 'vitest';
+// Temporarily disabled MSW due to import issues with msw/node in browser environment
+// import { setupMSW } from './setup-msw';
 
-// For now, we'll skip MSW setup and focus on component/unit testing
-// TODO: Add MSW setup for API mocking if needed
+// Setup Mock Service Worker for API mocking
+// setupMSW();
 
 // Reset mocks after each test
 afterEach(() => {
@@ -16,9 +18,9 @@ vi.mock('@tauri-apps/api/core', () => ({
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({
-	listen: vi.fn(),
-	emit: vi.fn(),
-	once: vi.fn(),
+	listen: vi.fn(() => Promise.resolve(() => {})),
+	emit: vi.fn(() => Promise.resolve()),
+	once: vi.fn(() => Promise.resolve(() => {})),
 	UnlistenFn: vi.fn()
 }));
 
@@ -32,12 +34,15 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
 
 // Mock window.__TAURI__ for tests
 global.window = global.window || {};
-(global.window as any).__TAURI__ = {
+window.__TAURI__ = {
 	invoke: vi.fn(),
 	event: {
-		listen: vi.fn(),
-		emit: vi.fn(),
-		once: vi.fn()
+		listen: vi.fn(() => Promise.resolve(() => {})),
+		emit: vi.fn(() => Promise.resolve())
+	},
+	dialog: {
+		open: vi.fn(),
+		save: vi.fn()
 	}
 };
 
@@ -53,25 +58,33 @@ global.IntersectionObserver = vi.fn().mockImplementation(() => ({
 }));
 
 // Mock ResizeObserver
-global.ResizeObserver = vi.fn().mockImplementation(() => ({
-	observe: vi.fn(),
-	unobserve: vi.fn(),
-	disconnect: vi.fn()
-}));
+global.ResizeObserver = class ResizeObserver {
+	observe = vi.fn();
+	unobserve = vi.fn();
+	disconnect = vi.fn();
+	
+	constructor(callback: ResizeObserverCallback) {
+		// Store the callback if needed for testing
+	}
+} as any;
 
 // Mock matchMedia
+window.matchMedia = window.matchMedia || vi.fn().mockImplementation((query: string) => ({
+	matches: false,
+	media: query,
+	onchange: null,
+	addListener: vi.fn(),
+	removeListener: vi.fn(),
+	addEventListener: vi.fn(),
+	removeEventListener: vi.fn(),
+	dispatchEvent: vi.fn()
+}));
+
+// Ensure matchMedia is always available
 Object.defineProperty(window, 'matchMedia', {
 	writable: true,
-	value: vi.fn().mockImplementation(query => ({
-		matches: false,
-		media: query,
-		onchange: null,
-		addListener: vi.fn(),
-		removeListener: vi.fn(),
-		addEventListener: vi.fn(),
-		removeEventListener: vi.fn(),
-		dispatchEvent: vi.fn()
-	}))
+	configurable: true,
+	value: window.matchMedia
 });
 
 // Mock localStorage with in-memory backing store
@@ -93,13 +106,13 @@ Object.defineProperty(window, 'matchMedia', {
         },
         key: vi.fn((index: number) => Object.keys(store)[index] ?? null)
     };
-    // @ts-ignore
-    global.localStorage = localStorageMock as any;
+    // Assign the mock to global
+    global.localStorage = localStorageMock as Storage;
 })();
 
 // Mock performance API (including now)
 // Some libs expect performance.now to exist in happy-dom
-const perf: any = global.performance || {};
+const perf = global.performance || {} as Partial<Performance>;
 global.performance = {
 	...perf,
 	now: perf.now || (() => Date.now()),
@@ -109,7 +122,7 @@ global.performance = {
 	clearMeasures: perf.clearMeasures || vi.fn(),
 	getEntriesByName: perf.getEntriesByName || vi.fn(() => []),
 	getEntriesByType: perf.getEntriesByType || vi.fn(() => [])
-} as any;
+} as Performance;
 
 // Mock document for DOM-dependent components
 if (typeof document !== 'undefined') {

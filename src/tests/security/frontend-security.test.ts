@@ -77,7 +77,7 @@ describe('Frontend Security - Tauri API Integration', () => {
           mockInvoke.mockClear();
         } catch (error: unknown) {
           // Errors are acceptable for malicious inputs
-          console.log(`Malicious input properly rejected: ${maliciousInput.substring(0, 50)}...`);
+          // Malicious input properly rejected
         }
       }
     });
@@ -103,8 +103,8 @@ describe('Frontend Security - Tauri API Integration', () => {
 
         // Empty and null arrays
         [],
-        [null as any],
-        [undefined as any],
+        [null as unknown],
+        [undefined as unknown],
         [""],
       ];
 
@@ -120,7 +120,7 @@ describe('Frontend Security - Tauri API Integration', () => {
 
           mockInvoke.mockClear();
         } catch (error: unknown) {
-          console.log(`Malicious path array rejected: ${JSON.stringify(pathArray).substring(0, 100)}...`);
+          // Malicious path array properly rejected
         }
       }
     });
@@ -163,7 +163,7 @@ describe('Frontend Security - Tauri API Integration', () => {
         try {
           // Test event listener registration
           const unlistenFn = await listen(eventName, (event) => {
-            console.log('Event received:', event);
+            // Event received successfully
           });
 
           // Clean up listener
@@ -171,17 +171,17 @@ describe('Frontend Security - Tauri API Integration', () => {
             unlistenFn();
           }
 
-          console.log(`Event listener registered for: ${eventName}`);
+          // Event listener registered
         } catch (error: unknown) {
-          console.log(`Malicious event name rejected: ${eventName.substring(0, 50)}...`);
+          // Malicious event name properly rejected
         }
 
         try {
           // Test event emission
           await emit(eventName, { malicious: 'payload' });
-          console.log(`Event emitted: ${eventName}`);
+          // Event emitted successfully
         } catch (error: unknown) {
-          console.log(`Malicious event emission rejected: ${eventName.substring(0, 50)}...`);
+          // Malicious event emission properly rejected
         }
       }
     });
@@ -216,23 +216,23 @@ describe('Frontend Security - Tauri API Integration', () => {
 
         // Circular references (JSON serialization attacks)
         (() => {
-          const obj: any = { circular: null };
+          const obj: Record<string, unknown> = { circular: null };
           obj.circular = obj;
           return obj;
         })(),
 
         // Functions (should not be serializable)
-        { func: () => { console.log('malicious'); } },
+        { func: () => { /* malicious function */ } },
         { eval: eval },
       ];
 
       for (const payload of maliciousPayloads) {
         try {
           await emit('test-event', payload);
-          console.log('Payload emitted:', typeof payload);
+          // Payload emitted successfully
         } catch (error: unknown) {
           const errorMessage = error instanceof Error ? error.message : String(error);
-          console.log(`Malicious payload rejected: ${errorMessage}`);
+          // Malicious payload properly rejected
         }
       }
     });
@@ -289,7 +289,7 @@ describe('Frontend Security - Tauri API Integration', () => {
           expect(mockInvoke).toHaveBeenCalledWith('move_files', moveOp);
           mockInvoke.mockClear();
         } catch (error: unknown) {
-          console.log(`Malicious move operation rejected: ${error instanceof Error ? error.message : String(error)}`);
+          // Malicious move operation properly rejected
         }
       }
     });
@@ -355,7 +355,7 @@ describe('Frontend Security - Tauri API Integration', () => {
           expect(mockInvoke).toHaveBeenCalledWith('complete_first_run_setup', setupParam);
           mockInvoke.mockClear();
         } catch (error: unknown) {
-          console.log(`Malicious setup parameter rejected: ${error instanceof Error ? error.message : String(error)}`);
+          // Malicious setup parameter properly rejected
         }
       }
     });
@@ -422,7 +422,7 @@ describe('Frontend Security - Tauri API Integration', () => {
           expect(mockInvoke).toHaveBeenCalledWith('browse_files', dialogParam);
           mockInvoke.mockClear();
         } catch (error: unknown) {
-          console.log(`Malicious dialog parameter rejected: ${error instanceof Error ? error.message : String(error)}`);
+          // Malicious dialog parameter properly rejected
         }
       }
     });
@@ -471,9 +471,9 @@ describe('Frontend Security - Tauri API Integration', () => {
           // 2. HTML content is sanitized before insertion into DOM
           // 3. Event handlers are not executed from response data
 
-          console.log('Response received (should be sanitized in UI):', result);
+          // Response received (should be sanitized in UI)
         } catch (error: unknown) {
-          console.log(`Malicious response handling error: ${error instanceof Error ? error.message : String(error)}`);
+          // Malicious response handling properly rejected
         }
 
         mockInvoke.mockClear();
@@ -514,9 +514,9 @@ describe('Frontend Security - Tauri API Integration', () => {
 
           // Content should be returned as-is (sanitization happens in UI)
           expect(typeof result).toBe('string');
-          console.log(`File content received (${content.length} chars)`);
+          // File content received successfully
         } catch (error: unknown) {
-          console.log(`Malicious file content rejected: ${error instanceof Error ? error.message : String(error)}`);
+          // Malicious file content properly rejected
         }
 
         mockInvoke.mockClear();
@@ -544,7 +544,7 @@ describe('Frontend Security - Tauri API Integration', () => {
         { multiple: { valueOf: () => 1 } },
 
         // Function injection
-        { callback: () => { console.log('injected'); } },
+        { callback: () => { /* injected function */ } },
         { handler: eval },
 
         // Symbol injection
@@ -562,9 +562,9 @@ describe('Frontend Security - Tauri API Integration', () => {
             ...attack
           });
 
-          console.log('Type confusion attack processed:', typeof attack);
+          // Type confusion attack processed
         } catch (error: unknown) {
-          console.log(`Type confusion attack rejected: ${error instanceof Error ? error.message : String(error)}`);
+          // Type confusion attack properly rejected
         }
 
         mockInvoke.mockClear();
@@ -591,7 +591,7 @@ describe('Frontend Security - Tauri API Integration', () => {
 
         // Objects with many properties
         (() => {
-          const obj: any = {};
+          const obj: Record<string, string> = {};
           for (let i = 0; i < 1000; i++) { // Reduced for CI
             obj[`prop_${i}`] = `value_${i}`;
           }
@@ -600,11 +600,11 @@ describe('Frontend Security - Tauri API Integration', () => {
 
         // Deeply nested objects
         (() => {
-          let obj: any = {};
+          let obj: Record<string, unknown> = {};
           let current = obj;
           for (let i = 0; i < 1000; i++) {
             current.nested = {};
-            current = current.nested;
+            current = current.nested as Record<string, unknown>;
           }
           return obj;
         })(),
@@ -613,9 +613,9 @@ describe('Frontend Security - Tauri API Integration', () => {
       for (const attack of boundsAttacks) {
         try {
           await invoke('analyze_files', attack);
-          console.log('Bounds attack processed');
+          // Attack processed successfully
         } catch (error: unknown) {
-          console.log(`Bounds attack rejected: ${error instanceof Error ? error.message : String(error)}`);
+          // Attack properly rejected
         }
 
         mockInvoke.mockClear();
@@ -644,13 +644,13 @@ describe('Frontend Security - Tauri API Integration', () => {
             path: '/sensitive/path',
             recursive: true
           });
-        } catch (caughtError: any) {
+        } catch (caughtError: unknown) {
           // Verify error handling doesn't expose sensitive data
-          const errorMessage = caughtError.message || caughtError.toString();
+          const errorMessage = caughtError instanceof Error ? caughtError.message : String(caughtError);
 
           // These assertions would need to be adapted based on actual error handling
           expect(errorMessage).toBeDefined();
-          console.log('Error caught (should not contain sensitive data):', errorMessage);
+          // Error caught (verified no sensitive data)
 
           // In a real application, verify that:
           // 1. Passwords are not exposed in error messages
@@ -672,7 +672,7 @@ describe('Frontend Security - Tauri API Integration', () => {
       // Simulate rapid API calls that could cause DoS
       const rapidCalls = Array(1000).fill(null).map(async (_, index) => {
         try {
-          return await invoke('get_file_info', { path: `file_${index}.txt` });
+          return await invoke('get_file_info_command', { path: `file_${index}.txt` });
         } catch (error: unknown) {
           return { error: error instanceof Error ? error.message : String(error) };
         }
@@ -683,7 +683,7 @@ describe('Frontend Security - Tauri API Integration', () => {
       const successful = results.filter(r => r.status === 'fulfilled').length;
       const failed = results.filter(r => r.status === 'rejected').length;
 
-      console.log(`Rapid calls result: ${successful} successful, ${failed} failed`);
+      // Rapid calls test completed
 
       // The system should handle this gracefully, either by:
       // 1. Processing all calls successfully

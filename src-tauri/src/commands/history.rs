@@ -108,6 +108,122 @@ pub async fn get_history(
 }
 
 #[tauri::command]
+pub async fn get_operation_history(
+    state: State<'_, std::sync::Arc<AppState>>,
+) -> Result<Vec<OperationHistoryItem>> {
+    let operations = state
+        .database
+        .get_recent_operations(100)
+        .await?;
+
+    let current_undo_count = state.undo_redo.undo_count().await;
+
+    let mut items: Vec<OperationHistoryItem> = Vec::new();
+
+    for (index, op) in operations.into_iter().enumerate() {
+        let description = format_operation_description(&op);
+        let is_current = index == current_undo_count;
+
+        let can_undo = can_undo_operation(&op.operation_type);
+        items.push(OperationHistoryItem {
+            id: op.id,
+            operation_type: op.operation_type,
+            description,
+            timestamp: chrono::DateTime::from_timestamp(op.timestamp, 0)
+                .unwrap_or_else(chrono::Utc::now),
+            can_undo,
+            is_current,
+            details: op.metadata,
+        });
+    }
+
+    Ok(items)
+}
+
+fn format_operation_description(op: &crate::storage::Operation) -> String {
+    match op.operation_type.as_str() {
+        "move" => {
+            if let Some(dest) = &op.destination {
+                format!("Moved {} to {}",
+                    std::path::Path::new(&op.source).file_name()
+                        .and_then(|n| n.to_str()).unwrap_or("file"),
+                    std::path::Path::new(dest).parent()
+                        .and_then(|p| p.to_str()).unwrap_or("destination"))
+            } else {
+                format!("Moved {}", op.source)
+            }
+        }
+        "copy" => {
+            if let Some(dest) = &op.destination {
+                format!("Copied {} to {}",
+                    std::path::Path::new(&op.source).file_name()
+                        .and_then(|n| n.to_str()).unwrap_or("file"),
+                    std::path::Path::new(dest).parent()
+                        .and_then(|p| p.to_str()).unwrap_or("destination"))
+            } else {
+                format!("Copied {}", op.source)
+            }
+        }
+        "delete" => format!("Deleted {}",
+            std::path::Path::new(&op.source).file_name()
+                .and_then(|n| n.to_str()).unwrap_or(&op.source)),
+        "create" => format!("Created {}",
+            std::path::Path::new(&op.source).file_name()
+                .and_then(|n| n.to_str()).unwrap_or(&op.source)),
+        "rename" => {
+            if let Some(dest) = &op.destination {
+                format!("Renamed {} to {}",
+                    std::path::Path::new(&op.source).file_name()
+                        .and_then(|n| n.to_str()).unwrap_or("file"),
+                    std::path::Path::new(dest).file_name()
+                        .and_then(|n| n.to_str()).unwrap_or("new name"))
+            } else {
+                format!("Renamed {}", op.source)
+            }
+        }
+        "scan" => format!("Scanned folder: {}", op.source),
+        "analyze" => {
+            if let Some(metadata) = &op.metadata {
+                if let Some(count) = metadata.get("file_count").and_then(|v| v.as_u64()) {
+                    format!("Analyzed {} files", count)
+                } else {
+                    format!("Analyzed files in {}", op.source)
+                }
+            } else {
+                format!("Analyzed {}", op.source)
+            }
+        }
+        "organize" => {
+            if let Some(metadata) = &op.metadata {
+                if let Some(name) = metadata.get("folder_name").and_then(|v| v.as_str()) {
+                    format!("Created smart folder: {}", name)
+                } else {
+                    "Organized files".to_string()
+                }
+            } else {
+                "Organized files".to_string()
+            }
+        }
+        _ => format!("{} operation on {}", op.operation_type, op.source)
+    }
+}
+
+fn can_undo_operation(operation_type: &str) -> bool {
+    matches!(operation_type, "move" | "copy" | "delete" | "create" | "rename")
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OperationHistoryItem {
+    pub id: String,
+    pub operation_type: String,
+    pub description: String,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub can_undo: bool,
+    pub is_current: bool,
+    pub details: Option<serde_json::Value>,
+}
+
+#[tauri::command]
 pub async fn clear_history(
     state: State<'_, std::sync::Arc<AppState>>,
     app: AppHandle,

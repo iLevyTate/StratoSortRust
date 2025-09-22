@@ -35,7 +35,6 @@ jobs:
 
       - name: Run unit tests
         run: npm run test:ci
-        continue-on-error: true  # Allow frontend tests to fail without blocking
 
       - name: Run test coverage
         run: npm run test:coverage
@@ -85,7 +84,7 @@ jobs:
           # Run lib tests first (fastest)
           cargo test --lib --no-fail-fast
           # Run integration tests separately
-          cargo test --test '*' --no-default-features --features "test" || true
+          cargo test --test '*' --no-default-features --features "test"
 
       - name: Run backend tests with coverage
         if: matrix.os == 'ubuntu-latest'
@@ -149,7 +148,6 @@ jobs:
 
       - name: Run integration tests
         run: npm run test:integration
-        continue-on-error: true  # Integration tests may fail without Tauri runtime
 
       - name: Upload integration test results
         uses: actions/upload-artifact@v3

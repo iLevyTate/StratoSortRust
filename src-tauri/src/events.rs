@@ -22,6 +22,11 @@ pub mod app {
     pub const SHUTDOWN: &str = "app-shutdown";
 }
 
+pub mod navigation {
+    pub const NAVIGATE_TO: &str = "navigate-to";
+    pub const SHOW_ABOUT: &str = "show-about";
+}
+
 pub mod ai {
     pub const STATUS_CHANGED: &str = "ai-status-changed";
     pub const STATUS_UPDATE: &str = "ai-status-update";

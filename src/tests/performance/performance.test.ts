@@ -174,7 +174,7 @@ describe('Performance Tests', () => {
 
 		it('should cache repeated API calls', async () => {
 			// Import the actual implementation to test caching
-			const { getAppSettings, apiCache } = await vi.importActual('$lib/api/tauri') as any;
+			const { getAppSettings, apiCache } = await vi.importActual<typeof import('$lib/api/tauri')>('$lib/api/tauri');
 
 			// Clear cache before test
 			apiCache.clear();

@@ -9,40 +9,64 @@
 	import AnalyzePage from '$lib/components/pages/AnalyzePage.svelte';
 	import OrganizePage from '$lib/components/pages/OrganizePage.svelte';
 	import SettingsPage from '$lib/components/pages/SettingsPage.svelte';
-	import SmartFoldersManager from '$lib/components/SmartFoldersManager.svelte';
 	import FirstRunSetupPage from '$lib/components/pages/FirstRunSetupPage.svelte';
-	import NotificationCenter from '$lib/components/NotificationCenter.svelte';
+	import HeaderBar from '$lib/components/HeaderBar.svelte';
+	import StatusBar from '$lib/components/StatusBar.svelte';
+	import HistoryTimeline from '$lib/components/HistoryTimeline.svelte';
 	import ErrorBoundary from '$lib/components/ErrorBoundary.svelte';
 	import KeyboardShortcutsHelp from '$lib/components/KeyboardShortcutsHelp.svelte';
-	import ProgressIndicator from '$lib/components/ProgressIndicator.svelte';
+	import AccessibilityManager from '$lib/components/AccessibilityManager.svelte';
+	import { AccessibilityToolbar } from '$lib/components/ui';
 	import { getAppSettings, checkOllamaStatus, checkFirstRunStatus, getSystemInfo, frontendReady } from '$lib/api/tauri';
 	import { keyboardShortcuts } from '$lib/utils/keyboard-shortcuts';
 	import { operationInProgress } from '$lib/stores';
 	import { toast } from '$lib/stores/notifications';
 	import { AppInitializer, type InitializationStep, waitForCondition } from '$lib/utils/initialization';
+	import { log } from '$lib/utils/logger';
 
 	let page: string = 'discover';
 	let initialized = false;
+	let initializationError: Error | null = null;
 	let isFirstRun = false;
 	let showingFirstRunSetup = false;
 	let showKeyboardHelp = false;
+	let showHistoryTimeline = false;
+	let showSidebar = true;
+	let showAccessibilityToolbar = false;
+
+	// Store references to event listeners for cleanup
+	let unsubscribePage: (() => void) | null = null;
+	let handleShowKeyboardHelp: (() => void) | null = null;
+	let handleKeyDown: ((event: KeyboardEvent) => void) | null = null;
+	let handleShowAboutDialog: (() => void) | null = null;
 
 	onMount(() => {
 		// Subscribe to page changes
-		const unsubscribe = currentPage.subscribe((value) => {
+		unsubscribePage = currentPage.subscribe((value) => {
 			page = value;
 		});
 
 		// Listen for keyboard help events
-		const handleShowKeyboardHelp = () => {
+		handleShowKeyboardHelp = () => {
 			showKeyboardHelp = true;
 		};
 		document.addEventListener('show-keyboard-help', handleShowKeyboardHelp);
 
+		// Listen for show about dialog events (from backend)
+		handleShowAboutDialog = () => {
+			// Handle showing about dialog
+			console.log('About dialog requested');
+			// You can implement an about dialog component here
+		};
+		window.addEventListener('show-about-dialog', handleShowAboutDialog);
+
+		// Setup accessibility features
+		setupAccessibilityShortcuts();
+
 		// Async initialization
 		const initAsync = async () => {
 			try {
-				const isTauri = typeof window !== 'undefined' && (window as any).__TAURI__;
+				const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 				// Check if this is a first run
 				const firstRunStatus = await checkFirstRunStatus();
 				isFirstRun = firstRunStatus.is_first_run;
@@ -62,26 +86,39 @@
 					await initializeApp();
 					// Only set initialized = true after initializeApp() completes successfully
 					initialized = true;
-					console.log('StratoSort app initialized successfully');
+					log.info('StratoSort app initialized successfully', undefined, 'App');
 				}
 				// If it is first run, we'll initialize after setup is complete
 				// Don't set initialized = true yet for first run scenarios
 
 			} catch (error) {
-				console.error('Failed to initialize app:', error);
+				log.error('Failed to initialize app', error, 'App');
+				initializationError = error as Error;
 				if (!isFirstRun) {
-					// Only show UI for non-first-run errors to avoid broken state
-					initialized = true;
+					// Don't set initialized = true on error, keep app in loading/error state
+					// This prevents showing broken UI when initialization fails
+					toast.error('Failed to initialize application. Some features may not work correctly.');
 				}
-				// For first-run errors, stay in loading state to allow retry
+				// For both first-run and normal errors, stay in loading state to allow retry
 			}
 		};
 
 		initAsync();
 
 		return () => {
-			unsubscribe();
-			document.removeEventListener('show-keyboard-help', handleShowKeyboardHelp);
+			// Clean up all subscriptions and event listeners
+			if (unsubscribePage) {
+				unsubscribePage();
+			}
+			if (handleShowKeyboardHelp) {
+				document.removeEventListener('show-keyboard-help', handleShowKeyboardHelp);
+			}
+			if (handleShowAboutDialog) {
+				window.removeEventListener('show-about-dialog', handleShowAboutDialog);
+			}
+			if (handleKeyDown) {
+				document.removeEventListener('keydown', handleKeyDown);
+			}
 		};
 	});
 
@@ -89,10 +126,10 @@
 		const initializer = new AppInitializer({
 			maxGlobalRetries: 3,
 			globalTimeout: 45000, // 45 seconds total timeout
-			onStepStart: (stepName) => console.log(`🔄 Starting: ${stepName}`),
-			onStepComplete: (stepName, duration) => console.log(`✅ Completed: ${stepName} (${duration}ms)`),
-			onStepError: (stepName, error, attempt) => console.warn(`❌ Error in ${stepName} (attempt ${attempt}):`, error),
-			onStepSkipped: (stepName, reason) => console.warn(`⏭️ Skipped: ${stepName} - ${reason}`)
+			onStepStart: (stepName) => log.debug(`Starting: ${stepName}`, undefined, 'Init'),
+			onStepComplete: (stepName, duration) => log.debug(`Completed: ${stepName}`, { duration }, 'Init'),
+			onStepError: (stepName, error, attempt) => log.warn(`Error in ${stepName}`, { error, attempt }, 'Init'),
+			onStepSkipped: (stepName, reason) => log.debug(`Skipped: ${stepName}`, { reason }, 'Init')
 		});
 
 		// Define robust initialization steps
@@ -151,7 +188,7 @@
 					if (settings) {
 						appSettings.set(settings);
 					} else {
-						console.warn('No settings returned from backend, using defaults');
+						log.warn('No settings returned from backend, using defaults', undefined, 'Settings');
 					}
 				},
 				critical: false, // Non-critical - will use defaults
@@ -162,7 +199,7 @@
 				name: 'Load System Information',
 				execute: async () => {
 					const systemInfo = await getSystemInfo();
-					console.log('System info loaded:', systemInfo);
+					log.debug('System info loaded', systemInfo, 'System');
 				},
 				critical: false, // Non-critical - informational only
 				retryCount: 1,
@@ -172,7 +209,7 @@
 				name: 'Check AI Service Status',
 				execute: async () => {
 					const ollamaStatus = await checkOllamaStatus();
-					console.log('AI service status:', ollamaStatus);
+					log.info('AI service status', ollamaStatus, 'AI');
 				},
 				critical: false, // Non-critical - AI features may not be available
 				retryCount: 2,
@@ -191,15 +228,14 @@
 				throw new Error(errorMsg);
 			}
 
-			console.log(`🎉 App initialization completed successfully in ${result.totalDuration}ms`);
-			console.log(`✅ Completed: ${result.completedSteps.length} steps`);
+			log.info('App initialization completed successfully', { totalDuration: result.totalDuration, completedSteps: result.completedSteps.length }, 'Init');
 
 			if (result.skippedSteps.length > 0) {
-				console.warn(`⚠️ Skipped: ${result.skippedSteps.length} non-critical steps`);
+				log.warn('Some non-critical steps were skipped', { skipped: result.skippedSteps.length }, 'Init');
 			}
 
 		} catch (error) {
-			console.error('🚨 App initialization failed:', error);
+			log.error('App initialization failed', error, 'Init');
 			throw error;
 		}
 	}
@@ -213,9 +249,9 @@
 			await initializeApp();
 			// Only set initialized = true after initializeApp() completes successfully
 			initialized = true;
-			console.log('StratoSort app initialized successfully after first-run setup');
+			log.info('StratoSort app initialized successfully after first-run setup', undefined, 'FirstRun');
 		} catch (error) {
-			console.error('Failed to initialize app after setup:', error);
+			log.error('Failed to initialize app after setup', error, 'FirstRun');
 			// Show user-facing error notification for critical failure
 			// Using static import instead of dynamic import for reliable error handling
 			try {
@@ -228,7 +264,7 @@
 				});
 			} catch (toastError) {
 				// Fallback if toast system also fails - use native browser alert
-				console.error('Toast notification also failed:', toastError);
+				log.error('Toast notification also failed', toastError, 'Notification');
 				alert('Critical Error: Failed to initialize application. Please restart the app.');
 			}
 		}
@@ -238,15 +274,67 @@
 		currentPage.set('discover');
 	}
 
+	function handleSearchResults(event: CustomEvent) {
+		// Handle search results - navigate to discover page and show results
+		currentPage.set('discover');
+		// The results will be handled by the DiscoverPage component
+	}
+
+	function handleToggleHistory(event: CustomEvent) {
+		showHistoryTimeline = event.detail;
+	}
+
+	function handleToggleSidebar() {
+		showSidebar = !showSidebar;
+	}
+
+	function toggleAccessibilityToolbar() {
+		showAccessibilityToolbar = !showAccessibilityToolbar;
+	}
+
+	// Enhanced keyboard shortcuts for accessibility
+	function setupAccessibilityShortcuts() {
+		handleKeyDown = (event: KeyboardEvent) => {
+			// Alt + A for accessibility toolbar
+			if (event.altKey && event.key === 'a') {
+				event.preventDefault();
+				toggleAccessibilityToolbar();
+			}
+			// Alt + H for help
+			if (event.altKey && event.key === 'h') {
+				event.preventDefault();
+				showKeyboardHelp = true;
+			}
+		};
+		document.addEventListener('keydown', handleKeyDown);
+	}
+
 	onDestroy(() => {
 		// Clean up event listeners when app is destroyed
 		cleanupEventListeners();
 		keyboardShortcuts.destroy();
+
+		// Clean up any remaining event listeners
+		if (handleShowKeyboardHelp) {
+			document.removeEventListener('show-keyboard-help', handleShowKeyboardHelp);
+		}
+		if (handleShowAboutDialog) {
+			window.removeEventListener('show-about-dialog', handleShowAboutDialog);
+		}
+		if (handleKeyDown) {
+			document.removeEventListener('keydown', handleKeyDown);
+		}
+		if (unsubscribePage) {
+			unsubscribePage();
+		}
 	});
 </script>
 
 <ModeWatcher />
 <Toaster richColors />
+
+<!-- Initialize Accessibility Manager -->
+<AccessibilityManager />
 
 <ErrorBoundary on:goHome={handleErrorBoundaryGoHome}>
     {#if showingFirstRunSetup}
@@ -256,58 +344,159 @@
         </div>
     {:else}
         <!-- Main Application -->
-        <a href="#main-content" data-testid="skip-to-content" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 bg-primary text-primary-foreground px-3 py-2 rounded">Skip to content</a>
-        <div class="flex h-screen bg-background" data-testid="app-container">
-            <Sidebar />
-            <main id="main-content" data-testid="main-content" role="main" class="flex-1 overflow-hidden">
-				<!-- Header with Global Progress and Notification Center -->
-				<div class="flex items-center justify-between p-4 border-b">
-					<div class="flex-1">
-						{#if $operationInProgress}
-							<ProgressIndicator
-								variant="inline"
-								compact={true}
-								showCancel={false}
-								showProgress={true}
-							/>
-						{/if}
-					</div>
-					<NotificationCenter />
-				</div>
-                <div class="h-full p-6 overflow-auto" style="height: calc(100vh - 73px);">
-					{#if !initialized}
-						<div class="flex items-center justify-center h-full">
-							<div class="text-center">
-								<div class="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-								<p class="text-lg font-semibold">Initializing StratoSort...</p>
-								<p class="text-muted-foreground">Connecting to backend services</p>
-							</div>
-						</div>
-                    {:else if page === 'discover'}
-                        <ErrorBoundary fallback={false} let:captureError>
-                            <DiscoverPage />
-						</ErrorBoundary>
-					{:else if page === 'analyze'}
-                        <ErrorBoundary fallback={false} let:captureError>
-                            <AnalyzePage />
-						</ErrorBoundary>
-					{:else if page === 'organize'}
-                        <ErrorBoundary fallback={false} let:captureError>
-                            <OrganizePage />
-						</ErrorBoundary>
-                    {:else if page === 'settings'}
-                        <ErrorBoundary fallback={false} let:captureError>
-                            <SettingsPage />
-						</ErrorBoundary>
-					{/if}
-				</div>
-                <!-- ARIA live regions for accessibility announcements -->
-                <div aria-live="polite" class="sr-only" data-testid="live-region-polite"></div>
-                <div aria-live="assertive" class="sr-only" data-testid="live-region-assertive"></div>
-			</main>
-		</div>
+        <!-- Skip links for keyboard navigation -->
+        <div class="skip-links">
+            <a href="#main-content" class="skip-link">Skip to main content</a>
+            <a href="#navigation" class="skip-link">Skip to navigation</a>
+            <a href="#search" class="skip-link">Skip to search</a>
+        </div>
+        <div class="flex flex-col h-screen bg-background" data-testid="app-container">
+            <!-- Header Bar with Search -->
+            <HeaderBar
+                on:searchResults={handleSearchResults}
+                on:toggleHistory={handleToggleHistory}
+                on:toggleSidebar={handleToggleSidebar}
+            />
+            
+            <!-- Accessibility Toolbar -->
+            <AccessibilityToolbar bind:isOpen={showAccessibilityToolbar} />
+
+            <!-- History Timeline (absolute positioned) -->
+            <HistoryTimeline bind:show={showHistoryTimeline} />
+
+            <!-- Main Content Area -->
+            <div class="flex flex-1 overflow-hidden">
+                {#if showSidebar}
+                    <Sidebar />
+                {/if}
+                <main id="main-content" data-testid="main-content" class="flex-1 overflow-hidden">
+                    <div class="h-full p-6 overflow-auto">
+                        {#if !initialized}
+                            <div class="flex items-center justify-center h-full">
+                                <div class="text-center">
+                                    <div class="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                                    <p class="text-lg font-semibold">Initializing StratoSort...</p>
+                                    <p class="text-muted-foreground">Connecting to backend services</p>
+                                </div>
+                            </div>
+                        {:else if page === 'discover'}
+                            <ErrorBoundary fallback={false} let:captureError>
+                                <DiscoverPage />
+                            </ErrorBoundary>
+                        {:else if page === 'analyze'}
+                            <ErrorBoundary fallback={false} let:captureError>
+                                <AnalyzePage />
+                            </ErrorBoundary>
+                        {:else if page === 'organize'}
+                            <ErrorBoundary fallback={false} let:captureError>
+                                <OrganizePage />
+                            </ErrorBoundary>
+                        {:else if page === 'settings'}
+                            <ErrorBoundary fallback={false} let:captureError>
+                                <SettingsPage />
+                            </ErrorBoundary>
+                        {/if}
+                    </div>
+                    <!-- ARIA live regions for accessibility announcements -->
+                    <div aria-live="polite" class="sr-only" data-testid="live-region-polite"></div>
+                    <div aria-live="assertive" class="sr-only" data-testid="live-region-assertive"></div>
+                </main>
+            </div>
+
+            <!-- Status Bar at Bottom -->
+            <footer aria-label="Application status">
+                <StatusBar />
+            </footer>
+        </div>
 	{/if}
 </ErrorBoundary>
 
 <!-- Keyboard Shortcuts Help (Global) -->
 <KeyboardShortcutsHelp bind:showHelp={showKeyboardHelp} />
+
+<style>
+    /* Skip links styling */
+    :global(.skip-links) {
+        position: fixed;
+        top: 0;
+        left: 0;
+        z-index: 1000;
+    }
+
+    :global(.skip-link) {
+        position: absolute;
+        top: -40px;
+        left: 6px;
+        background: #000;
+        color: #fff;
+        padding: 8px 12px;
+        text-decoration: none;
+        border-radius: 0 0 4px 4px;
+        font-weight: bold;
+        transition: top 0.2s ease;
+        z-index: 1001;
+    }
+
+    :global(.skip-link:focus) {
+        top: 0;
+    }
+
+    /* Enhanced focus indicators */
+    :global(*:focus-visible) {
+        outline: 2px solid #005fcc;
+        outline-offset: 2px;
+        border-radius: 2px;
+    }
+
+    /* Improved contrast for links */
+    :global(a) {
+        text-decoration: underline;
+    }
+
+    :global(a:hover) {
+        text-decoration: none;
+    }
+
+    /* Ensure interactive elements have minimum touch targets */
+    :global(button, input, select, textarea, a) {
+        min-height: 44px;
+        min-width: 44px;
+    }
+
+    /* High contrast mode support */
+    @media (prefers-contrast: high) {
+        :global(.bg-background) {
+            background: #000 !important;
+            color: #fff !important;
+        }
+        
+        :global(.text-foreground) {
+            color: #fff !important;
+        }
+        
+        :global(.border) {
+            border-color: #fff !important;
+        }
+    }
+
+    /* Reduced motion support */
+    @media (prefers-reduced-motion: reduce) {
+        :global(*) {
+            animation-duration: 0.01ms !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: 0.01ms !important;
+        }
+    }
+
+    /* Large text support */
+    @media (min-font-size: 18px) {
+        :global(html) {
+            font-size: 18px;
+        }
+        
+        :global(button, input, select, textarea) {
+            min-height: 48px;
+            padding: 12px;
+        }
+    }
+</style>

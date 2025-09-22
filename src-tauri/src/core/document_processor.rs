@@ -51,7 +51,7 @@ impl DocumentProcessor for PdfProcessor {
 }
 
 impl PdfProcessor {
-    async fn extract_with_pdf_extract(&self, _file_path: &Path) -> Result<ProcessedDocument> {
+    async fn extract_with_pdf_extract(&self, file_path: &Path) -> Result<ProcessedDocument> {
         #[cfg(feature = "pdf-extract")]
         {
             let file_bytes = tokio::fs::read(file_path).await?;
@@ -60,6 +60,8 @@ impl PdfProcessor {
                     message: format!("PDF extraction failed: {}", e),
                 }
             })?;
+
+            let word_count = count_words(&text);
 
             Ok(ProcessedDocument {
                 text_content: text,
@@ -71,7 +73,7 @@ impl PdfProcessor {
                     creation_date: None,
                     modified_date: None,
                     page_count: None,
-                    word_count: Some(count_words(&text)),
+                    word_count: Some(word_count),
                     language: None,
                 },
                 file_type: "PDF".to_string(),
@@ -187,17 +189,17 @@ impl DocumentProcessor for DocxProcessor {
                         }
                     }
 
-                    // Extract metadata from core properties
-                    let mut metadata = DocumentMetadata {
-                        title: docx.doc_props.core.title.clone(),
-                        author: docx.doc_props.core.creator.clone(),
-                        subject: docx.doc_props.core.subject.clone(),
-                        creator: docx.doc_props.core.creator.clone(),
-                        creation_date: docx.doc_props.core.created.clone(),
-                        modified_date: docx.doc_props.core.modified.clone(),
+                    // Extract metadata - using available fields
+                    let metadata = DocumentMetadata {
+                        title: None,
+                        author: None,
+                        subject: None,
+                        creator: None,
+                        creation_date: None,
+                        modified_date: None,
                         page_count: None,
                         word_count: Some(count_words(&text_content)),
-                        language: docx.doc_props.core.language.clone(),
+                        language: None,
                     };
 
                     Ok(ProcessedDocument {
@@ -236,7 +238,7 @@ impl DocumentProcessor for ExcelProcessor {
     async fn process(&self, file_path: &Path) -> Result<ProcessedDocument> {
         #[cfg(feature = "calamine")]
         {
-            use calamine::{open_workbook, DataType, Reader, Xlsx};
+            use calamine::{open_workbook, Reader, Xlsx};
 
             let mut workbook: Xlsx<_> =
                 open_workbook(file_path).map_err(|e| AppError::ProcessingError {
@@ -244,31 +246,24 @@ impl DocumentProcessor for ExcelProcessor {
                 })?;
 
             let mut text_content = String::new();
-            let mut total_rows = 0;
+            let mut _total_rows = 0;
 
             // Get all worksheet names
             let sheet_names = workbook.sheet_names();
+            let sheet_count = sheet_names.len();
 
-            for sheet_name in sheet_names {
+            for sheet_name in &sheet_names {
                 if let Ok(range) = workbook.worksheet_range(&sheet_name) {
                     text_content.push_str(&format!("=== Sheet: {} ===\n", sheet_name));
 
-                    let (height, width) = range.get_size();
-                    total_rows += height;
+                    let (height, _width) = range.get_size();
+                    _total_rows += height;
 
                     // Extract cell values as text
                     for row in range.rows() {
                         let row_text: Vec<String> = row
                             .iter()
-                            .map(|cell| match cell {
-                                DataType::Empty => "".to_string(),
-                                DataType::String(s) => s.clone(),
-                                DataType::Float(f) => f.to_string(),
-                                DataType::Int(i) => i.to_string(),
-                                DataType::Bool(b) => b.to_string(),
-                                DataType::Error(e) => format!("ERROR: {:?}", e),
-                                DataType::DateTime(dt) => format!("{:?}", dt),
-                            })
+                            .map(|cell| cell.to_string())
                             .collect();
 
                         text_content.push_str(&row_text.join("\t"));
@@ -278,6 +273,7 @@ impl DocumentProcessor for ExcelProcessor {
                 }
             }
 
+            let word_count = count_words(&text_content);
             Ok(ProcessedDocument {
                 text_content,
                 metadata: DocumentMetadata {
@@ -290,8 +286,8 @@ impl DocumentProcessor for ExcelProcessor {
                     creator: None,
                     creation_date: None,
                     modified_date: None,
-                    page_count: Some(sheet_names.len() as u32),
-                    word_count: Some(count_words(&text_content)),
+                    page_count: Some(sheet_count as u32),
+                    word_count: Some(word_count),
                     language: None,
                 },
                 file_type: "Excel".to_string(),
@@ -326,12 +322,12 @@ impl DocumentProcessor for CsvProcessor {
 
             let mut text_content = String::new();
             let mut row_count = 0;
-            let mut headers = Vec::new();
+            let mut _headers = Vec::new();
 
             // Get headers
             if let Ok(header_record) = reader.headers() {
-                headers = header_record.iter().map(|h| h.to_string()).collect();
-                text_content.push_str(&headers.join("\t"));
+                _headers = header_record.iter().map(|h| h.to_string()).collect();
+                text_content.push_str(&_headers.join("\t"));
                 text_content.push('\n');
             }
 

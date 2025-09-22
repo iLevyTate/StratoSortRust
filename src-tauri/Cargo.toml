@@ -41,7 +41,9 @@ tauri-plugin-http = "2"
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
+tokio-tungstenite = "0.24"
 futures = "0.3"
+futures-util = "0.3"
 async-trait = "0.1"
 
 # Serialization
@@ -49,8 +51,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # HTTP client for update checking
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
 url = "2.5"
+regex = "1.10"
 
 # Error handling
 anyhow = "1"
@@ -61,7 +64,7 @@ dotenv = "0.15"
 
 # Database & Embeddings
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono"] }
-libsqlite3-sys = { version = "*", features = ["bundled"] }
+libsqlite3-sys = { version = "0.28", features = ["bundled"] }
 # Modern vector search with sqlite-vec
 sqlite-vec = "0.1.6"
 zerocopy = "0.7" # For efficient vector byte conversion
@@ -139,7 +142,6 @@ content_inspector = "0.2"                        # Binary vs text file detection
 
 # Large file processing & streaming
 async-stream = { version = "0.3", optional = true }  # Async streaming utilities
-futures-util = { version = "0.3", optional = true }  # Future utilities for streaming
 memmap2 = { version = "0.9", optional = true }      # Memory-mapped file I/O
 tempfile = "3.14"                                    # Temporary file management (updated)
 
@@ -158,11 +160,10 @@ directories = "5"
 dirs = "5"
 bytesize = "1"
 sysinfo = "0.32"  # System information
-regex = "1"  # Regular expressions
 base64 = "0.22"  # Base64 encoding for backup data
 
 [features]
-default = ["custom-protocol", "sysinfo"]
+default = ["custom-protocol", "sysinfo", "documents-core"]
 custom-protocol = ["tauri/custom-protocol"]
 rusqlite-init = []  # Alternative rusqlite initialization method
 
@@ -193,7 +194,7 @@ multimedia-core = ["id3", "audiotags"]  # Essential audio metadata
 multimedia-full = ["multimedia", "ffmpeg-next"]  # Full multimedia (requires FFmpeg)
 
 # Large file processing
-large-files = ["memmap2", "async-stream", "futures-util"]
+large-files = ["memmap2", "async-stream"]
 
 # Preset feature combinations
 essential = ["documents-core", "images-core", "archives-core", "multimedia-core"]

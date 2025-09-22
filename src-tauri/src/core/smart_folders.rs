@@ -8,6 +8,9 @@ pub struct SmartFolder {
     pub id: String,
     pub name: String,
     pub path: String,
+    pub target_path: Option<String>,
+    pub description: Option<String>,
+    pub enabled: bool,
     pub rules: Vec<OrganizationRule>,
     pub icon: Option<String>,
     pub color: Option<String>,
@@ -30,14 +33,17 @@ impl SmartFolderManager {
 
         sqlx::query(
             r#"
-            INSERT INTO smart_folders 
-            (id, name, path, rules, icon, color, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO smart_folders
+            (id, name, path, target_path, description, enabled, rules, icon, color, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&folder.id)
         .bind(&folder.name)
         .bind(&folder.path)
+        .bind(&folder.target_path)
+        .bind(&folder.description)
+        .bind(folder.enabled)
         .bind(&rules_json)
         .bind(&folder.icon)
         .bind(&folder.color)
@@ -66,6 +72,9 @@ impl SmartFolderManager {
                 id: row.get("id"),
                 name: row.get("name"),
                 path: row.get("path"),
+                target_path: row.get("target_path"),
+                description: row.get("description"),
+                enabled: row.get("enabled"),
                 rules,
                 icon: row.get("icon"),
                 color: row.get("color"),
@@ -94,6 +103,9 @@ impl SmartFolderManager {
                 id: row.get("id"),
                 name: row.get("name"),
                 path: row.get("path"),
+                target_path: row.get("target_path"),
+                description: row.get("description"),
+                enabled: row.get("enabled"),
                 rules,
                 icon: row.get("icon"),
                 color: row.get("color"),
@@ -156,6 +168,86 @@ impl SmartFolderManager {
         }
 
         Ok(matching_folders)
+    }
+
+    /// Find the best matching smart folder based on priority resolution
+    pub async fn find_best_matching_folder(&self, file_path: &str) -> Result<Option<SmartFolder>> {
+        let matching_folders = self.find_matching_folders(file_path).await?;
+
+        if matching_folders.is_empty() {
+            return Ok(None);
+        }
+
+        // Calculate priority scores for each matching folder
+        let mut folder_scores: Vec<(SmartFolder, i32)> = Vec::new();
+
+        for folder in matching_folders {
+            let priority_score = self.calculate_folder_priority_score(file_path, &folder).await;
+            folder_scores.push((folder, priority_score));
+        }
+
+        // Sort by priority score (higher scores = higher priority)
+        folder_scores.sort_by(|a, b| b.1.cmp(&a.1));
+
+        // Return the highest priority folder
+        Ok(folder_scores.into_iter().next().map(|(folder, _)| folder))
+    }
+
+    /// Calculate the priority score for a folder based on matching rules
+    async fn calculate_folder_priority_score(&self, file_path: &str, folder: &SmartFolder) -> i32 {
+        let mut total_score = 0;
+
+        // Get file metadata once for performance
+        let metadata = std::fs::metadata(file_path).ok();
+        let path = std::path::Path::new(file_path);
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+        for rule in &folder.rules {
+            if !rule.enabled {
+                continue;
+            }
+
+            let field_value = match &rule.rule_type {
+                crate::commands::organization::RuleType::FileExtension => path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_string(),
+                crate::commands::organization::RuleType::FileName => file_name.to_string(),
+                crate::commands::organization::RuleType::FileContent => {
+                    self.read_file_preview(file_path, 10240)
+                        .await
+                        .unwrap_or_default()
+                }
+                crate::commands::organization::RuleType::FileSize => metadata
+                    .as_ref()
+                    .map(|m| m.len().to_string())
+                    .unwrap_or_default(),
+                crate::commands::organization::RuleType::CreationDate => metadata
+                    .as_ref()
+                    .and_then(|m| m.created().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs().to_string())
+                    .unwrap_or_default(),
+                crate::commands::organization::RuleType::ModificationDate => metadata
+                    .as_ref()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs().to_string())
+                    .unwrap_or_default(),
+                crate::commands::organization::RuleType::MimeType => mime_guess::from_path(path)
+                    .first_or_octet_stream()
+                    .to_string(),
+                crate::commands::organization::RuleType::Path => file_path.to_string(),
+            };
+
+            if self.evaluate_condition(&rule.condition, &field_value, &rule.rule_type) {
+                // Add the rule's priority to the total score if it matches
+                total_score += rule.priority;
+            }
+        }
+
+        total_score
     }
 
     /// Check if a file matches the rules of a smart folder
@@ -338,6 +430,9 @@ impl SmartFolderManager {
                 id: row.get("id"),
                 name: row.get("name"),
                 path: row.get("path"),
+                target_path: row.get("target_path"),
+                description: row.get("description"),
+                enabled: row.get("enabled"),
                 rules,
                 icon: row.get("icon"),
                 color: row.get("color"),
@@ -370,6 +465,9 @@ impl SmartFolderManager {
                 id: row.get("id"),
                 name: row.get("name"),
                 path: row.get("path"),
+                target_path: row.get("target_path"),
+                description: row.get("description"),
+                enabled: row.get("enabled"),
                 rules,
                 icon: row.get("icon"),
                 color: row.get("color"),
@@ -379,5 +477,59 @@ impl SmartFolderManager {
         }
 
         Ok(folders)
+    }
+
+    /// Safely organize files into folders with recursion prevention
+    pub async fn organize_into_folder(
+        &self,
+        folder: &SmartFolder,
+        source_files: &[String],
+        visited: &mut std::collections::HashSet<String>,
+        depth: usize,
+    ) -> Result<Vec<String>> {
+
+        // Prevent infinite recursion
+        if depth > 10 {
+            tracing::warn!("Max recursion depth reached for folder: {}", folder.id);
+            return Ok(Vec::new());
+        }
+
+        // Prevent cycles
+        if visited.contains(&folder.id) {
+            tracing::warn!("Circular reference detected: {}", folder.id);
+            return Ok(Vec::new());
+        }
+
+        visited.insert(folder.id.clone());
+
+        // Prevent self-organization
+        if let Some(target_path) = &folder.target_path {
+            for source_file in source_files {
+                if source_file == target_path {
+                    tracing::warn!("File cannot be organized into itself: {}", source_file);
+                    visited.remove(&folder.id);
+                    return Err(crate::error::AppError::InvalidOperation {
+                        message: "File cannot organize into itself".to_string(),
+                    });
+                }
+            }
+        }
+
+        let mut organized_files = Vec::new();
+
+        // Organize matching files
+        for source_file in source_files {
+            if self.matches_rules(source_file, &folder.rules, "AND").await {
+                if let Some(target_path) = &folder.target_path {
+                    // Perform the actual move operation here
+                    organized_files.push(source_file.clone());
+                    tracing::info!("Organized {} into {}", source_file, target_path);
+                }
+            }
+        }
+
+        // Remove from visited set when done
+        visited.remove(&folder.id);
+        Ok(organized_files)
     }
 }

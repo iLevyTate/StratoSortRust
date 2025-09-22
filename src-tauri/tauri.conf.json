@@ -14,8 +14,10 @@
       "open": true
     },
     "updater": {
-      "active": true,
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI1NURDNEUzNEJGQTlCQzEKUldUQm0vcEw0OFJkdFRweXRkbm9PTXRxMWZJS1RJUHlVSGcxVlVpb2ViN09Ob042VUZOOUpKcDYK"
+      "active": false,
+      "dialog": false,
+      "endpoints": [],
+      "pubkey": ""
     }
   },
   "app": {
@@ -42,7 +44,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' customprotocol: asset: tauri:; script-src 'self' http://localhost:* https://localhost:*; style-src 'self' 'unsafe-inline' http://localhost:* https://localhost:*; img-src 'self' asset: data: blob: tauri: http://localhost:* https://localhost:*; font-src 'self' data: http://localhost:* https://localhost:*; connect-src 'self' ipc: http://localhost:* https://localhost:* ws://localhost:* wss://localhost:* http://127.0.0.1:11434 https://127.0.0.1:11434 http://127.0.0.1:* https://127.0.0.1:*; media-src 'self' blob: data:; worker-src 'self' blob:; child-src 'none'; frame-src 'none'; frame-ancestors 'none'; object-src 'none'; embed-src 'none'; base-uri 'self'; form-action 'self'; manifest-src 'self'",
+      "csp": "default-src 'self' customprotocol: asset: tauri:; script-src 'self' http://localhost:1431 https://localhost:1431; style-src 'self' http://localhost:1431 https://localhost:1431; img-src 'self' asset: data: blob: tauri: http://localhost:1431 https://localhost:1431; font-src 'self' data: http://localhost:1431 https://localhost:1431; connect-src 'self' ipc: http://localhost:1431 https://localhost:1431 ws://localhost:1431 wss://localhost:1431 http://127.0.0.1:11434 https://127.0.0.1:11434; media-src 'self' blob: data:; worker-src 'self' blob:; child-src 'none'; frame-src 'none'; frame-ancestors 'none'; object-src 'none'; embed-src 'none'; base-uri 'self'; form-action 'self'; manifest-src 'self'",
       "assetProtocol": {
         "enable": true,
         "scope": [

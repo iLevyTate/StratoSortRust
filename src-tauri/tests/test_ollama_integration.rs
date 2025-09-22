@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod ollama_tests {
     use stratosort::ai::ollama::OllamaClient;
-    use stratosort::ai::AiEngine;
+    // Removed unused AiEngine
     use stratosort::error::Result;
 
     #[tokio::test]

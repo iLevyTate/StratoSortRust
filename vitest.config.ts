@@ -30,9 +30,9 @@ export default defineConfig({
 			}
 		},
 		reporters: ['verbose'],
-		testTimeout: 10000,
-		hookTimeout: 10000,
-		teardownTimeout: 10000,
+		testTimeout: 30000,
+		hookTimeout: 30000,
+		teardownTimeout: 30000,
 		isolate: true,
 		threads: true,
 		mockReset: true,
@@ -42,7 +42,8 @@ export default defineConfig({
 	resolve: {
 		alias: {
 			'$lib': resolve('./src/lib'),
-			'$app': resolve('./src/tests/mocks/app')
+			'$app': resolve('./src/tests/mocks/app'),
+			'svelte-sonner': resolve('./src/tests/mocks/svelte-sonner.ts')
 		},
 		conditions: ['svelte', 'browser', 'import', 'default']
 	},

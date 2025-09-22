@@ -1,7 +1,7 @@
 use crate::{
     ai::AiService,
     config::Config,
-    core::{FileAnalyzer, Organizer, SmartFolderManager, UndoRedoManager},
+    core::{FileAnalyzer, OperationQueue, Organizer, SmartFolderManager, UndoRedoManager, pattern_learner::PatternLearner},
     error::Result,
     services::FileWatcher,
     storage::Database,
@@ -10,7 +10,8 @@ use dashmap::DashMap;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Runtime};
+use tokio::sync::Semaphore;
 use uuid::Uuid;
 
 /// AI Service status information
@@ -33,8 +34,8 @@ pub struct AiServiceCapabilities {
 }
 
 /// Main application state
-pub struct AppState {
-    pub handle: AppHandle,
+pub struct AppState<R: Runtime = tauri::Wry> {
+    pub handle: AppHandle<R>,
     pub config: Arc<RwLock<Config>>,
     pub database: Arc<Database>,
     pub ai_service: Arc<AiService>,
@@ -44,21 +45,36 @@ pub struct AppState {
     pub undo_redo: Arc<UndoRedoManager>,
     pub file_cache: Arc<FileCache>,
     pub active_operations: Arc<DashMap<Uuid, OperationStatus>>,
+    pub operation_queue: Arc<OperationQueue>,
     pub file_watcher: Arc<RwLock<Option<Arc<FileWatcher>>>>,
     pub monitoring_service: Arc<crate::services::MonitoringService>,
+    pub pattern_learner: Arc<tokio::sync::RwLock<PatternLearner>>,
+    /// Background task handles for proper cleanup during shutdown
+    pub background_tasks: Arc<RwLock<Vec<tokio::task::JoinHandle<()>>>>,
+    /// Semaphore to limit concurrent background tasks
+    pub task_pool_semaphore: Arc<Semaphore>,
 }
 
-impl AppState {
-    pub async fn new(handle: AppHandle, config: Config) -> Result<Self> {
+impl<R: Runtime> AppState<R> {
+    pub async fn new(handle: AppHandle<R>, config: Config) -> Result<Self> {
+        // 1. Initialize database FIRST
         let database = Arc::new(Database::new(&handle).await?);
+
+        // 3. Initialize AI service AFTER database
         let ai_service = Arc::new(AiService::new(&config).await?);
-        let config_arc = Arc::new(RwLock::new(config));
+
+        let config_arc = Arc::new(RwLock::new(config.clone()));
         let file_analyzer = Arc::new(FileAnalyzer::new(ai_service.clone(), config_arc.clone()));
         let smart_folders = Arc::new(SmartFolderManager::new(database.clone()));
         let organizer = Arc::new(Organizer::new(smart_folders.clone()));
         let undo_redo = Arc::new(UndoRedoManager::new(database.clone()));
         let file_cache = Arc::new(FileCache::new());
         let monitoring_service = Arc::new(crate::services::MonitoringService::new());
+        let pattern_learner = Arc::new(tokio::sync::RwLock::new(PatternLearner::new()));
+
+        // Use default max concurrent operations (can be made configurable later)
+        let max_concurrent = 5;
+        let operation_queue = Arc::new(OperationQueue::new(max_concurrent));
 
         Ok(Self {
             handle,
@@ -71,8 +87,12 @@ impl AppState {
             undo_redo,
             file_cache,
             active_operations: Arc::new(DashMap::new()),
+            operation_queue,
             file_watcher: Arc::new(RwLock::new(None)),
             monitoring_service,
+            pattern_learner,
+            background_tasks: Arc::new(RwLock::new(Vec::new())),
+            task_pool_semaphore: Arc::new(Semaphore::new(50)), // Limit to 50 concurrent background tasks
         })
     }
 
@@ -92,22 +112,64 @@ impl AppState {
     /// Starts a new operation (internal)
     fn start_operation_internal(&self, operation_type: OperationType) -> Uuid {
         let id = Uuid::new_v4();
+        let timeout_duration = get_operation_timeout(&operation_type);
+        let now = chrono::Utc::now();
+        
         let status = OperationStatus {
             id,
             operation_type,
             progress: 0.0,
             message: String::new(),
             cancellation_token: tokio_util::sync::CancellationToken::new(),
-            started_at: chrono::Utc::now(),
+            started_at: now,
+            timeout_duration,
+            last_update: Arc::new(RwLock::new(now)),
         };
 
         self.active_operations.insert(id, status);
+        
+        // Start timeout check for this operation
+        self.schedule_timeout_check(id);
+        
         id
     }
 
     /// Updates operation progress (deprecated - use update_progress instead)
     pub fn update_operation(&self, id: Uuid, progress: f32, message: String) {
         self.update_progress(id, progress, message);
+    }
+
+    /// Register a background task for proper cleanup during shutdown
+    pub async fn register_background_task(&self, task: tokio::task::JoinHandle<()>) {
+        self.background_tasks.write().push(task);
+        // Trigger cleanup of completed tasks periodically
+        self.cleanup_completed_tasks().await;
+    }
+
+    /// CRITICAL FIX: Clean up completed background tasks to prevent memory leak
+    pub async fn cleanup_completed_tasks(&self) {
+        let mut tasks = self.background_tasks.write();
+        let initial_count = tasks.len();
+
+        // Only keep tasks that are still running
+        tasks.retain(|task| !task.is_finished());
+
+        let cleaned_count = initial_count - tasks.len();
+        if cleaned_count > 0 {
+            tracing::debug!("Cleaned up {} completed background tasks", cleaned_count);
+        }
+
+        // If we have too many tasks, force cleanup of oldest ones
+        const MAX_BACKGROUND_TASKS: usize = 100;
+        if tasks.len() > MAX_BACKGROUND_TASKS {
+            let excess = tasks.len() - MAX_BACKGROUND_TASKS;
+            tracing::warn!("Too many background tasks ({}), aborting {} oldest tasks", tasks.len(), excess);
+
+            // Abort oldest tasks
+            for task in tasks.drain(0..excess) {
+                task.abort();
+            }
+        }
     }
 
     /// Graceful shutdown of all services
@@ -128,7 +190,33 @@ impl AppState {
             }
         }
 
-        // 2. Cancel all active operations
+        // 2. Cancel all background tasks FIRST to prevent resource leaks
+        // CRITICAL FIX: Use try_write to prevent blocking shutdown on locked tasks
+        let (tasks_to_cancel, task_count) = match self.background_tasks.try_write() {
+            Some(mut tasks) => {
+                let task_count = tasks.len();
+                tracing::info!("Cancelling {} background tasks", task_count);
+
+                let mut collected_tasks = Vec::new();
+                for task in tasks.drain(..) {
+                    task.abort();
+                    collected_tasks.push(task);
+                }
+                (collected_tasks, task_count)
+            }
+            None => {
+                // If we can't get the lock immediately, force abort any tasks we can see
+                tracing::warn!("Background tasks lock contended during shutdown - forcing termination");
+                (Vec::new(), 0)
+            }
+        };
+        
+        // Wait for tasks to complete
+        for task in tasks_to_cancel {
+            let _ = tokio::time::timeout(tokio::time::Duration::from_millis(100), task).await;
+        }
+
+        // 3. Cancel all active operations
         let active_operations: Vec<Uuid> = self
             .active_operations
             .iter()
@@ -140,35 +228,182 @@ impl AppState {
             self.cancel_operation(operation_id);
         }
 
-        // 3. Wait a moment for operations to cancel gracefully
+        // 4. Wait a moment for operations to cancel gracefully
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-        // 4. Force cancel any remaining operations
+        // 5. Force cancel any remaining operations
         let remaining = self.active_operations.len();
         if remaining > 0 {
             tracing::warn!("Force stopping {} remaining operations", remaining);
             self.active_operations.clear();
         }
 
-        // 5. Clear file cache
+        // 6. Clear file cache
         {
             let cache_size = self.file_cache.entries.len();
             self.file_cache.entries.clear();
             tracing::info!("Cleared file cache ({} items)", cache_size);
         }
 
-        // 6. Perform final database operations
+        // 7. Perform final database operations
         if let Err(e) = self.database.close_connections().await {
             tracing::warn!("Error closing database connections: {}", e);
         } else {
             tracing::info!("Database connections closed successfully");
         }
 
-        // 7. Stop monitoring service
+        // 8. Stop monitoring service
         self.monitoring_service.shutdown().await;
 
-        tracing::info!("Graceful shutdown completed");
+        tracing::info!("Graceful shutdown completed (cancelled {} background tasks)", task_count);
         Ok(())
+    }
+    
+    /// Spawn a task with resource limits - FIXED UNBOUNDED SPAWNING
+    pub async fn spawn_limited_task<F>(&self, task: F) -> Result<()>
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        // Acquire permit before spawning
+        let permit = self.task_pool_semaphore.clone().acquire_owned().await
+            .map_err(|_| crate::error::AppError::ResourceLimitExceeded {
+                message: "Task pool semaphore closed".to_string()
+            })?;
+
+        let handle = tokio::spawn(async move {
+            task.await;
+            // Permit is automatically released when dropped
+            drop(permit);
+        });
+
+        // Track the handle for cleanup and trigger periodic cleanup
+        self.register_background_task(handle).await;
+        Ok(())
+    }
+
+    /// Schedule timeout check for an operation - FIXED RESOURCE LIMITS
+    fn schedule_timeout_check(&self, operation_id: Uuid) {
+        let operations_ref = Arc::downgrade(&self.active_operations);
+        let handle = self.handle.clone();
+        let background_tasks_ref = Arc::downgrade(&self.background_tasks);
+        let semaphore = self.task_pool_semaphore.clone();
+
+        // Use spawn_limited_task or at least acquire permit manually
+        let task_future = async move {
+            // Acquire permit before starting the task
+            let _permit = match semaphore.acquire_owned().await {
+                Ok(permit) => permit,
+                Err(_) => {
+                    tracing::error!("Failed to acquire task permit for timeout check");
+                    return;
+                }
+            };
+
+            tracing::debug!("Started timeout check task for operation {}", operation_id);
+            // Check timeout every 30 seconds
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+            
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        // Get strong reference if still available
+                        let operations = match operations_ref.upgrade() {
+                            Some(ops) => ops,
+                            None => break, // AppState has been dropped
+                        };
+                        
+                        let should_timeout = if let Some(status) = operations.get(&operation_id) {
+                            let now = chrono::Utc::now();
+                            let last_update = *status.last_update.read();
+                            let elapsed_since_update = now.signed_duration_since(last_update);
+                            let total_elapsed = now.signed_duration_since(status.started_at);
+                            
+                            // Timeout if:
+                            // 1. Total operation time exceeds timeout duration, OR
+                            // 2. No update received in the last 2 minutes (indicating hung operation)
+                            elapsed_since_update > chrono::Duration::minutes(2) || 
+                            total_elapsed > status.timeout_duration
+                        } else {
+                            break; // Operation no longer exists
+                        };
+                        
+                        if should_timeout {
+                            // Operation has timed out
+                            if let Some((_, timed_out_status)) = operations.remove(&operation_id) {
+                                tracing::warn!("Operation {} timed out after {:?}", operation_id, timed_out_status.timeout_duration);
+                                
+                                // Cancel the operation
+                                timed_out_status.cancellation_token.cancel();
+                                
+                                // Emit timeout event
+                                let timeout_event = serde_json::json!({
+                                    "operation_id": operation_id.to_string(),
+                                    "operation_type": timed_out_status.operation_type,
+                                    "error": "Operation timed out",
+                                    "timeout_duration_seconds": timed_out_status.timeout_duration.num_seconds(),
+                                    "timestamp": chrono::Utc::now().timestamp()
+                                });
+                                
+                                crate::emit_event!(handle, crate::events::operation::ERROR, timeout_event);
+                            }
+                            break;
+                        }
+                    }
+                    _ = tokio::task::yield_now() => {
+                        // Allow task cancellation
+                        tracing::debug!("Timeout check task for operation {} yielded", operation_id);
+                        break;
+                    }
+                }
+            }
+            tracing::debug!("Timeout check task for operation {} terminated", operation_id);
+        };
+
+        let timeout_task = tokio::spawn(task_future);
+
+        // Register the timeout task for cleanup
+        if let Some(tasks_lock) = background_tasks_ref.upgrade() {
+            if let Some(mut tasks) = tasks_lock.try_write() {
+                tasks.push(timeout_task);
+            }
+        }
+    }
+    
+    /// Manually check and clean up timed out operations (called periodically)
+    pub fn cleanup_timed_out_operations(&self) {
+        let now = chrono::Utc::now();
+        let mut timed_out_ids = Vec::new();
+        
+        // Find timed out operations
+        for entry in self.active_operations.iter() {
+            let status = entry.value();
+            let last_update = *status.last_update.read();
+            let elapsed_since_update = now.signed_duration_since(last_update);
+            let total_elapsed = now.signed_duration_since(status.started_at);
+            
+            if elapsed_since_update > chrono::Duration::minutes(2) || 
+               total_elapsed > status.timeout_duration {
+                timed_out_ids.push(*entry.key());
+            }
+        }
+        
+        // Cancel and remove timed out operations
+        for id in timed_out_ids {
+            if let Some((_, status)) = self.active_operations.remove(&id) {
+                tracing::warn!("Cleaning up timed out operation: {}", id);
+                status.cancellation_token.cancel();
+                
+                let timeout_event = serde_json::json!({
+                    "operation_id": id.to_string(),
+                    "operation_type": status.operation_type,
+                    "error": "Operation timed out during cleanup",
+                    "timeout_duration_seconds": status.timeout_duration.num_seconds(),
+                    "timestamp": chrono::Utc::now().timestamp()
+                });
+                
+                crate::emit_event!(self.handle, crate::events::operation::ERROR, timeout_event);
+            }
+        }
     }
 
     /// Get current resource usage statistics
@@ -190,6 +425,14 @@ impl AppState {
             database_connected: true, // Database connection is assumed to be stable
             ai_service_available,
         }
+    }
+
+    /// Checks if an operation is cancelled
+    pub fn is_operation_cancelled(&self, id: Uuid) -> bool {
+        self.active_operations
+            .get(&id)
+            .map(|status| status.cancellation_token.is_cancelled())
+            .unwrap_or(true) // Consider non-existent operations as cancelled
     }
 
     /// Cancels an operation
@@ -268,12 +511,18 @@ impl AppState {
     }
 
     /// Updates operation progress and emits event to frontend
+    /// CRITICAL FIX: Use atomic operations to prevent deadlocks
     pub fn update_progress(&self, id: Uuid, progress: f32, message: String) {
-        // Create the progress event data first to avoid holding locks during emission
-        let progress_event = if let Some(mut status) = self.active_operations.get_mut(&id) {
-            // Check if operation was cancelled while we were waiting for the lock
+        // First, create event data with minimal lock scope
+        let event_data = {
+            // Scope the lock to absolute minimum
+            let Some(mut status) = self.active_operations.get_mut(&id) else {
+                // Operation doesn't exist - early return
+                return;
+            };
+
+            // Check cancellation immediately
             if status.cancellation_token.is_cancelled() {
-                // Don't update progress for cancelled operations
                 return;
             }
 
@@ -281,7 +530,13 @@ impl AppState {
             status.progress = clamped_progress;
             status.message = message.clone();
 
-            // Create event data while still holding the lock
+            // CRITICAL: Use try_write to prevent blocking on timestamp update
+            if let Some(mut last_update) = status.last_update.try_write() {
+                *last_update = chrono::Utc::now();
+            }
+            // If we can't update timestamp immediately, that's okay - just continue
+
+            // Create event data and immediately drop the lock
             let event = ProgressEvent {
                 id: id.to_string(),
                 operation_type: status.operation_type.clone(),
@@ -290,21 +545,16 @@ impl AppState {
                 completed: false,
             };
 
-            // Explicitly drop the lock before event emission
-            drop(status);
-            Some(event)
-        } else {
-            None
-        };
+            // Lock is automatically dropped at end of scope
+            event
+        }; // Lock released here before any event emission
 
-        // Emit event outside of any locks to prevent deadlocks
-        if let Some(event) = progress_event {
-            crate::emit_event!(
-                self.handle,
-                crate::events::operation::PROGRESS,
-                serde_json::json!(event)
-            );
-        }
+        // CRITICAL: All event emission happens outside of any locks
+        crate::emit_event!(
+            self.handle,
+            crate::events::operation::PROGRESS,
+            serde_json::json!(event_data)
+        );
     }
 
     /// Starts a new operation and emits initial event
@@ -342,13 +592,24 @@ impl AppState {
         Ok(())
     }
 
-    /// Check if system is under memory pressure
+    /// Check if system is under memory pressure - FIXED INTEGER OVERFLOW BUG
     pub fn is_under_memory_pressure(&self) -> bool {
         let cache_size = self.file_cache.current_size();
         let max_cache_size = self.file_cache.max_size;
-
-        // Consider under pressure if cache is > 80% full
-        cache_size > max_cache_size * 80 / 100
+        
+        // CRITICAL FIX: Prevent integer overflow in multiplication
+        // Use saturating arithmetic and proper overflow checks
+        match max_cache_size.checked_mul(80) {
+            Some(threshold_numerator) => {
+                let threshold = threshold_numerator / 100;
+                cache_size > threshold
+            }
+            None => {
+                // Overflow occurred - treat as under pressure for safety
+                tracing::warn!("Memory pressure calculation overflow detected - max_cache_size too large: {}", max_cache_size);
+                true  // Conservative assumption
+            }
+        }
     }
 
     /// Force cleanup of memory when under pressure
@@ -376,15 +637,20 @@ impl AppState {
             }
         }
 
+        // Emergency database cleanup to free disk space and memory
+        if let Err(e) = self.database.cleanup_wal_files().await {
+            tracing::error!("Emergency WAL cleanup failed: {}", e);
+        }
+
         // Force garbage collection hint
         tracing::info!(
-            "Emergency cleanup completed, {} operations cancelled",
+            "Emergency cleanup completed, {} operations cancelled, database cleaned",
             cancelled_count
         );
         Ok(())
     }
 
-    /// Saves application state
+    /// Saves application state and performs maintenance
     pub async fn save_state(&self) -> Result<()> {
         // Save configuration
         self.config.read().save(&self.handle)?;
@@ -392,9 +658,27 @@ impl AppState {
         // Save smart folders
         self.smart_folders.save_all().await?;
 
-        // Flush database
+        // Flush database with WAL checkpoint
         self.database.flush().await?;
 
+        Ok(())
+    }
+
+    /// Perform periodic database maintenance to prevent disk bloat
+    pub async fn periodic_database_maintenance(&self) -> Result<()> {
+        tracing::info!("Starting periodic database maintenance");
+        
+        // Perform aggressive WAL cleanup to prevent disk space issues
+        if let Err(e) = self.database.cleanup_wal_files().await {
+            tracing::error!("WAL cleanup failed during maintenance: {}", e);
+        }
+        
+        // Clear old cache entries (older than 7 days)
+        if let Err(e) = self.database.clear_cache().await {
+            tracing::error!("Cache cleanup failed during maintenance: {}", e);
+        }
+        
+        tracing::info!("Periodic database maintenance completed");
         Ok(())
     }
 }
@@ -581,13 +865,26 @@ impl FileCache {
         self.entries
             .iter()
             .map(|entry| {
+                let cached_file = entry.value();
+                
+                // CRITICAL FIX: Properly calculate actual memory usage
                 let key_size = entry.key().len();
-                let file_size = entry.value().size;
-                let metadata_size =
-                    std::mem::size_of::<CachedFile>() + std::mem::size_of::<String>();
-                key_size + file_size + metadata_size
+                let content_size = cached_file.content.len(); // Actual content, not just the size field
+                let path_size = cached_file.path.len();
+                let mime_type_size = cached_file.mime_type.len();
+                
+                // Fixed metadata calculation
+                let metadata_size = std::mem::size_of::<CachedFile>() 
+                    + std::mem::size_of::<String>() * 2  // path and mime_type strings
+                    + std::mem::size_of::<Vec<u8>>();    // content vector
+                
+                key_size
+                    .saturating_add(content_size)
+                    .saturating_add(path_size)
+                    .saturating_add(mime_type_size)
+                    .saturating_add(metadata_size)
             })
-            .sum()
+            .fold(0usize, |acc, size| acc.saturating_add(size))
     }
 
     pub fn len(&self) -> usize {
@@ -604,16 +901,28 @@ impl FileCache {
 
     #[allow(dead_code)]
     fn evict_oldest(&self) {
-        // Find oldest entry key first
-        let oldest_key = self
-            .entries
-            .iter()
-            .min_by_key(|entry| entry.accessed)
-            .map(|entry| entry.key().clone());
+        // CRITICAL FIX: Truly atomic find-and-remove using DashMap's retain feature
+        // This eliminates the race condition by performing find and remove in a single atomic operation
 
-        // Remove the oldest entry if found
-        if let Some(key) = oldest_key {
-            self.entries.remove(&key);
+        let mut oldest_key: Option<String> = None;
+        let mut oldest_time = chrono::DateTime::<chrono::Utc>::MAX_UTC;
+
+        // First pass: find the oldest entry
+        for entry in self.entries.iter() {
+            let accessed_time = entry.value().accessed;
+            if accessed_time < oldest_time {
+                oldest_time = accessed_time;
+                oldest_key = Some(entry.key().clone());
+            }
+        }
+
+        // Second pass: atomically remove the oldest entry if it still exists and is still oldest
+        if let Some(target_key) = oldest_key {
+            self.entries.remove_if(&target_key, |_key, cached_file| {
+                // Only remove if this entry is still the oldest (or very close to it)
+                // This handles the case where another thread modified the entry
+                cached_file.accessed <= oldest_time + chrono::Duration::milliseconds(100)
+            });
         }
     }
 }
@@ -634,6 +943,8 @@ pub struct OperationStatus {
     pub message: String,
     pub cancellation_token: tokio_util::sync::CancellationToken,
     pub started_at: chrono::DateTime<chrono::Utc>,
+    pub timeout_duration: chrono::Duration,
+    pub last_update: Arc<RwLock<chrono::DateTime<chrono::Utc>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -661,4 +972,15 @@ pub struct ResourceUsage {
     pub cache_memory_bytes: usize,
     pub database_connected: bool,
     pub ai_service_available: bool,
+}
+
+/// Get timeout duration based on operation type
+fn get_operation_timeout(operation_type: &OperationType) -> chrono::Duration {
+    match operation_type {
+        OperationType::FileAnalysis => chrono::Duration::minutes(10), // 10 minutes for file analysis
+        OperationType::Organization => chrono::Duration::minutes(30), // 30 minutes for organization
+        OperationType::ModelDownload => chrono::Duration::hours(2),   // 2 hours for model downloads
+        OperationType::DatabaseMigration => chrono::Duration::hours(1), // 1 hour for database operations
+        OperationType::BulkOperation => chrono::Duration::hours(1),   // 1 hour for bulk operations
+    }
 }

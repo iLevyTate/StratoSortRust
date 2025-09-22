@@ -1,7 +1,6 @@
 use std::fs;
-use std::path::PathBuf;
 use stratosort::error::AppError;
-use stratosort::utils::security::validate_and_sanitize_path_legacy;
+use stratosort::utils::security::validate_path;
 use tauri::test::mock_app;
 use tempfile::tempdir;
 
@@ -19,12 +18,12 @@ fn test_toctou_race_condition_prevention() {
     let legit_path_str = legit_path.to_string_lossy().to_string();
 
     // First validation should pass
-    let result = validate_and_sanitize_path_legacy(&legit_path_str, &app);
+    let result = validate_path(&legit_path_str, &app.handle());
     assert!(result.is_ok(), "Legitimate path should validate");
 
     // Test multiple rapid validations (simulate race condition)
     for i in 0..100 {
-        let result = validate_and_sanitize_path_legacy(&legit_path_str, &app);
+        let result = validate_path(&legit_path_str, &app.handle());
         if let Ok(path) = result {
             // Ensure the path is still within expected bounds
             assert!(
@@ -56,7 +55,7 @@ fn test_symlink_attack_prevention() {
     ];
 
     for pattern in symlink_patterns {
-        let result = validate_and_sanitize_path_legacy(&pattern, &app);
+        let result = validate_path(&pattern, &app.handle());
 
         match result {
             Err(AppError::SecurityError { message }) => {
@@ -114,7 +113,7 @@ fn test_unicode_normalization_attacks() {
     ];
 
     for (expected, attack) in unicode_attacks {
-        let result = validate_and_sanitize_path_legacy(attack, &app);
+        let result = validate_path(attack, &app.handle());
 
         match result {
             Ok(path) => {
@@ -180,8 +179,8 @@ fn test_path_canonicalization_bypass() {
         "../../../etc/passwd\0.txt",
         "legitimate.txt\0../../../etc/passwd",
         // Long path attacks
-        &"../".repeat(100) + "etc/passwd",
-        &"a/".repeat(1000) + "../etc/passwd",
+        &format!("{}{}", "../".repeat(100), "etc/passwd"),
+        &format!("{}{}", "a/".repeat(1000), "../etc/passwd"),
         // Case variation (Windows)
         "../../../ETC/PASSWD",
         "../../../Etc/Passwd",
@@ -193,7 +192,7 @@ fn test_path_canonicalization_bypass() {
 
     for bypass_attempt in canonicalization_bypasses {
         let test_path = format!("{}/{}", temp_dir.path().display(), bypass_attempt);
-        let result = validate_and_sanitize_path_legacy(&test_path, &app);
+        let result = validate_path(&test_path, &app.handle());
 
         match result {
             Err(AppError::SecurityError { message }) => {
@@ -267,7 +266,7 @@ fn test_directory_traversal_with_allowed_paths() {
     ];
 
     for (test_path, should_be_allowed) in test_cases {
-        let result = validate_and_sanitize_path_legacy(&test_path, &app);
+        let result = validate_path(&test_path, &app.handle());
 
         if should_be_allowed {
             match result {
@@ -313,7 +312,7 @@ fn test_file_extension_confusion_attacks() {
         "image.jpg.bat",
         // Hidden extensions
         "document.txt\u{200e}.exe", // Right-to-left mark before .exe
-        "file.txt‮exe",              // Right-to-left override
+        "file.txt\u{202e}exe",              // Right-to-left override
         // Space confusion
         "file.txt .exe",
         "file.txt\u{a0}.exe", // Non-breaking space
@@ -326,7 +325,7 @@ fn test_file_extension_confusion_attacks() {
     ];
 
     for attack_filename in extension_attacks {
-        let result = validate_and_sanitize_path_legacy(attack_filename, &app);
+        let result = validate_path(attack_filename, &app.handle());
 
         match result {
             Ok(sanitized_path) => {

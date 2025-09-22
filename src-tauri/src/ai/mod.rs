@@ -1,6 +1,9 @@
+pub mod circuit_breaker;
 pub mod connection;
 pub mod embeddings;
+pub mod llm_validator;
 pub mod ollama;
+pub mod streaming;
 
 #[cfg(test)]
 mod tests;
@@ -10,12 +13,16 @@ use async_trait::async_trait;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+use llm_validator::LlmOutputValidator;
 
 /// Main AI service that manages different providers
 pub struct AiService {
     config: Arc<RwLock<Config>>,
     provider: Arc<RwLock<AiProvider>>,
     ollama_client: Arc<RwLock<Option<Arc<ollama::OllamaClient>>>>,
+    circuit_breaker: Arc<CircuitBreaker>,
+    validator: LlmOutputValidator,
 }
 
 impl AiService {
@@ -59,10 +66,15 @@ impl AiService {
             }
         };
 
+        let circuit_breaker = Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default()));
+        let validator = LlmOutputValidator::new();
+
         Ok(Self {
             config: Arc::new(RwLock::new(config.clone())),
             provider: Arc::new(RwLock::new(final_provider)),
             ollama_client: Arc::new(RwLock::new(ollama_client.map(Arc::new))),
+            circuit_breaker,
+            validator,
         })
     }
 
@@ -131,6 +143,45 @@ impl AiService {
         Ok(())
     }
 
+    /// Validate and sanitize LLM analysis output for security
+    fn validate_analysis_output(&self, mut analysis: FileAnalysis, path: &str) -> Result<FileAnalysis> {
+        // Sanitize input content that might be reflected in the analysis
+        let sanitized_path = self.validator.sanitize_prompt_input(path);
+        analysis.path = sanitized_path;
+
+        // Validate and sanitize category
+        analysis.category = self.validator.validate_category(&analysis.category)
+            .unwrap_or_else(|e| {
+                tracing::warn!("Category validation failed: {}, using 'Other'", e);
+                "Other".to_string()
+            });
+
+        // Validate and sanitize tags
+        analysis.tags = self.validator.validate_tags(&analysis.tags);
+
+        // Validate and sanitize summary
+        analysis.summary = self.validator.validate_summary(&analysis.summary)
+            .unwrap_or_else(|e| {
+                tracing::warn!("Summary validation failed: {}, using default", e);
+                "Content analysis unavailable".to_string()
+            });
+
+        // Validate confidence score
+        analysis.confidence = self.validator.validate_confidence(analysis.confidence);
+
+        // Sanitize extracted text if present
+        if let Some(ref text) = analysis.extracted_text {
+            let sanitized = self.validator.sanitize_prompt_input(text);
+            if sanitized.len() > 5000 {
+                analysis.extracted_text = Some(format!("{}...[truncated]", &sanitized[..5000]));
+            } else {
+                analysis.extracted_text = Some(sanitized);
+            }
+        }
+
+        Ok(analysis)
+    }
+
     /// Analyzes file content using AI
     pub async fn analyze_file(&self, content: &str, file_type: &str) -> Result<FileAnalysis> {
         self.analyze_file_with_path(content, file_type, "").await
@@ -149,9 +200,33 @@ impl AiService {
             AiProvider::Ollama => {
                 let client_opt = self.ollama_client.read().clone();
                 if let Some(client) = client_opt {
-                    let mut analysis = client.analyze_file(content, file_type).await?;
-                    analysis.path = path.to_string();
-                    Ok(analysis)
+                    // Use circuit breaker for AI calls
+                    match self.circuit_breaker.call(|| {
+                        let client = client.clone();
+                        let content = content.to_string();
+                        let file_type = file_type.to_string();
+                        async move {
+                            client.analyze_file(&content, &file_type).await
+                        }
+                    }).await {
+                        Ok(mut analysis) => {
+                            // Validate and sanitize LLM output
+                            analysis = self.validate_analysis_output(analysis, path)?;
+                            Ok(analysis)
+                        }
+                        Err(circuit_breaker::CircuitBreakerError::CircuitOpen) => {
+                            tracing::warn!("Circuit breaker open, falling back to local analysis");
+                            self.fallback_analysis_with_path(content, file_type, path)
+                        }
+                        Err(circuit_breaker::CircuitBreakerError::Timeout) => {
+                            tracing::warn!("AI service timeout, falling back to local analysis");
+                            self.fallback_analysis_with_path(content, file_type, path)
+                        }
+                        Err(circuit_breaker::CircuitBreakerError::OperationFailed(e)) => {
+                            tracing::warn!("AI service failed: {}, falling back to local analysis", e);
+                            self.fallback_analysis_with_path(content, file_type, path)
+                        }
+                    }
                 } else {
                     self.fallback_analysis_with_path(content, file_type, path)
                 }
@@ -187,31 +262,53 @@ impl AiService {
             AiProvider::Ollama => {
                 let client_opt = self.ollama_client.read().clone();
                 if let Some(client) = client_opt {
-                    // Use Ollama client's embeddings first
-                    match client.generate_embeddings(text).await {
+                    // Use circuit breaker for embedding generation
+                    match self.circuit_breaker.call(|| {
+                        let client = client.clone();
+                        let text = text.to_string();
+                        async move {
+                            client.generate_embeddings(&text).await
+                        }
+                    }).await {
                         Ok(embeddings) => Ok(embeddings),
-                        Err(e) => {
-                            tracing::warn!(
-                                "Ollama client embedding failed: {}. Trying direct API.",
-                                e
-                            );
-                            // Fallback to direct API call
-                            embeddings::generate_embeddings_with_ollama(
-                                text,
-                                &config.ollama_host,
-                                "nomic-embed-text", // Use production embedding model
-                            )
-                            .await
+                        Err(_) => {
+                            tracing::warn!("Ollama client embedding failed, trying direct API");
+                            // Fallback to direct API call with circuit breaker
+                            match self.circuit_breaker.call(|| {
+                                let config = config.clone();
+                                let text = text.to_string();
+                                async move {
+                                    embeddings::generate_embeddings_with_ollama(
+                                        &text,
+                                        &config.ollama_host,
+                                        "nomic-embed-text",
+                                    ).await
+                                }
+                            }).await {
+                                Ok(embeddings) => Ok(embeddings),
+                                Err(_) => {
+                                    tracing::warn!("All embedding methods failed, using simple fallback");
+                                    embeddings::generate_simple_embeddings(text)
+                                }
+                            }
                         }
                     }
                 } else {
-                    // Try direct API call if client not available
-                    embeddings::generate_embeddings_with_ollama(
-                        text,
-                        &config.ollama_host,
-                        "nomic-embed-text",
-                    )
-                    .await
+                    // Try direct API call if client not available, with circuit breaker
+                    match self.circuit_breaker.call(|| {
+                        let config = config.clone();
+                        let text = text.to_string();
+                        async move {
+                            embeddings::generate_embeddings_with_ollama(
+                                &text,
+                                &config.ollama_host,
+                                "nomic-embed-text",
+                            ).await
+                        }
+                    }).await {
+                        Ok(embeddings) => Ok(embeddings),
+                        Err(_) => embeddings::generate_simple_embeddings(text),
+                    }
                 }
             }
             AiProvider::Fallback => embeddings::generate_simple_embeddings(text),
@@ -392,12 +489,26 @@ impl AiService {
             format!("File type: {}", file_type)
         };
 
+        // Calculate confidence based on analysis quality
+        let confidence = if !tags.is_empty() && !summary.is_empty() {
+            // Higher confidence if we have good tag analysis and meaningful summary
+            if tags.len() >= 3 && summary.len() > 50 {
+                0.75
+            } else if tags.len() >= 2 && summary.len() > 20 {
+                0.65
+            } else {
+                0.55
+            }
+        } else {
+            0.4 // Lower confidence for basic fallback analysis
+        };
+
         Ok(FileAnalysis {
             path: path.to_string(),
             category: category.to_string(),
             tags,
             summary,
-            confidence: 0.5,
+            confidence,
             extracted_text: None,
             detected_language: None,
             metadata: serde_json::json!({}),
@@ -604,7 +715,7 @@ impl AiService {
     pub async fn suggest_organization(
         &self,
         files: Vec<String>,
-        smart_folders: Vec<crate::commands::organization::SmartFolder>,
+        smart_folders: Vec<crate::core::smart_folders::SmartFolder>,
     ) -> Result<Vec<OrganizationSuggestion>> {
         let provider = self.provider.read().clone();
 
@@ -625,7 +736,7 @@ impl AiService {
     fn fallback_suggest_organization(
         &self,
         files: Vec<String>,
-        smart_folders: Vec<crate::commands::organization::SmartFolder>,
+        smart_folders: Vec<crate::core::smart_folders::SmartFolder>,
     ) -> Result<Vec<OrganizationSuggestion>> {
         let mut suggestions = Vec::new();
 
@@ -744,6 +855,6 @@ pub trait AiEngine: Send + Sync {
     async fn suggest_organization(
         &self,
         files: Vec<String>,
-        smart_folders: Vec<crate::commands::organization::SmartFolder>,
+        smart_folders: Vec<crate::core::smart_folders::SmartFolder>,
     ) -> Result<Vec<OrganizationSuggestion>>;
 }

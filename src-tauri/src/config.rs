@@ -1,7 +1,7 @@
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, Runtime};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -251,7 +251,7 @@ impl Config {
     }
 
     /// Save configuration to disk
-    pub fn save(&self, handle: &AppHandle) -> Result<()> {
+    pub fn save<R: Runtime>(&self, handle: &AppHandle<R>) -> Result<()> {
         let config_path = Self::config_path(handle)?;
 
         // Ensure directory exists
@@ -507,7 +507,7 @@ impl Config {
     }
 
     /// Get configuration file path
-    fn config_path(handle: &AppHandle) -> Result<PathBuf> {
+    fn config_path<R: Runtime>(handle: &AppHandle<R>) -> Result<PathBuf> {
         let app_dir =
             handle
                 .path()

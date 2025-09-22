@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use stratosort::ai::FileAnalysis;
 use stratosort::storage::Database;
 use tempfile::tempdir;
 
@@ -8,10 +8,7 @@ async fn test_sql_injection_in_file_queries() {
     let db_path = temp_dir.path().join("test.db");
 
     // Create test database
-    let database_url = format!("sqlite:{}", db_path.display());
-    let pool = SqlitePool::connect(&database_url).await.unwrap();
-
-    let db = Database::new(pool).await.unwrap();
+    let db = Database::new_test(&db_path).await.unwrap();
 
     // SQL injection attempts in file path queries
     let injection_attempts = vec![
@@ -59,21 +56,21 @@ async fn test_sql_injection_in_file_queries() {
 
     for injection in injection_attempts {
         // Test file search with injection
-        let result = db.search_files_by_content(injection, 10).await;
+        let result = db.search_by_tags(&[injection.to_string()]).await;
 
         match result {
             Ok(results) => {
                 // Even if query succeeds, it should not return malicious results
                 assert!(results.len() <= 10, "Results should be limited");
-                for result in results {
+                for result in &results {
                     // Ensure no system information is leaked
                     assert!(
-                        !result.path.contains("sqlite_master"),
+                        !result.contains("sqlite_master"),
                         "Should not return system table information for injection: {}",
                         injection
                     );
                     assert!(
-                        !result.content.contains("version()"),
+                        !result.contains("version()"),
                         "Should not return system function results for injection: {}",
                         injection
                     );
@@ -94,9 +91,17 @@ async fn test_sql_injection_in_file_queries() {
         }
 
         // Test file insertion with injection
-        let result = db
-            .store_file_analysis(injection, "test content", "text/plain", None)
-            .await;
+        let analysis = FileAnalysis {
+            path: injection.to_string(),
+            category: "test".to_string(),
+            tags: vec!["test".to_string()],
+            summary: "test content".to_string(),
+            confidence: 0.9,
+            extracted_text: None,
+            detected_language: None,
+            metadata: serde_json::Value::Null,
+        };
+        let result = db.save_analysis(&analysis).await;
 
         match result {
             Ok(_) => {
@@ -106,9 +111,9 @@ async fn test_sql_injection_in_file_queries() {
                 );
 
                 // Verify the malicious content didn't execute
-                let files = db.get_all_files().await.unwrap_or_default();
+                let files = db.get_recent_analyses(1000).await.unwrap_or_default();
                 assert!(
-                    !files.is_empty() || files.len() < 1000,
+                    files.len() < 1000,
                     "Database should not be corrupted by injection"
                 );
             }
@@ -127,17 +132,32 @@ async fn test_sql_injection_in_search_operations() {
     let temp_dir = tempdir().unwrap();
     let db_path = temp_dir.path().join("test.db");
 
-    let database_url = format!("sqlite:{}", db_path.display());
-    let pool = SqlitePool::connect(&database_url).await.unwrap();
-    let db = Database::new(pool).await.unwrap();
+    let db = Database::new_test(&db_path).await.unwrap();
 
     // Insert some test data first
-    let _ = db
-        .store_file_analysis("test1.txt", "normal content", "text/plain", None)
-        .await;
-    let _ = db
-        .store_file_analysis("test2.txt", "another file", "text/plain", None)
-        .await;
+    let analysis1 = FileAnalysis {
+        path: "test1.txt".to_string(),
+        category: "test".to_string(),
+        tags: vec!["normal".to_string(), "content".to_string()],
+        summary: "normal content".to_string(),
+        confidence: 0.9,
+        extracted_text: None,
+        detected_language: None,
+        metadata: serde_json::Value::Null,
+    };
+    let _ = db.save_analysis(&analysis1).await;
+
+    let analysis2 = FileAnalysis {
+        path: "test2.txt".to_string(),
+        category: "test".to_string(),
+        tags: vec!["another".to_string(), "file".to_string()],
+        summary: "another file".to_string(),
+        confidence: 0.9,
+        extracted_text: None,
+        detected_language: None,
+        metadata: serde_json::Value::Null,
+    };
+    let _ = db.save_analysis(&analysis2).await;
 
     let search_injections = vec![
         // Content-based injection attempts
@@ -158,7 +178,7 @@ async fn test_sql_injection_in_search_operations() {
 
     for injection in search_injections {
         // Test semantic search with injection
-        let result = db.search_files_by_content(injection, 5).await;
+        let result = db.search_by_tags(&[injection.to_string()]).await;
 
         match result {
             Ok(results) => {
@@ -168,24 +188,20 @@ async fn test_sql_injection_in_search_operations() {
                 for result in &results {
                     // Ensure no sensitive system information is returned
                     assert!(
-                        !result.path.contains("sqlite_"),
+                        !result.contains("sqlite_"),
                         "Should not return system tables"
                     );
                     assert!(
-                        !result.path.contains("/etc/"),
+                        !result.contains("/etc/"),
                         "Should not return system files"
                     );
                     assert!(
-                        !result.content.contains("password"),
+                        !result.contains("password"),
                         "Should not return sensitive data"
                     );
 
                     // Ensure injection didn't modify the results unexpectedly
-                    assert!(result.path.len() < 500, "Path length should be reasonable");
-                    assert!(
-                        result.content.len() < 10000,
-                        "Content length should be reasonable"
-                    );
+                    assert!(result.len() < 500, "Path length should be reasonable");
                 }
 
                 println!(
@@ -200,26 +216,8 @@ async fn test_sql_injection_in_search_operations() {
         }
 
         // Test vector search with injection (if available)
-        if let Ok(embedding) = vec![0.1f32; 384] {
-            // Mock embedding
-            let result = db.search_similar_files(&embedding, 5).await;
-
-            match result {
-                Ok(results) => {
-                    assert!(results.len() <= 5, "Vector search should respect limit");
-                    println!(
-                        "Vector search with injection context succeeded with {} results",
-                        results.len()
-                    );
-                }
-                Err(e) => {
-                    println!(
-                        "Vector search with injection context failed (expected): {:?}",
-                        e
-                    );
-                }
-            }
-        }
+        // Note: Direct vector search not available through Database API
+        // This would require VectorExtension which needs pool access
     }
 }
 
@@ -228,9 +226,7 @@ async fn test_prepared_statement_protection() {
     let temp_dir = tempdir().unwrap();
     let db_path = temp_dir.path().join("test.db");
 
-    let database_url = format!("sqlite:{}", db_path.display());
-    let pool = SqlitePool::connect(&database_url).await.unwrap();
-    let db = Database::new(pool).await.unwrap();
+    let db = Database::new_test(&db_path).await.unwrap();
 
     // Test that prepared statements properly escape parameters
     let malicious_inputs = vec![
@@ -252,40 +248,38 @@ async fn test_prepared_statement_protection() {
 
     for (path, content) in malicious_inputs {
         // Store file with malicious content
-        let result = db
-            .store_file_analysis(path, content, "text/plain", None)
-            .await;
+        let analysis = FileAnalysis {
+            path: path.to_string(),
+            category: "test".to_string(),
+            tags: vec!["test".to_string()],
+            summary: content.to_string(),
+            confidence: 0.9,
+            extracted_text: None,
+            detected_language: None,
+            metadata: serde_json::Value::Null,
+        };
+        let result = db.save_analysis(&analysis).await;
 
         match result {
-            Ok(file_id) => {
+            Ok(()) => {
                 println!(
-                    "Stored file '{}' with ID {} (content treated as literal)",
-                    path, file_id
+                    "Stored file '{}' (content treated as literal)",
+                    path
                 );
 
                 // Retrieve the file and verify content is exactly what we stored
-                let retrieved_files = db
-                    .search_files_by_content(path, 1)
-                    .await
-                    .unwrap_or_default();
-
-                if let Some(file) = retrieved_files.first() {
-                    assert_eq!(file.path, path, "Path should be stored literally");
+                if let Ok(Some(retrieved)) = db.get_analysis(path).await {
+                    assert_eq!(retrieved.path, path, "Path should be stored literally");
                     // Content might be truncated or processed, but should not cause SQL injection
                     assert!(
-                        !file.content.contains("DROP TABLE"),
+                        !retrieved.summary.contains("DROP TABLE"),
                         "Stored content should not execute SQL commands"
                     );
                 }
 
                 // Try to retrieve by exact path
-                if let Ok(files) = db.get_all_files().await {
-                    let matching_files: Vec<_> =
-                        files.into_iter().filter(|f| f.path == path).collect();
-
-                    if !matching_files.is_empty() {
-                        println!("Successfully retrieved file with path: '{}'", path);
-                    }
+                if let Ok(Some(_)) = db.get_analysis(path).await {
+                    println!("Successfully retrieved file with path: '{}'", path);
                 }
             }
             Err(e) => {
@@ -296,22 +290,19 @@ async fn test_prepared_statement_protection() {
     }
 
     // Verify database integrity after all operations
-    let all_files = db.get_all_files().await.unwrap_or_default();
+    let all_files = db.get_recent_analyses(1000).await.unwrap_or_default();
     println!(
         "Database contains {} files after injection tests",
         all_files.len()
     );
 
     // Ensure no system tables were affected
-    let table_check =
-        sqlx::query("SELECT name FROM sqlite_master WHERE type='table' AND name='files'")
-            .fetch_optional(&db.pool)
-            .await;
+    // Note: Cannot access pool directly, use health_check instead
+    let health_result = db.health_check().await;
 
-    match table_check {
-        Ok(Some(_)) => println!("Files table intact after injection tests"),
-        Ok(None) => panic!("Files table was destroyed by injection!"),
-        Err(e) => println!("Could not verify table integrity: {:?}", e),
+    match health_result {
+        Ok(_) => println!("Database intact after injection tests"),
+        Err(e) => panic!("Database was corrupted by injection: {:?}", e),
     }
 }
 
@@ -320,14 +311,20 @@ async fn test_blind_sql_injection_detection() {
     let temp_dir = tempdir().unwrap();
     let db_path = temp_dir.path().join("test.db");
 
-    let database_url = format!("sqlite:{}", db_path.display());
-    let pool = SqlitePool::connect(&database_url).await.unwrap();
-    let db = Database::new(pool).await.unwrap();
+    let db = Database::new_test(&db_path).await.unwrap();
 
     // Insert test data
-    let _ = db
-        .store_file_analysis("sensitive.txt", "confidential data", "text/plain", None)
-        .await;
+    let analysis = FileAnalysis {
+        path: "sensitive.txt".to_string(),
+        category: "test".to_string(),
+        tags: vec!["confidential".to_string()],
+        summary: "confidential data".to_string(),
+        confidence: 0.9,
+        extracted_text: None,
+        detected_language: None,
+        metadata: serde_json::Value::Null,
+    };
+    let _ = db.save_analysis(&analysis).await;
 
     // Boolean-based blind injection payloads
     let blind_injections = vec![
@@ -372,7 +369,7 @@ async fn test_blind_sql_injection_detection() {
     for (injection, attack_type) in blind_injections {
         let start_time = std::time::Instant::now();
 
-        let result = db.search_files_by_content(injection, 1).await;
+        let result = db.search_by_tags(&[injection.to_string()]).await;
 
         let elapsed = start_time.elapsed();
 
@@ -389,13 +386,13 @@ async fn test_blind_sql_injection_detection() {
                 }
 
                 // Verify no sensitive information is leaked through result count or content
-                for result in results {
+                for result in &results {
                     assert!(
-                        !result.path.contains("sqlite_master"),
+                        !result.contains("sqlite_master"),
                         "Should not reveal system table information"
                     );
                     assert!(
-                        !result.content.contains("confidential"),
+                        !result.contains("confidential"),
                         "Should not leak sensitive data through blind injection"
                     );
                 }
@@ -419,9 +416,7 @@ async fn test_sql_injection_in_batch_operations() {
     let temp_dir = tempdir().unwrap();
     let db_path = temp_dir.path().join("test.db");
 
-    let database_url = format!("sqlite:{}", db_path.display());
-    let pool = SqlitePool::connect(&database_url).await.unwrap();
-    let db = Database::new(pool).await.unwrap();
+    let db = Database::new_test(&db_path).await.unwrap();
 
     // Test batch operations with mixed legitimate and malicious data
     let batch_data = vec![
@@ -437,9 +432,17 @@ async fn test_sql_injection_in_batch_operations() {
     let mut rejected_inserts = 0;
 
     for (path, content) in batch_data {
-        match db
-            .store_file_analysis(path, content, "text/plain", None)
-            .await
+        let analysis = FileAnalysis {
+            path: path.to_string(),
+            category: "test".to_string(),
+            tags: vec!["test".to_string()],
+            summary: content.to_string(),
+            confidence: 0.9,
+            extracted_text: None,
+            detected_language: None,
+            metadata: serde_json::Value::Null,
+        };
+        match db.save_analysis(&analysis).await
         {
             Ok(_) => {
                 successful_inserts += 1;
@@ -458,35 +461,20 @@ async fn test_sql_injection_in_batch_operations() {
     );
 
     // Verify database integrity after batch operations
-    let all_files = db.get_all_files().await.unwrap_or_default();
+    let all_files = db.get_recent_analyses(1000).await.unwrap_or_default();
 
     // Check that malicious SQL didn't execute
-    for file in &all_files {
-        assert!(!file.path.is_empty(), "All files should have valid paths");
-        assert!(
-            !file.content.is_empty() || file.content == "",
-            "Content should be handled properly"
-        );
+    for file_path in &all_files {
+        assert!(!file_path.is_empty(), "All files should have valid paths");
     }
 
-    // Verify table still exists and has expected structure
-    let table_info = sqlx::query("PRAGMA table_info(files)")
-        .fetch_all(&db.pool)
-        .await;
-
-    match table_info {
-        Ok(info) => {
-            assert!(
-                !info.is_empty(),
-                "Files table should still have columns after batch operations"
-            );
-            println!(
-                "Files table has {} columns after batch injection test",
-                info.len()
-            );
+    // Verify table still exists through health check
+    match db.health_check().await {
+        Ok(_) => {
+            println!("Database healthy after batch injection test");
         }
         Err(e) => {
-            panic!("Could not get table info after batch operations: {:?}", e);
+            panic!("Database corrupted after batch operations: {:?}", e);
         }
     }
 }

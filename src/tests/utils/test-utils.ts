@@ -1,19 +1,27 @@
 import { render as svelteRender, type RenderResult } from '@testing-library/svelte';
-import { writable } from 'svelte/store';
-import type { ComponentType } from 'svelte';
+import { writable, type Writable } from 'svelte/store';
+import type { ComponentType, SvelteComponent } from 'svelte';
 import { vi } from 'vitest';
 
+// Define types for context stores
+interface TestContext {
+	theme: Writable<string>;
+	user: Writable<unknown>;
+	settings: Writable<Record<string, unknown>>;
+	[key: string]: unknown;
+}
+
 // Custom render function that provides common context and utilities
-export function render(
-	Component: ComponentType,
+export function render<T extends Record<string, unknown> = Record<string, unknown>>(
+	Component: ComponentType<SvelteComponent<T>>,
 	options?: {
-		props?: any;
-		context?: Map<string, any>;
+		props?: T;
+		context?: Map<string, unknown>;
 		target?: HTMLElement;
 	}
-): RenderResult<any> {
+) {
 	// Create default context with stores
-	const defaultContext = new Map<string, any>([
+	const defaultContext = new Map<string, unknown>([
 		['theme', writable('light')],
 		['user', writable(null)],
 		['settings', writable({})]
@@ -21,13 +29,13 @@ export function render(
 
 	// Merge with provided context
 	const context = options?.context
-		? new Map<string, any>([...defaultContext, ...options.context])
+		? new Map<string, unknown>([...defaultContext, ...options.context])
 		: defaultContext;
 
 	return svelteRender(Component, {
 		...options,
 		context
-	});
+	}) as any;
 }
 
 // Helper to wait for async operations with better error messages

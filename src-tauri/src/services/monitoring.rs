@@ -769,11 +769,9 @@ mod tests {
         monitoring.record_cache_hit(true);
         monitoring.record_cache_hit(false);
 
-        if let Some(hit_rate) = monitoring.calculate_cache_hit_rate() {
-            assert!((hit_rate - 66.67).abs() < 0.01); // ~66.67%
-        } else {
-            panic!("Cache hit rate calculation should work with recorded data");
-        }
+        let hit_rate = monitoring.calculate_cache_hit_rate()
+            .expect("Cache hit rate calculation should work with recorded data");
+        assert!((hit_rate - 66.67).abs() < 0.01); // ~66.67%
     }
 
     #[test]

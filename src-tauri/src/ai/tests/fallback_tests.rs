@@ -254,17 +254,20 @@ fn create_test_smart_folder(
     name: &str,
     description: &str,
     extension: &str,
-) -> crate::commands::organization::SmartFolder {
+) -> crate::core::smart_folders::SmartFolder {
     use chrono::Utc;
 
-    crate::commands::organization::SmartFolder {
+    crate::core::smart_folders::SmartFolder {
         id: uuid::Uuid::new_v4().to_string(),
         name: name.to_string(),
+        path: format!("/test/{}", name),
         description: Some(description.to_string()),
         enabled: true,
-        target_path: format!("/test/{}", name),
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
+        target_path: Some(format!("/test/{}", name)),
+        icon: None,
+        color: None,
+        created_at: Utc::now().timestamp(),
+        updated_at: Utc::now().timestamp(),
         rules: vec![crate::commands::organization::OrganizationRule {
             id: uuid::Uuid::new_v4().to_string(),
             rule_type: crate::commands::organization::RuleType::FileExtension,

@@ -1,18 +1,26 @@
 use crate::{
     error::Result,
     state::AppState,
-    utils::security::{
-        is_path_allowed, validate_and_sanitize_path_legacy as validate_and_sanitize_path,
-    },
+    utils::security::{is_path_allowed, validate_path},
 };
+use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Runtime, State};
 use tauri_plugin_dialog::DialogExt;
 use tokio::fs;
 use tokio::io::{AsyncReadExt, BufReader};
 use walkdir::WalkDir;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PaginatedResponse<T> {
+    pub items: Vec<T>,
+    pub total: usize,
+    pub offset: usize,
+    pub limit: usize,
+    pub has_more: bool,
+}
 
 // Type alias for complex future return type
 type DirectorySizeResult<'a> =
@@ -205,11 +213,11 @@ pub struct FileInfo {
 }
 
 #[tauri::command]
-pub async fn scan_directory(
+pub async fn scan_directory<R: Runtime>(
     path: String,
     recursive: bool,
     state: State<'_, std::sync::Arc<AppState>>,
-    app: AppHandle,
+    app: AppHandle<R>,
 ) -> Result<Vec<FileInfo>> {
     // Add timeout to prevent indefinite blocking on large directory scans
     with_timeout(
@@ -220,14 +228,14 @@ pub async fn scan_directory(
     .await
 }
 
-async fn scan_directory_internal(
+async fn scan_directory_internal<R: Runtime>(
     path: String,
     recursive: bool,
     state: State<'_, std::sync::Arc<AppState>>,
-    app: AppHandle,
+    app: AppHandle<R>,
 ) -> Result<Vec<FileInfo>> {
     // Validate and sanitize path to prevent path traversal
-    let sanitized_path = validate_and_sanitize_path(&path, &app)?;
+    let sanitized_path = validate_path(&path, &app)?.into_path_buf();
 
     // Validate path exists
     if !sanitized_path.exists() {
@@ -332,15 +340,15 @@ async fn scan_directory_internal(
 }
 
 #[tauri::command]
-pub async fn scan_directory_stream(
+pub async fn scan_directory_stream<R: Runtime>(
     path: String,
     recursive: bool,
     batch_size: Option<usize>,
     state: State<'_, std::sync::Arc<AppState>>,
-    app: AppHandle,
+    app: AppHandle<R>,
 ) -> Result<String> {
     // Validate and sanitize path to prevent path traversal
-    let sanitized_path = validate_and_sanitize_path(&path, &app)?;
+    let sanitized_path = validate_path(&path, &app)?.into_path_buf();
 
     // Validate path exists
     if !sanitized_path.exists() {
@@ -556,7 +564,7 @@ async fn analyze_files_internal(
                 message: "Empty path in analysis request".to_string(),
             });
         }
-        validate_and_sanitize_path(path, &app)?;
+        validate_path(path, &app)?;
     }
 
     let mut results = Vec::new();
@@ -682,14 +690,14 @@ async fn analyze_files_internal(
 }
 
 #[tauri::command]
-pub async fn get_file_content(
+pub async fn get_file_content<R: Runtime>(
     path: String,
     user_id: Option<String>,
     state: State<'_, std::sync::Arc<AppState>>,
-    app: AppHandle,
+    app: AppHandle<R>,
 ) -> Result<String> {
     // Validate and sanitize path to prevent path traversal
-    let sanitized_path = validate_and_sanitize_path(&path, &app)?;
+    let sanitized_path = validate_path(&path, &app)?.into_path_buf();
 
     // Ensure path is within allowed directories
     if !is_path_allowed(&sanitized_path, &app)? {
@@ -729,8 +737,13 @@ pub async fn get_file_content(
         });
     }
 
-    // Reserve memory for this file read
-    let _memory_guard = MemoryGuard::new(metadata.len() as usize, &state)?;
+    // Reserve memory for this file read with overflow check
+    let file_size = usize::try_from(metadata.len()).map_err(|_| {
+        crate::error::AppError::ProcessingError {
+            message: format!("File too large for system (size: {} bytes)", metadata.len())
+        }
+    })?;
+    let _memory_guard = MemoryGuard::new(file_size, &state)?;
 
     // Read file with improved memory management and operation tracking
     let operation_id = state.start_operation(
@@ -797,8 +810,8 @@ pub async fn move_files(
             });
         }
 
-        validate_and_sanitize_path(&op.source, &app)?;
-        validate_and_sanitize_path(&op.destination, &app)?;
+        validate_path(&op.source, &app)?;
+        validate_path(&op.destination, &app)?;
     }
 
     let mut results = Vec::new();
@@ -874,7 +887,7 @@ pub async fn get_file_preview(
     }
 
     // Validate and sanitize path to prevent path traversal
-    let sanitized_path = validate_and_sanitize_path(&path, &app)?;
+    let sanitized_path = validate_path(&path, &app)?.into_path_buf();
 
     let metadata = fs::metadata(&sanitized_path).await?;
 
@@ -1107,8 +1120,8 @@ pub async fn rename_file(
     state: State<'_, std::sync::Arc<AppState>>,
     app: AppHandle,
 ) -> Result<bool> {
-    let sanitized_old = validate_and_sanitize_path(&old_path, &app)?;
-    let sanitized_new = validate_and_sanitize_path(&new_path, &app)?;
+    let sanitized_old = validate_path(&old_path, &app)?.into_path_buf();
+    let sanitized_new = validate_path(&new_path, &app)?.into_path_buf();
 
     if !sanitized_old.exists() {
         return Err(crate::error::AppError::FileNotFound { path: old_path });
@@ -1135,8 +1148,8 @@ pub async fn copy_file(
     state: State<'_, std::sync::Arc<AppState>>,
     app: AppHandle,
 ) -> Result<bool> {
-    let sanitized_source = validate_and_sanitize_path(&source_path, &app)?;
-    let sanitized_dest = validate_and_sanitize_path(&destination_path, &app)?;
+    let sanitized_source = validate_path(&source_path, &app)?.into_path_buf();
+    let sanitized_dest = validate_path(&destination_path, &app)?.into_path_buf();
 
     if !sanitized_source.exists() {
         return Err(crate::error::AppError::FileNotFound { path: source_path });
@@ -1172,7 +1185,7 @@ pub async fn delete_file(
     state: State<'_, std::sync::Arc<AppState>>,
     app: AppHandle,
 ) -> Result<bool> {
-    let sanitized_path = validate_and_sanitize_path(&path, &app)?;
+    let sanitized_path = validate_path(&path, &app)?.into_path_buf();
 
     if !sanitized_path.exists() {
         return Err(crate::error::AppError::FileNotFound { path });
@@ -1199,7 +1212,7 @@ pub async fn delete_file(
 
 #[tauri::command]
 pub async fn create_directory(path: String, recursive: bool, app: AppHandle) -> Result<bool> {
-    let sanitized_path = validate_and_sanitize_path(&path, &app)?;
+    let sanitized_path = validate_path(&path, &app)?.into_path_buf();
 
     if sanitized_path.exists() {
         return Err(crate::error::AppError::InvalidPath {
@@ -1218,7 +1231,7 @@ pub async fn create_directory(path: String, recursive: bool, app: AppHandle) -> 
 
 #[tauri::command]
 pub async fn get_file_info_command(path: String, app: AppHandle) -> Result<FileInfo> {
-    let sanitized_path = validate_and_sanitize_path(&path, &app)?;
+    let sanitized_path = validate_path(&path, &app)?.into_path_buf();
     get_file_info(&sanitized_path).await
 }
 
@@ -1230,7 +1243,7 @@ pub async fn get_file_info_cmd(path: String, app: AppHandle) -> Result<FileInfo>
 
 #[tauri::command]
 pub async fn set_file_permissions(path: String, permissions: u32, app: AppHandle) -> Result<bool> {
-    let sanitized_path = validate_and_sanitize_path(&path, &app)?;
+    let sanitized_path = validate_path(&path, &app)?.into_path_buf();
 
     if !sanitized_path.exists() {
         return Err(crate::error::AppError::FileNotFound { path });
@@ -1260,16 +1273,21 @@ pub async fn set_file_permissions(path: String, permissions: u32, app: AppHandle
 #[tauri::command]
 pub async fn batch_file_operations(
     operations: Vec<BatchOperation>,
+    rollback_on_failure: Option<bool>,
     state: State<'_, std::sync::Arc<AppState>>,
     app: AppHandle,
-) -> Result<Vec<BatchResult>> {
+) -> Result<BatchOperationResult> {
     if operations.len() > 1000 {
         return Err(crate::error::AppError::SecurityError {
             message: "Too many batch operations (max 1000)".to_string(),
         });
     }
 
+    let should_rollback = rollback_on_failure.unwrap_or(true);
     let mut results = Vec::new();
+    let mut rollback_info = Vec::new();
+    let mut failed_at = None;
+    
     let operation_id = state.start_operation(
         crate::state::OperationType::BulkOperation,
         format!("Batch operations: {}", operations.len()),
@@ -1293,16 +1311,28 @@ pub async fn batch_file_operations(
                 )
                 .await
                 {
-                    Ok(_) => BatchResult {
-                        success: true,
-                        error: None,
-                        path: op.source.clone(),
-                    },
-                    Err(e) => BatchResult {
-                        success: false,
-                        error: Some(e.to_string()),
-                        path: op.source.clone(),
-                    },
+                    Ok(_) => {
+                        // Store rollback info for moves
+                        rollback_info.push(RollbackInfo {
+                            operation_type: RollbackOperationType::Move,
+                            original_path: op.destination.clone().unwrap_or_default(),
+                            target_path: op.source.clone(),
+                        });
+                        
+                        BatchResult {
+                            success: true,
+                            error: None,
+                            path: op.source.clone(),
+                        }
+                    }
+                    Err(e) => {
+                        failed_at = Some(index);
+                        BatchResult {
+                            success: false,
+                            error: Some(e.to_string()),
+                            path: op.source.clone(),
+                        }
+                    }
                 }
             }
             BatchOperationType::Copy => {
@@ -1314,39 +1344,100 @@ pub async fn batch_file_operations(
                 )
                 .await
                 {
-                    Ok(_) => BatchResult {
-                        success: true,
-                        error: None,
-                        path: op.source.clone(),
-                    },
-                    Err(e) => BatchResult {
-                        success: false,
-                        error: Some(e.to_string()),
-                        path: op.source.clone(),
-                    },
+                    Ok(_) => {
+                        // Store rollback info for copies (delete the copied file)
+                        rollback_info.push(RollbackInfo {
+                            operation_type: RollbackOperationType::Delete,
+                            original_path: op.destination.clone().unwrap_or_default(),
+                            target_path: String::new(), // Not needed for delete
+                        });
+                        
+                        BatchResult {
+                            success: true,
+                            error: None,
+                            path: op.source.clone(),
+                        }
+                    }
+                    Err(e) => {
+                        failed_at = Some(index);
+                        BatchResult {
+                            success: false,
+                            error: Some(e.to_string()),
+                            path: op.source.clone(),
+                        }
+                    }
                 }
             }
             BatchOperationType::Delete => {
+                // For deletes, we can't easily rollback unless we have backup/trash support
+                // For now, we mark them as non-rollbackable
                 match delete_file(op.source.clone(), false, state.clone(), app.clone()).await {
-                    Ok(_) => BatchResult {
-                        success: true,
-                        error: None,
-                        path: op.source.clone(),
-                    },
-                    Err(e) => BatchResult {
-                        success: false,
-                        error: Some(e.to_string()),
-                        path: op.source.clone(),
-                    },
+                    Ok(_) => {
+                        // Store rollback info - but deletion can't be easily rolled back
+                        rollback_info.push(RollbackInfo {
+                            operation_type: RollbackOperationType::None,
+                            original_path: op.source.clone(),
+                            target_path: String::new(),
+                        });
+                        
+                        BatchResult {
+                            success: true,
+                            error: None,
+                            path: op.source.clone(),
+                        }
+                    }
+                    Err(e) => {
+                        failed_at = Some(index);
+                        BatchResult {
+                            success: false,
+                            error: Some(e.to_string()),
+                            path: op.source.clone(),
+                        }
+                    }
                 }
             }
         };
 
-        results.push(result);
+        results.push(result.clone());
+        
+        // If operation failed and we should rollback
+        if !result.success && should_rollback {
+            tracing::warn!("Batch operation failed at index {}, initiating rollback", index);
+            
+            // Perform rollback of successful operations in reverse order
+            let rollback_results = perform_rollback(rollback_info, &state, &app).await;
+            
+            state.error_operation(operation_id, format!("Batch operation failed at step {}, rollback initiated", index + 1));
+            
+            return Ok(BatchOperationResult {
+                results,
+                rollback_performed: true,
+                rollback_results: Some(rollback_results),
+                failed_at_index: Some(index),
+                total_operations: operations.len(),
+            });
+        }
     }
 
-    state.complete_operation(operation_id);
-    Ok(results)
+    let successful_count = results.iter().filter(|r| r.success).count();
+    let failed_count = results.len() - successful_count;
+    
+    if failed_count > 0 {
+        state.error_operation(
+            operation_id, 
+            format!("Batch operation completed with {} failures out of {}", failed_count, operations.len())
+        );
+    } else {
+        state.complete_operation(operation_id);
+    }
+    
+    Ok(BatchOperationResult {
+        results,
+        rollback_performed: false,
+        rollback_results: None,
+        failed_at_index: failed_at,
+        total_operations: operations.len(),
+    })
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1363,11 +1454,119 @@ pub enum BatchOperationType {
     Delete,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BatchResult {
     pub success: bool,
     pub error: Option<String>,
     pub path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BatchOperationResult {
+    pub results: Vec<BatchResult>,
+    pub rollback_performed: bool,
+    pub rollback_results: Option<Vec<RollbackResult>>,
+    pub failed_at_index: Option<usize>,
+    pub total_operations: usize,
+}
+
+#[derive(Debug, Clone)]
+struct RollbackInfo {
+    operation_type: RollbackOperationType,
+    original_path: String,
+    target_path: String,
+}
+
+#[derive(Debug, Clone)]
+enum RollbackOperationType {
+    Move,     // Move file back
+    Delete,   // Delete the file
+    None,     // Cannot rollback (e.g., delete operations)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RollbackResult {
+    pub success: bool,
+    pub error: Option<String>,
+    pub operation: String,
+    pub path: String,
+}
+
+/// Performs rollback of successful operations in reverse order
+async fn perform_rollback(
+    rollback_info: Vec<RollbackInfo>,
+    state: &State<'_, std::sync::Arc<AppState>>,
+    app: &AppHandle,
+) -> Vec<RollbackResult> {
+    let mut rollback_results = Vec::new();
+    
+    // Process rollback operations in reverse order
+    for (index, info) in rollback_info.iter().rev().enumerate() {
+        tracing::info!("Performing rollback {}/{}: {:?}", index + 1, rollback_info.len(), info.operation_type);
+        
+        let result = match &info.operation_type {
+            RollbackOperationType::Move => {
+                // Move the file back to its original location
+                match rename_file(
+                    info.original_path.clone(),
+                    info.target_path.clone(),
+                    state.clone(),
+                    app.clone(),
+                ).await {
+                    Ok(_) => RollbackResult {
+                        success: true,
+                        error: None,
+                        operation: "move_back".to_string(),
+                        path: info.original_path.clone(),
+                    },
+                    Err(e) => RollbackResult {
+                        success: false,
+                        error: Some(e.to_string()),
+                        operation: "move_back".to_string(),
+                        path: info.original_path.clone(),
+                    },
+                }
+            }
+            RollbackOperationType::Delete => {
+                // Delete the copied file
+                match delete_file(
+                    info.original_path.clone(),
+                    false,
+                    state.clone(),
+                    app.clone(),
+                ).await {
+                    Ok(_) => RollbackResult {
+                        success: true,
+                        error: None,
+                        operation: "delete".to_string(),
+                        path: info.original_path.clone(),
+                    },
+                    Err(e) => RollbackResult {
+                        success: false,
+                        error: Some(e.to_string()),
+                        operation: "delete".to_string(),
+                        path: info.original_path.clone(),
+                    },
+                }
+            }
+            RollbackOperationType::None => {
+                // Cannot rollback this operation
+                RollbackResult {
+                    success: false,
+                    error: Some("Operation cannot be rolled back (e.g., file deletion)".to_string()),
+                    operation: "none".to_string(),
+                    path: info.original_path.clone(),
+                }
+            }
+        };
+        
+        rollback_results.push(result);
+        
+        // Add small delay between rollback operations to prevent overwhelming the filesystem
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+    
+    rollback_results
 }
 
 #[tauri::command]
@@ -1377,8 +1576,8 @@ pub async fn move_file(
     state: State<'_, std::sync::Arc<AppState>>,
     app: AppHandle,
 ) -> Result<bool> {
-    let sanitized_source = validate_and_sanitize_path(&source_path, &app)?;
-    let sanitized_dest = validate_and_sanitize_path(&destination_path, &app)?;
+    let sanitized_source = validate_path(&source_path, &app)?.into_path_buf();
+    let sanitized_dest = validate_path(&destination_path, &app)?.into_path_buf();
 
     if !sanitized_source.exists() {
         return Err(crate::error::AppError::FileNotFound { path: source_path });
@@ -1444,7 +1643,7 @@ pub async fn rename_files(
             ),
         );
 
-        let sanitized_path = validate_and_sanitize_path(&op.file_path, &app)?;
+        let sanitized_path = validate_path(&op.file_path, &app)?.into_path_buf();
         let parent =
             sanitized_path
                 .parent()
@@ -1494,8 +1693,8 @@ pub async fn file_exists(path: String, app: AppHandle) -> Result<FileExistsResul
     }
 
     // Validate and sanitize path
-    let sanitized_path = match validate_and_sanitize_path(&path, &app) {
-        Ok(path) => path,
+    let sanitized_path = match validate_path(&path, &app) {
+        Ok(validated) => validated.into_path_buf(),
         Err(e) => {
             return Ok(FileExistsResult {
                 exists: false,
@@ -1541,7 +1740,7 @@ pub async fn file_exists(path: String, app: AppHandle) -> Result<FileExistsResul
 
 #[tauri::command]
 pub async fn get_file_properties(path: String, app: AppHandle) -> Result<FileProperties> {
-    let sanitized_path = validate_and_sanitize_path(&path, &app)?;
+    let sanitized_path = validate_path(&path, &app)?.into_path_buf();
 
     if !sanitized_path.exists() {
         return Err(crate::error::AppError::FileNotFound { path });
@@ -1646,7 +1845,7 @@ pub struct FileSizeInfo {
 
 #[tauri::command]
 pub async fn get_file_size_info(path: String, app: AppHandle) -> Result<FileSizeInfo> {
-    let sanitized_path = validate_and_sanitize_path(&path, &app)?;
+    let sanitized_path = validate_path(&path, &app)?.into_path_buf();
 
     if !sanitized_path.exists() {
         return Err(crate::error::AppError::FileNotFound { path });
@@ -1691,10 +1890,10 @@ pub async fn get_file_size_info(path: String, app: AppHandle) -> Result<FileSize
 }
 
 #[tauri::command]
-pub async fn browse_files(
+pub async fn browse_files<R: Runtime>(
     multiple: bool,
     filters: Option<Vec<DialogFilter>>,
-    app: AppHandle,
+    app: AppHandle<R>,
 ) -> Result<Vec<String>> {
     tracing::info!("Opening file selection dialog (multiple: {})", multiple);
 
@@ -1759,8 +1958,9 @@ pub async fn browse_files(
             continue;
         }
 
-        match validate_and_sanitize_path(&path_str, &app) {
-            Ok(validated_path) => {
+        match validate_path(&path_str, &app) {
+            Ok(validated_result) => {
+                let validated_path = validated_result.into_path_buf();
                 // Additional security check: ensure path is allowed
                 if is_path_allowed(&validated_path, &app)? {
                     validated_paths.push(validated_path.display().to_string());
@@ -1793,7 +1993,7 @@ pub async fn browse_files(
 }
 
 #[tauri::command]
-pub async fn browse_folder(title: Option<String>, app: AppHandle) -> Result<String> {
+pub async fn browse_folder<R: Runtime>(title: Option<String>, app: AppHandle<R>) -> Result<String> {
     let dialog_title = title.unwrap_or_else(|| "Select Folder".to_string());
 
     // Validate title to prevent injection attacks
@@ -1826,7 +2026,7 @@ pub async fn browse_folder(title: Option<String>, app: AppHandle) -> Result<Stri
             }
 
             // Validate and sanitize the selected folder path
-            let validated_path = validate_and_sanitize_path(&path_str, &app)?;
+            let validated_path = validate_path(&path_str, &app)?.into_path_buf();
 
             // Additional security check: ensure path is allowed
             if !is_path_allowed(&validated_path, &app)? {
@@ -1916,8 +2116,8 @@ pub async fn process_dropped_paths(
         }
 
         // Validate and sanitize path
-        let validated_path = match validate_and_sanitize_path(path_str, &app) {
-            Ok(path) => path,
+        let validated_path = match validate_path(path_str, &app) {
+            Ok(validated) => validated.into_path_buf(),
             Err(e) => {
                 invalid_paths.push(InvalidPath {
                     path: path_str.clone(),
@@ -2249,4 +2449,72 @@ async fn read_small_file_safe(path: &Path, _state: &AppState) -> Result<String> 
     content.shrink_to_fit();
 
     Ok(content)
+}
+
+#[tauri::command]
+pub async fn get_directory_structure_paginated<R: Runtime>(
+    path: String,
+    limit: Option<usize>,
+    offset: Option<usize>,
+    _state: State<'_, Arc<AppState<R>>>,
+    app: AppHandle<R>,
+) -> Result<PaginatedResponse<FileInfo>> {
+    // Validate path
+    validate_path(&path, &app)?;
+
+    let limit = limit.unwrap_or(1000).min(5000);
+    let offset = offset.unwrap_or(0);
+
+    let mut all_files = Vec::new();
+    let mut count = 0;
+
+    let mut dir = tokio::fs::read_dir(&path).await?;
+
+    while let Some(entry) = dir.next_entry().await? {
+        if count >= offset && all_files.len() < limit {
+            let metadata = entry.metadata().await?;
+            let info = FileInfo {
+                path: entry.path().to_string_lossy().to_string(),
+                name: entry.file_name().to_string_lossy().to_string(),
+                size: metadata.len(),
+                is_directory: metadata.is_dir(),
+                modified_at: metadata.modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0),
+                created_at: metadata.created()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0),
+                mime_type: if metadata.is_dir() {
+                    "inode/directory".to_string()
+                } else {
+                    mime_guess::from_path(entry.path())
+                        .first_or_octet_stream()
+                        .to_string()
+                },
+                extension: entry.path().extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default(),
+            };
+            all_files.push(info);
+        }
+        count += 1;
+
+        // Prevent memory exhaustion
+        if count > 100000 {
+            break;
+        }
+    }
+
+    Ok(PaginatedResponse {
+        items: all_files,
+        total: count,
+        offset,
+        limit,
+        has_more: count > offset + limit,
+    })
 }

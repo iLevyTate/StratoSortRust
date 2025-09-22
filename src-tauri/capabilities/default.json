@@ -6,7 +6,6 @@
   "permissions": [
     "core:default",
     "shell:allow-open",
-    "dialog:default",
     "fs:default",
     "fs:allow-read-file",
     "fs:allow-write-file",
@@ -17,36 +16,47 @@
     "fs:allow-copy-file",
     "fs:allow-mkdir",
     "fs:allow-exists",
+    "core:path:default",
+    "os:default",
+    "process:default",
+    "http:default",
+    "core:menu:default",
+    "core:tray:default",
     {
       "identifier": "fs:scope",
       "allow": [
-        "$APPDATA",
-        "$APPDATA/**",
+        "$APPDATA/stratosort",
+        "$APPDATA/stratosort/**",
         "$RESOURCE",
         "$RESOURCE/**",
-        "$DOWNLOAD",
-        "$DOWNLOAD/**",
-        "$DOCUMENT",
-        "$DOCUMENT/**",
-        "$PICTURE",
-        "$PICTURE/**",
-        "$DESKTOP",
-        "$DESKTOP/**",
-        "$VIDEO",
-        "$VIDEO/**",
-        "$MUSIC",
-        "$MUSIC/**"
+        "$DOWNLOAD/StratoSort",
+        "$DOWNLOAD/StratoSort/**",
+        "$DOCUMENT/StratoSort",
+        "$DOCUMENT/StratoSort/**",
+        "$PICTURE/StratoSort",
+        "$PICTURE/StratoSort/**",
+        "$DESKTOP/StratoSort",
+        "$DESKTOP/StratoSort/**"
       ],
       "deny": [
         "$HOME/.ssh/**",
         "$HOME/.gnupg/**",
         "$HOME/.config/**",
+        "$HOME/.aws/**",
+        "$HOME/.azure/**",
+        "$HOME/.kube/**",
+        "$HOME/.docker/**",
+        "$APPDATA/Microsoft/Credentials/**",
+        "$LOCALAPPDATA/Google/Chrome/User Data/**",
+        "$LOCALAPPDATA/Mozilla/Firefox/**",
         "$HOME/.*"
       ]
     },
     "notification:default",
     "global-shortcut:default",
     "clipboard-manager:default",
-    "store:default"
+    "store:default",
+    "window-state:default",
+    "positioner:default"
   ]
 }

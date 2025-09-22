@@ -6,6 +6,8 @@ pub mod history;
 pub mod monitoring;
 pub mod notifications;
 pub mod organization;
+pub mod organization_enhanced;
+pub mod patterns;
 pub mod settings;
 pub mod setup;
 pub mod system;

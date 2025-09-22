@@ -1,6 +1,7 @@
 use crate::{config::Config, error::Result, state::AppState};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tracing::warn;
 
 #[tauri::command]
 pub async fn get_settings(state: State<'_, std::sync::Arc<AppState>>) -> Result<Config> {
@@ -533,13 +534,21 @@ pub async fn update_category_settings(
                 .get("max_single_file_size_mb")
                 .and_then(|v| v.as_u64())
             {
-                config.max_single_file_size_mb = max_single_file_mb as usize;
+                config.max_single_file_size_mb = usize::try_from(max_single_file_mb)
+                    .unwrap_or_else(|_| {
+                        warn!("max_single_file_size_mb value too large: {}, using default", max_single_file_mb);
+                        50 // Default 50MB
+                    });
             }
             if let Some(max_depth) = settings
                 .get("max_directory_scan_depth")
                 .and_then(|v| v.as_u64())
             {
-                config.max_directory_scan_depth = max_depth as usize;
+                config.max_directory_scan_depth = usize::try_from(max_depth)
+                    .unwrap_or_else(|_| {
+                        warn!("max_directory_scan_depth value too large: {}, using default", max_depth);
+                        10 // Default depth
+                    });
             }
             if let Some(auto_analyze) = settings
                 .get("auto_analyze_on_add")

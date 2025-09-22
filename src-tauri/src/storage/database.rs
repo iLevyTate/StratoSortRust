@@ -6,7 +6,7 @@ use sqlx::{sqlite::SqlitePool, Row};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, Runtime};
 use tracing::{debug, info, warn};
 
 pub const CURRENT_SCHEMA_VERSION: i32 = 3;
@@ -52,7 +52,7 @@ fn escape_like_pattern(input: &str) -> String {
 }
 
 impl Database {
-    pub async fn new(handle: &AppHandle) -> Result<Self> {
+    pub async fn new<R: Runtime>(handle: &AppHandle<R>) -> Result<Self> {
         let db_path = Self::database_path_with_fallbacks(handle).await?;
 
         // Robust directory creation with multiple fallbacks
@@ -113,7 +113,7 @@ impl Database {
 
     /// Test-specific constructor that takes a path directly
     pub async fn new_test(db_path: &std::path::Path) -> Result<Self> {
-        use sqlx::sqlite::SqliteConnectOptions;
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
         // Ensure directory exists
         if let Some(parent) = db_path.parent() {
@@ -129,7 +129,13 @@ impl Database {
             .busy_timeout(Duration::from_secs(30))
             .pragma("foreign_keys", "ON");
 
-        let pool = SqlitePool::connect_with(options).await?;
+        let pool = SqlitePoolOptions::new()
+            .max_connections(20) // Increased for concurrent ops
+            .min_connections(5)   // Minimum connections to maintain
+            .acquire_timeout(Duration::from_secs(3))
+            .idle_timeout(Some(Duration::from_secs(10)))
+            .max_lifetime(Some(Duration::from_secs(3600)))
+            .connect_with(options).await?;
 
         // Initialize vector extension
         let vector_ext = Arc::new(VectorExtension::initialize(&pool).await);
@@ -550,6 +556,44 @@ impl Database {
         Ok(())
     }
 
+    pub async fn get_embedding(&self, path: &str) -> Result<Option<Vec<f32>>> {
+        // Try to get from embeddings_v3 table first
+        let row = sqlx::query(
+            "SELECT embedding FROM embeddings_v3 WHERE path = ? LIMIT 1"
+        )
+        .bind(path)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some(row) = row {
+            let embedding_bytes: Vec<u8> = row.get("embedding");
+            let embedding_str = String::from_utf8(embedding_bytes).map_err(|e| AppError::DatabaseError {
+                message: format!("Failed to convert embedding bytes to string: {}", e),
+            })?;
+            let embedding: Vec<f32> = serde_json::from_str(&embedding_str)?;
+            return Ok(Some(embedding));
+        }
+
+        // Fallback to file_analysis table
+        let row = sqlx::query(
+            "SELECT embedding FROM file_analysis WHERE path = ? AND embedding IS NOT NULL LIMIT 1"
+        )
+        .bind(path)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some(row) = row {
+            let embedding_bytes: Vec<u8> = row.get("embedding");
+            let embedding_str = String::from_utf8(embedding_bytes).map_err(|e| AppError::DatabaseError {
+                message: format!("Failed to convert embedding bytes to string: {}", e),
+            })?;
+            let embedding: Vec<f32> = serde_json::from_str(&embedding_str)?;
+            return Ok(Some(embedding));
+        }
+
+        Ok(None)
+    }
+
     /// Enhanced semantic search with better accuracy and performance
     pub async fn semantic_search(
         &self,
@@ -761,10 +805,55 @@ impl Database {
     }
 
     pub async fn flush(&self) -> Result<()> {
-        // SQLite automatically flushes, but we can force a checkpoint
-        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        // Force WAL checkpoint to prevent disk bloat - TRUNCATE mode is more aggressive
+        // This ensures WAL files don't grow indefinitely
+        match sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
             .execute(&self.pool)
-            .await?;
+            .await 
+        {
+            Ok(_) => {
+                tracing::debug!("WAL checkpoint completed successfully");
+            }
+            Err(e) => {
+                tracing::warn!("WAL checkpoint failed, attempting fallback: {}", e);
+                // Fallback to RESTART mode if TRUNCATE fails
+                sqlx::query("PRAGMA wal_checkpoint(RESTART)")
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|fallback_err| AppError::DatabaseError {
+                        message: format!("WAL checkpoint failed completely. Original: {}, Fallback: {}", e, fallback_err)
+                    })?;
+                tracing::info!("WAL checkpoint fallback to RESTART mode succeeded");
+            }
+        }
+        Ok(())
+    }
+
+    /// Perform aggressive WAL cleanup to reclaim disk space
+    pub async fn cleanup_wal_files(&self) -> Result<()> {
+        tracing::info!("Starting aggressive WAL cleanup to prevent disk bloat");
+        
+        // Force checkpoint with TRUNCATE to reset WAL files
+        self.flush().await?;
+        
+        // Additional cleanup operations
+        let cleanup_queries = [
+            "PRAGMA optimize",           // Analyze and optimize database
+            "PRAGMA wal_checkpoint(TRUNCATE)", // Second checkpoint attempt
+            "VACUUM",                   // Reclaim space from deleted records
+        ];
+        
+        for query in &cleanup_queries {
+            match sqlx::query(query).execute(&self.pool).await {
+                Ok(_) => tracing::debug!("WAL cleanup query '{}' succeeded", query),
+                Err(e) => tracing::warn!("WAL cleanup query '{}' failed: {}", query, e),
+            }
+            
+            // Small delay between operations to prevent overwhelming the database
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+        
+        tracing::info!("WAL cleanup completed");
         Ok(())
     }
 
@@ -773,14 +862,14 @@ impl Database {
         &self.pool
     }
 
-    pub fn database_path(handle: &AppHandle) -> Result<PathBuf> {
+    pub fn database_path<R: Runtime>(handle: &AppHandle<R>) -> Result<PathBuf> {
         // Legacy sync method - use database_path_with_fallbacks for new code
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(Self::database_path_with_fallbacks(handle))
         })
     }
 
-    async fn database_path_with_fallbacks(handle: &AppHandle) -> Result<PathBuf> {
+    async fn database_path_with_fallbacks<R: Runtime>(handle: &AppHandle<R>) -> Result<PathBuf> {
         // Try multiple directory options with comprehensive fallbacks
         let directory_options = vec![
             handle.path().app_data_dir(),
@@ -824,7 +913,7 @@ impl Database {
                 })?
         }
 
-        // Test write permissions
+        // Test write permissions with automatic cleanup
         let test_file = dir.join(".write_test");
         tokio::fs::write(&test_file, "test")
             .await
@@ -832,8 +921,10 @@ impl Database {
                 message: format!("Directory '{}' is not writable: {}", dir.display(), e),
             })?;
 
-        // Clean up test file
-        let _ = tokio::fs::remove_file(&test_file).await;
+        // Clean up test file - ensure it's removed even on error
+        if let Err(e) = tokio::fs::remove_file(&test_file).await {
+            tracing::warn!("Failed to cleanup database test file {:?}: {}", test_file, e);
+        }
 
         Ok(())
     }
@@ -854,14 +945,17 @@ impl Database {
     }
 
     async fn create_database_connection_with_retry(db_path: &PathBuf) -> Result<SqlitePool> {
-        let database_url = format!("sqlite:{}?mode=rwc", db_path.to_string_lossy());
+        let database_url = format!(
+            "sqlite:{}?mode=rwc&journal_mode=WAL&busy_timeout=5000&synchronous=NORMAL",
+            db_path.to_string_lossy()
+        );
 
-        let mut retry_count = 0;
+        let mut retry_count: u64 = 0;
         let max_retries = 5;
 
         loop {
-            // Create connection options with progressive timeout increases
-            let timeout_seconds = 5 + (retry_count * 2);
+            // Create connection options with progressive timeout increases - FIXED OVERFLOW
+            let timeout_seconds = 5u64.saturating_add(retry_count.saturating_mul(2).min(30));
             let connection_options = database_url
                 .parse::<sqlx::sqlite::SqliteConnectOptions>()
                 .map_err(|e| AppError::DatabaseError {
@@ -1496,7 +1590,7 @@ impl Database {
     // Smart folder operations
     pub async fn save_smart_folder(
         &self,
-        folder: &crate::commands::organization::SmartFolder,
+        folder: &crate::core::smart_folders::SmartFolder,
     ) -> Result<()> {
         let query = r#"
             INSERT OR REPLACE INTO smart_folders_v3 
@@ -1530,7 +1624,7 @@ impl Database {
     pub async fn get_smart_folder(
         &self,
         id: &str,
-    ) -> Result<Option<crate::commands::organization::SmartFolder>> {
+    ) -> Result<Option<crate::core::smart_folders::SmartFolder>> {
         let query = "SELECT * FROM smart_folders_v3 WHERE id = ?";
 
         let row = sqlx::query(query)
@@ -1547,15 +1641,18 @@ impl Database {
                 message: format!("Failed to deserialize rules: {}", e),
             })?;
 
-            Ok(Some(crate::commands::organization::SmartFolder {
+            Ok(Some(crate::core::smart_folders::SmartFolder {
                 id: row.get("id"),
                 name: row.get("name"),
-                description: row.get("description"),
-                rules,
+                path: row.get("path"),
                 target_path: row.get("target_path"),
+                description: row.get("description"),
+                enabled: row.get("enabled"),
+                rules,
+                icon: row.get("icon"),
+                color: row.get("color"),
                 created_at: row.get("created_at"),
                 updated_at: row.get("updated_at"),
-                enabled: row.get("enabled"),
             }))
         } else {
             Ok(None)
@@ -1564,7 +1661,7 @@ impl Database {
 
     pub async fn list_smart_folders(
         &self,
-    ) -> Result<Vec<crate::commands::organization::SmartFolder>> {
+    ) -> Result<Vec<crate::core::smart_folders::SmartFolder>> {
         let query = "SELECT * FROM smart_folders_v3 ORDER BY name";
 
         let rows = sqlx::query(query)
@@ -1581,15 +1678,18 @@ impl Database {
                 message: format!("Failed to deserialize rules: {}", e),
             })?;
 
-            folders.push(crate::commands::organization::SmartFolder {
+            folders.push(crate::core::smart_folders::SmartFolder {
                 id: row.get("id"),
                 name: row.get("name"),
-                description: row.get("description"),
-                rules,
+                path: row.get("path"),
                 target_path: row.get("target_path"),
+                description: row.get("description"),
+                enabled: row.get("enabled"),
+                rules,
+                icon: row.get("icon"),
+                color: row.get("color"),
                 created_at: row.get("created_at"),
                 updated_at: row.get("updated_at"),
-                enabled: row.get("enabled"),
             });
         }
 
@@ -1983,6 +2083,70 @@ impl Database {
 
         Ok(result.rows_affected() as usize)
     }
+
+    /// Create a backup of the database
+    pub async fn backup_database(&self) -> Result<PathBuf> {
+        use chrono::Utc;
+
+        let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
+
+        // Get backup directory relative to current database location
+        let backup_dir = PathBuf::from("./data/backups");
+        tokio::fs::create_dir_all(&backup_dir).await?;
+
+        let backup_path = backup_dir.join(format!("stratosort_{}.db", timestamp));
+
+        // Use VACUUM INTO for atomic backup
+        let backup_path_str = backup_path.to_str()
+            .ok_or(AppError::DatabaseError {
+                message: "Invalid backup path".to_string()
+            })?;
+
+        sqlx::query(&format!("VACUUM INTO '{}'", backup_path_str))
+            .execute(&self.pool).await?;
+
+        // Verify backup
+        let metadata = tokio::fs::metadata(&backup_path).await?;
+        if metadata.len() == 0 {
+            return Err(AppError::DatabaseError {
+                message: "Backup file is empty".to_string()
+            });
+        }
+
+        // Clean old backups (keep last 5)
+        self.clean_old_backups(&backup_dir, 5).await?;
+
+        tracing::info!("Database backup created: {:?}", backup_path);
+        Ok(backup_path)
+    }
+
+    /// Clean old backup files, keeping only the specified number of most recent ones
+    async fn clean_old_backups(&self, dir: &Path, keep: usize) -> Result<()> {
+        use std::ffi::OsStr;
+
+        let mut entries = tokio::fs::read_dir(dir).await?;
+        let mut backups = Vec::new();
+
+        while let Some(entry) = entries.next_entry().await? {
+            if entry.path().extension() == Some(OsStr::new("db")) {
+                if let Ok(metadata) = entry.metadata().await {
+                    backups.push((entry.path(), metadata.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH)));
+                }
+            }
+        }
+
+        // Sort by modification time, newest first
+        backups.sort_by(|a, b| b.1.cmp(&a.1));
+
+        // Remove old backups
+        for (old_backup, _) in backups.iter().skip(keep) {
+            if let Err(e) = tokio::fs::remove_file(old_backup).await {
+                tracing::warn!("Failed to remove old backup {:?}: {}", old_backup, e);
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl Clone for Database {
@@ -2014,9 +2178,24 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     let magnitude_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let magnitude_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
 
+    // CRITICAL FIX: Proper division by zero prevention
     if magnitude_a == 0.0 || magnitude_b == 0.0 {
         return 0.0;
     }
+    
+    let denominator = magnitude_a * magnitude_b;
+    if denominator == 0.0 || !denominator.is_finite() {
+        tracing::warn!("Vector similarity calculation: invalid denominator detected");
+        return 0.0;
+    }
 
-    dot_product / (magnitude_a * magnitude_b)
+    let similarity = dot_product / denominator;
+    
+    // Additional safety check for NaN/infinite results
+    if !similarity.is_finite() {
+        tracing::warn!("Vector similarity calculation produced non-finite result");
+        return 0.0;
+    }
+    
+    similarity
 }

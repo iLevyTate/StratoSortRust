@@ -1,4 +1,4 @@
-use crate::{commands::organization::SmartFolder, config::Config, error::Result, state::AppState};
+use crate::{core::smart_folders::SmartFolder, config::Config, error::Result, state::AppState};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -173,8 +173,14 @@ async fn create_default_smart_folders(state: &AppState) -> Result<()> {
         SmartFolder {
             id: uuid::Uuid::new_v4().to_string(),
             name: "Documents".to_string(),
+            path: "~/StratoSort/Documents".to_string(),
+            target_path: Some("~/StratoSort/Documents".to_string()),
             description: Some("Text documents, PDFs, and office files".to_string()),
-            target_path: "~/StratoSort/Documents".to_string(),
+            enabled: true,
+            icon: None,
+            color: None,
+            created_at: chrono::Utc::now().timestamp(),
+            updated_at: chrono::Utc::now().timestamp(),
             rules: vec![
                 crate::commands::organization::OrganizationRule {
                     id: uuid::Uuid::new_v4().to_string(),
@@ -228,15 +234,18 @@ async fn create_default_smart_folders(state: &AppState) -> Result<()> {
                     enabled: true,
                 },
             ],
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            enabled: true,
         },
         SmartFolder {
             id: uuid::Uuid::new_v4().to_string(),
             name: "Images".to_string(),
+            path: "~/StratoSort/Images".to_string(),
+            target_path: Some("~/StratoSort/Images".to_string()),
             description: Some("Photos, screenshots, and image files".to_string()),
-            target_path: "~/StratoSort/Images".to_string(),
+            enabled: true,
+            icon: None,
+            color: None,
+            created_at: chrono::Utc::now().timestamp(),
+            updated_at: chrono::Utc::now().timestamp(),
             rules: vec![
                 crate::commands::organization::OrganizationRule {
                     id: uuid::Uuid::new_v4().to_string(),
@@ -273,15 +282,18 @@ async fn create_default_smart_folders(state: &AppState) -> Result<()> {
                     enabled: true,
                 },
             ],
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            enabled: true,
         },
         SmartFolder {
             id: uuid::Uuid::new_v4().to_string(),
             name: "Archives".to_string(),
-            description: Some("ZIP files, compressed archives".to_string()),
-            target_path: "~/StratoSort/Archives".to_string(),
+            path: "~/StratoSort/Archives".to_string(),
+            target_path: Some("~/StratoSort/Archives".to_string()),
+            description: Some("ZIP files, compressed archives, and backup files".to_string()),
+            enabled: true,
+            icon: None,
+            color: None,
+            created_at: chrono::Utc::now().timestamp(),
+            updated_at: chrono::Utc::now().timestamp(),
             rules: vec![
                 crate::commands::organization::OrganizationRule {
                     id: uuid::Uuid::new_v4().to_string(),
@@ -318,15 +330,18 @@ async fn create_default_smart_folders(state: &AppState) -> Result<()> {
                     enabled: true,
                 },
             ],
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            enabled: true,
         },
         SmartFolder {
             id: uuid::Uuid::new_v4().to_string(),
             name: "Presentations".to_string(),
+            path: "~/StratoSort/Presentations".to_string(),
+            target_path: Some("~/StratoSort/Presentations".to_string()),
             description: Some("PowerPoint slides, Keynote, and presentation files".to_string()),
-            target_path: "~/StratoSort/Presentations".to_string(),
+            enabled: true,
+            icon: None,
+            color: None,
+            created_at: chrono::Utc::now().timestamp(),
+            updated_at: chrono::Utc::now().timestamp(),
             rules: vec![
                 crate::commands::organization::OrganizationRule {
                     id: uuid::Uuid::new_v4().to_string(),
@@ -380,17 +395,18 @@ async fn create_default_smart_folders(state: &AppState) -> Result<()> {
                     enabled: true,
                 },
             ],
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            enabled: true,
         },
         SmartFolder {
             id: uuid::Uuid::new_v4().to_string(),
             name: "3D Print Files".to_string(),
-            description: Some(
-                "3D models, STL files, G-code, and 3D printing related files".to_string(),
-            ),
-            target_path: "~/StratoSort/3D Print Files".to_string(),
+            path: "~/StratoSort/3D Print Files".to_string(),
+            target_path: Some("~/StratoSort/3D Print Files".to_string()),
+            description: Some("3D models, STL files, G-code, and 3D printing related files".to_string()),
+            enabled: true,
+            icon: None,
+            color: None,
+            created_at: chrono::Utc::now().timestamp(),
+            updated_at: chrono::Utc::now().timestamp(),
             rules: vec![
                 crate::commands::organization::OrganizationRule {
                     id: uuid::Uuid::new_v4().to_string(),
@@ -461,9 +477,6 @@ async fn create_default_smart_folders(state: &AppState) -> Result<()> {
                     enabled: true,
                 },
             ],
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            enabled: true,
         },
     ];
 
