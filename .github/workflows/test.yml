@@ -49,7 +49,7 @@ jobs:
           name: frontend-coverage
 
       - name: Upload test results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: test-results-frontend-${{ matrix.os }}
@@ -152,7 +152,7 @@ jobs:
         continue-on-error: true  # Integration tests may fail without Tauri runtime
 
       - name: Upload integration test results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: integration-test-results-${{ matrix.os }}
@@ -219,7 +219,7 @@ jobs:
         run: npm run test:e2e -- --project=${{ matrix.browser }}
 
       - name: Upload E2E test artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: e2e-artifacts-${{ matrix.os }}-${{ matrix.browser }}
@@ -250,7 +250,7 @@ jobs:
         run: npm run test:performance
 
       - name: Upload performance results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: performance-results
           path: performance-results/
@@ -306,7 +306,7 @@ jobs:
           npx playwright test --config=playwright.accessibility.config.ts
 
       - name: Upload accessibility report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: accessibility-report
