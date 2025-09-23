@@ -31,6 +31,19 @@ pub enum AppError {
     #[error("Resource limit exceeded: {message}")]
     ResourceLimitExceeded { message: String },
 
+    #[error("Rate limit exceeded for {endpoint}. Retry after {retry_after_seconds} seconds")]
+    RateLimitExceeded {
+        retry_after_seconds: u32,
+        endpoint: String,
+    },
+
+    #[error("File too large: {path} ({size} bytes exceeds maximum {max_size} bytes)")]
+    FileTooLarge {
+        path: String,
+        size: u64,
+        max_size: u64,
+    },
+
     #[error("Parse error: {message}")]
     ParseError { message: String },
 
@@ -156,6 +169,13 @@ impl AppError {
             Self::ValidationError { field: _, message } => Self::sanitize_message(message),
             Self::OperationError { message } => Self::sanitize_message(message),
             Self::InvalidOperation { message } => Self::sanitize_message(message),
+            Self::RateLimitExceeded { endpoint, .. } => {
+                format!("Rate limit exceeded for endpoint: {}", endpoint)
+            }
+            Self::FileTooLarge { path, size, max_size } => {
+                format!("File {} is too large: {} bytes (max: {} bytes)",
+                    Self::sanitize_message(path), size, max_size)
+            }
         }
     }
 
@@ -245,6 +265,8 @@ impl AppError {
             Self::ValidationError { .. } => "VALIDATION_ERROR",
             Self::OperationError { .. } => "OPERATION_ERROR",
             Self::InvalidOperation { .. } => "INVALID_OPERATION",
+            Self::RateLimitExceeded { .. } => "RATE_LIMIT_EXCEEDED",
+            Self::FileTooLarge { .. } => "FILE_TOO_LARGE",
         }
         .to_string()
     }
