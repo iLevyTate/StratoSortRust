@@ -90,7 +90,7 @@ impl HealthChecker {
             name,
             status,
             message,
-            check_duration_ms: duration.as_millis() as u64,
+            check_duration_ms: duration.as_millis().min(u64::MAX as u128) as u64,
             last_error,
         }
     }
@@ -134,14 +134,14 @@ impl HealthChecker {
                 name,
                 status: true,
                 message: "File system read/write successful".to_string(),
-                check_duration_ms: duration.as_millis() as u64,
+                check_duration_ms: duration.as_millis().min(u64::MAX as u128) as u64,
                 last_error: None,
             },
             Err(e) => HealthCheck {
                 name,
                 status: false,
                 message: "File system access failed".to_string(),
-                check_duration_ms: duration.as_millis() as u64,
+                check_duration_ms: duration.as_millis().min(u64::MAX as u128) as u64,
                 last_error: Some(e),
             },
         }
@@ -198,14 +198,14 @@ impl HealthChecker {
                 name,
                 status: true,
                 message: msg,
-                check_duration_ms: duration.as_millis() as u64,
+                check_duration_ms: duration.as_millis().min(u64::MAX as u128) as u64,
                 last_error: None,
             },
             Err(e) => HealthCheck {
                 name,
                 status: false,
                 message: "Disk space check failed".to_string(),
-                check_duration_ms: duration.as_millis() as u64,
+                check_duration_ms: duration.as_millis().min(u64::MAX as u128) as u64,
                 last_error: Some(e),
             },
         }
@@ -252,7 +252,7 @@ impl HealthChecker {
             name,
             status: true,
             message: check_result,
-            check_duration_ms: duration.as_millis() as u64,
+            check_duration_ms: duration.as_millis().min(u64::MAX as u128) as u64,
             last_error: None,
         }
     }
@@ -274,14 +274,14 @@ impl HealthChecker {
                 name,
                 status: true,
                 message: msg,
-                check_duration_ms: duration.as_millis() as u64,
+                check_duration_ms: duration.as_millis().min(u64::MAX as u128) as u64,
                 last_error: None,
             },
             Err(e) => HealthCheck {
                 name: name.clone(),
                 status: false,
                 message: "SQLite-vec extension check failed - using fallback".to_string(),
-                check_duration_ms: duration.as_millis() as u64,
+                check_duration_ms: duration.as_millis().min(u64::MAX as u128) as u64,
                 last_error: Some(e),
             },
         }
@@ -315,21 +315,21 @@ impl HealthChecker {
                 name,
                 status: true,
                 message: msg,
-                check_duration_ms: duration.as_millis() as u64,
+                check_duration_ms: duration.as_millis().min(u64::MAX as u128) as u64,
                 last_error: None,
             },
             Ok(Err(e)) => HealthCheck {
                 name: name.clone(),
                 status: false,
                 message: "AI service not available - fallback mode active".to_string(),
-                check_duration_ms: duration.as_millis() as u64,
+                check_duration_ms: duration.as_millis().min(u64::MAX as u128) as u64,
                 last_error: Some(e),
             },
             Err(_) => HealthCheck {
                 name,
                 status: false,
                 message: "AI service not available - fallback mode active".to_string(),
-                check_duration_ms: duration.as_millis() as u64,
+                check_duration_ms: duration.as_millis().min(u64::MAX as u128) as u64,
                 last_error: Some("Timeout".to_string()),
             },
         }

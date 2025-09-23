@@ -438,7 +438,8 @@ impl ArchiveHandler for SevenZipHandler {
                     }
 
                     let mut output_file = File::create(&output_path)?;
-                    let mut buffer = vec![0u8; entry.size() as usize];
+                    let buffer_size = entry.size().min(usize::MAX as u64) as usize;
+                    let mut buffer = vec![0u8; buffer_size];
                     reader.read_exact(&mut buffer)?;
                     output_file.write_all(&buffer)?;
 

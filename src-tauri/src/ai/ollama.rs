@@ -185,8 +185,13 @@ impl Default for ConnectionHealth {
 }
 
 impl OllamaClient {
-    /// Creates a new OllamaClient with robust connection handling
+    /// Creates a new OllamaClient with robust connection handling and pooling
     pub async fn new(host: &str) -> Result<Self> {
+        Self::new_with_pool_size(host, 5).await // Default pool size of 5
+    }
+
+    /// Creates a new OllamaClient with specified connection pool size
+    pub async fn new_with_pool_size(host: &str, pool_size: usize) -> Result<Self> {
         // Validate input
         if host.is_empty() {
             return Err(AppError::InvalidInput {
@@ -279,7 +284,7 @@ impl OllamaClient {
                 consecutive_failures: 0,
                 available_models: Vec::new(),
             })),
-            connection_pool: ConnectionPool::new(5), // Allow 5 concurrent connections
+            connection_pool: ConnectionPool::new(pool_size), // Use specified pool size
         };
 
         // Perform initial health check and model discovery
@@ -714,25 +719,39 @@ Provide JSON response:
     }
 
     async fn generate_completion(&self, prompt: &str, model: &str) -> Result<String> {
+        // Acquire connection permit from pool
+        let _permit = self.connection_pool.acquire().await?;
+
         let prompt_clone = prompt.to_string();
         let model_clone = model.to_string();
         let client = self.client.clone();
+        let pool = self.connection_pool.clone();
 
         self.execute_with_retry("generate_completion", move || {
             let request = GenerationRequest::new(model_clone.clone(), prompt_clone.clone());
             let client = client.clone();
+            let pool_inner = pool.clone();
 
             Box::pin(async move {
-                let response = timeout(Duration::from_secs(30), client.generate(request))
+                // Track request in pool statistics
+                let start = std::time::Instant::now();
+
+                let result = timeout(Duration::from_secs(30), client.generate(request))
                     .await
                     .map_err(|_| AppError::AiError {
                         message: "Generation timed out".to_string(),
                     })?
                     .map_err(|e| AppError::AiError {
                         message: format!("Generation failed: {}", e),
-                    })?;
+                    });
 
-                Ok(response.response)
+                // Report result to connection pool for circuit breaker
+                match &result {
+                    Ok(_) => pool_inner.record_success(start.elapsed()).await,
+                    Err(_) => pool_inner.record_failure().await,
+                }
+
+                result.map(|r| r.response)
             })
         })
         .await

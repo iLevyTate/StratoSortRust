@@ -5,24 +5,30 @@ use tracing::{error, info};
 
 /// Set up graceful shutdown handler
 pub fn setup_shutdown_handler<R: Runtime>(state: Arc<AppState<R>>) {
-    tokio::spawn(async move {
-        match tokio::signal::ctrl_c().await {
-            Ok(()) => {
-                info!("Shutdown signal received (Ctrl+C)");
+    // Use the runtime handle instead of spawning directly
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn(async move {
+            match tokio::signal::ctrl_c().await {
+                Ok(()) => {
+                    info!("Shutdown signal received (Ctrl+C)");
 
-                // Perform graceful shutdown
-                if let Err(e) = shutdown_services(&state).await {
-                    error!("Error during graceful shutdown: {}", e);
+                    // Perform graceful shutdown
+                    if let Err(e) = shutdown_services(&state).await {
+                        error!("Error during graceful shutdown: {}", e);
+                    }
+
+                    info!("Graceful shutdown complete");
+                    std::process::exit(0);
                 }
-
-                info!("Graceful shutdown complete");
-                std::process::exit(0);
+                Err(err) => {
+                    error!("Unable to listen for shutdown signal: {}", err);
+                }
             }
-            Err(err) => {
-                error!("Unable to listen for shutdown signal: {}", err);
-            }
-        }
-    });
+        });
+    } else {
+        // If no runtime available, skip shutdown handler setup
+        info!("No Tokio runtime available, skipping shutdown handler setup");
+    }
 }
 
 /// Gracefully shutdown all services

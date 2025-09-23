@@ -4,6 +4,7 @@ pub mod config;
 pub mod core;
 pub mod error;
 pub mod events;
+pub mod middleware;
 pub mod services;
 pub mod shutdown;
 pub mod state;

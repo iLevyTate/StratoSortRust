@@ -5,7 +5,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import Sidebar from '$lib/components/Sidebar.svelte';
 	import { currentPage, initializeEventListeners, cleanupEventListeners, appSettings } from '$lib/stores';
-	import DiscoverPage from '$lib/components/pages/DiscoverPage.svelte';
+	import DiscoverPage from '$lib/components/pages/DiscoverPageSimple.svelte';
 	import AnalyzePage from '$lib/components/pages/AnalyzePage.svelte';
 	import OrganizePage from '$lib/components/pages/OrganizePage.svelte';
 	import SettingsPage from '$lib/components/pages/SettingsPage.svelte';
@@ -347,8 +347,8 @@
         <!-- Skip links for keyboard navigation -->
         <div class="skip-links">
             <a href="#main-content" class="skip-link">Skip to main content</a>
-            <a href="#navigation" class="skip-link">Skip to navigation</a>
-            <a href="#search" class="skip-link">Skip to search</a>
+            <a href="#sidebar-navigation" class="skip-link">Skip to navigation</a>
+            <a href="#header-search" class="skip-link">Skip to search</a>
         </div>
         <div class="flex flex-col h-screen bg-background" data-testid="app-container">
             <!-- Header Bar with Search -->
@@ -416,29 +416,54 @@
 
 <style>
     /* Skip links styling */
-    :global(.skip-links) {
+    .skip-links {
         position: fixed;
         top: 0;
         left: 0;
-        z-index: 1000;
+        z-index: 9999;
+        display: flex;
+        gap: 8px;
     }
 
-    :global(.skip-link) {
+    .skip-link {
         position: absolute;
-        top: -40px;
-        left: 6px;
-        background: #000;
-        color: #fff;
-        padding: 8px 12px;
+        top: -100px;
+        left: 0;
+        background: #000000;
+        color: #ffffff;
+        padding: 8px 16px;
         text-decoration: none;
         border-radius: 0 0 4px 4px;
-        font-weight: bold;
-        transition: top 0.2s ease;
-        z-index: 1001;
+        font-weight: 600;
+        font-size: 14px;
+        transition: top 0.3s ease;
+        z-index: 10000;
+        white-space: nowrap;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
     }
 
-    :global(.skip-link:focus) {
+    .skip-link:nth-child(1) {
+        left: 10px;
+    }
+
+    .skip-link:nth-child(2) {
+        left: 160px;
+    }
+
+    .skip-link:nth-child(3) {
+        left: 290px;
+    }
+
+    .skip-link:focus,
+    .skip-link:focus-visible {
         top: 0;
+        outline: 2px solid #0066ff;
+        outline-offset: 2px;
+    }
+
+    .skip-link:hover {
+        background: #333333;
+        text-decoration: underline;
     }
 
     /* Enhanced focus indicators */

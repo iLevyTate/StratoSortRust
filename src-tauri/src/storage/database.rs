@@ -386,6 +386,15 @@ impl Database {
         let tags_json = serde_json::to_string(&analysis.tags)?;
         let analyzed_at = chrono::Utc::now().timestamp();
 
+        // Begin transaction for atomic operation
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            tracing::error!("Failed to begin transaction for save_analysis: {}", e);
+            AppError::DatabaseError {
+                message: format!("Failed to begin transaction: {}", e),
+            }
+        })?;
+
+        // Execute the insert/update within transaction
         sqlx::query(
             r#"
             INSERT OR REPLACE INTO file_analysis
@@ -402,8 +411,22 @@ impl Database {
         .bind(&analysis.detected_language)
         .bind(analyzed_at)
         .bind(None::<&[u8]>) // NULL for embedding initially
-        .execute(&self.pool)
-        .await?;
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to save analysis for path '{}': {}", analysis.path, e);
+            AppError::DatabaseError {
+                message: format!("Failed to save analysis: {}", e),
+            }
+        })?;
+
+        // Commit transaction
+        tx.commit().await.map_err(|e| {
+            tracing::error!("Failed to commit transaction for save_analysis: {}", e);
+            AppError::DatabaseError {
+                message: format!("Failed to commit transaction: {}", e),
+            }
+        })?;
 
         Ok(())
     }
@@ -512,6 +535,14 @@ impl Database {
         let embedding_json = serde_json::to_string(embedding)?;
         let embedding_bytes = embedding_json.as_bytes().to_vec();
 
+        // Begin transaction for atomic multi-table update
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            tracing::error!("Failed to begin transaction for save_embedding: {}", e);
+            AppError::DatabaseError {
+                message: format!("Failed to begin transaction: {}", e),
+            }
+        })?;
+
         // Save to main table as fallback/backup
         sqlx::query(
             r#"
@@ -522,8 +553,14 @@ impl Database {
         )
         .bind(&embedding_bytes)
         .bind(path)
-        .execute(&self.pool)
-        .await?;
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to update file_analysis embedding for path '{}': {}", path, e);
+            AppError::DatabaseError {
+                message: format!("Failed to update embedding: {}", e),
+            }
+        })?;
 
         // Save to embeddings_v3 table for improved organization
         let model = model_name.unwrap_or("unknown");
@@ -536,10 +573,24 @@ impl Database {
         .bind(path)
         .bind(&embedding_bytes)
         .bind(model)
-        .execute(&self.pool)
-        .await?;
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to save to embeddings_v3 table for path '{}': {}", path, e);
+            AppError::DatabaseError {
+                message: format!("Failed to save embedding to v3 table: {}", e),
+            }
+        })?;
 
-        // Save to vector table using proper extension if available
+        // Commit the transaction first to ensure data consistency
+        tx.commit().await.map_err(|e| {
+            tracing::error!("Failed to commit transaction for save_embedding: {}", e);
+            AppError::DatabaseError {
+                message: format!("Failed to commit transaction: {}", e),
+            }
+        })?;
+
+        // Save to vector table using proper extension if available (non-transactional as it's optional)
         if self.vector_ext.is_available {
             if let Err(e) = self
                 .vector_ext
@@ -946,7 +997,7 @@ impl Database {
 
     async fn create_database_connection_with_retry(db_path: &PathBuf) -> Result<SqlitePool> {
         let database_url = format!(
-            "sqlite:{}?mode=rwc&journal_mode=WAL&busy_timeout=5000&synchronous=NORMAL",
+            "sqlite:{}",
             db_path.to_string_lossy()
         );
 
@@ -970,7 +1021,15 @@ impl Database {
                 .pragma("mmap_size", "268435456")
                 .pragma("journal_size_limit", "67108864"); // 64MB journal limit
 
-            match SqlitePool::connect_with(connection_options).await {
+            // Create pool with optimized settings
+            let pool_options = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(10) // Reasonable max for SQLite
+                .min_connections(2)  // Keep at least 2 connections ready
+                .acquire_timeout(Duration::from_secs(timeout_seconds))
+                .idle_timeout(Duration::from_secs(300)) // Close idle connections after 5 minutes
+                .max_lifetime(Duration::from_secs(1800)); // Recycle connections after 30 minutes
+
+            match pool_options.connect_with(connection_options).await {
                 Ok(pool) => {
                     tracing::info!(
                         "Database connection established successfully on attempt {}",
@@ -1033,7 +1092,8 @@ impl Database {
                         attempts,
                         e
                     );
-                    tokio::time::sleep(Duration::from_millis(100 * attempts as u64)).await;
+                    let delay_ms = (100u64).saturating_mul(attempts as u64);
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                 }
             }
         }
@@ -1470,6 +1530,10 @@ impl Database {
         )
         .execute(&self.pool)
         .await
+        .map_err(|e| {
+            tracing::debug!("Column may already exist (safe to ignore): {}", e);
+            e
+        })
         .ok(); // Ignore error if column already exists
 
         sqlx::query(
@@ -1948,6 +2012,10 @@ impl Database {
         sqlx::query("DELETE FROM embeddings_v3")
             .execute(&self.pool)
             .await
+            .map_err(|e| {
+                tracing::debug!("Legacy table may not exist (safe to ignore): {}", e);
+                e
+            })
             .ok(); // Ignore if table doesn't exist
 
         sqlx::query("DELETE FROM operations_history_v3")

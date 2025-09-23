@@ -35,6 +35,8 @@ class ApiCache {
 	private pendingRequests = new Map<string, Promise<unknown>>();
 	private readonly DEFAULT_TTL = 5000; // 5 seconds
 	private cleanupTimer: NodeJS.Timeout | null = null;
+	// Request deduplication for identical concurrent requests
+	private activeRequests = new Map<string, Promise<unknown>>();
 
 	constructor() {
 		// Start cleanup timer to remove stale entries
@@ -64,7 +66,14 @@ class ApiCache {
 	async cachedInvoke<T>(command: string, args: unknown = {}, ttl: number = this.DEFAULT_TTL): Promise<T> {
 		const cacheKey = this.generateKey(command, args);
 
-		// Check for pending request to avoid duplicate calls
+		// First check if there's an active request for the same command/args (deduplication)
+		const activeRequest = this.activeRequests.get(cacheKey);
+		if (activeRequest) {
+			// Return the existing promise to avoid duplicate backend calls
+			return activeRequest as Promise<T>;
+		}
+
+		// Check for pending request to avoid duplicate calls (legacy check)
 		const pending = this.pendingRequests.get(cacheKey);
 		if (pending) {
 			return pending as Promise<T>;
@@ -76,7 +85,7 @@ class ApiCache {
 			return cached.data as T;
 		}
 
-		// Create the request promise
+		// Create the request promise with deduplication
 		const requestPromise = (async () => {
 			try {
 				const data = await invoke<T>(command, args as Record<string, unknown>);
@@ -85,19 +94,27 @@ class ApiCache {
 					data,
 					timestamp: Date.now()
 				});
-				// Remove from pending requests
+				// Remove from active and pending requests
+				this.activeRequests.delete(cacheKey);
 				this.pendingRequests.delete(cacheKey);
 				return data;
 			} catch (error) {
-				// Remove from pending requests and cache on error
+				// Remove from active, pending requests and cache on error
+				this.activeRequests.delete(cacheKey);
 				this.pendingRequests.delete(cacheKey);
 				this.cache.delete(cacheKey);
 				throw error;
 			}
 		})();
 
-		// Store in pending requests to prevent race conditions
+		// Store in both active and pending requests to prevent race conditions
+		this.activeRequests.set(cacheKey, requestPromise);
 		this.pendingRequests.set(cacheKey, requestPromise);
+
+		// Clean up active request after a reasonable timeout (30 seconds)
+		setTimeout(() => {
+			this.activeRequests.delete(cacheKey);
+		}, 30000);
 
 		return requestPromise;
 	}
@@ -507,19 +524,30 @@ export async function checkOllamaStatus(): Promise<OllamaStatus> {
 				fallback_reason: 'Service temporarily unavailable'
 			})
 		) as any;
+
+		console.log('checkOllamaStatus raw status:', status);
+
 		// Add proper type validation
 		if (!status || typeof status !== 'object') {
-			throw new Error('Invalid status response');
+			console.warn('Invalid status response, using empty models');
+			return {
+				isRunning: false,
+				models: [],
+				version: 'unknown',
+				mode: 'fallback',
+				fallback_reason: 'Invalid status response'
+			};
 		}
 
 		// Ensure models is always an array, even if undefined, null, or non-array
 		let models: string[] = [];
-		if (status.models) {
+		if (status.models !== undefined && status.models !== null) {
 			if (Array.isArray(status.models)) {
 				models = status.models.map((m: any) => {
+					// Handle both string and object formats
 					if (typeof m === 'string') return m;
 					if (m && typeof m === 'object' && m.name) return String(m.name);
-					return String(m || '');
+					return '';
 				}).filter((m: string) => m.length > 0);
 			} else if (typeof status.models === 'string') {
 				// Handle case where models might be a single string
@@ -528,14 +556,19 @@ export async function checkOllamaStatus(): Promise<OllamaStatus> {
 			// If models is any other type, keep it as empty array
 		}
 
+		console.log('checkOllamaStatus processed models:', models);
+
 		// Map backend field names to frontend expected format
-		return {
+		const result = {
 			isRunning: Boolean(status.is_running || status.isRunning || false),
 			models,
 			version: String(status.version || 'unknown'),
 			mode: (status.is_running || status.isRunning) ? 'ollama' : 'fallback',
 			fallback_reason: status.fallback_reason
-		} as OllamaStatus;
+		};
+
+		console.log('checkOllamaStatus final result:', result);
+		return result as OllamaStatus;
 	} catch (error) {
 		console.error('Failed to check Ollama status:', error);
 		// Return fallback status if check fails

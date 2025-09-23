@@ -116,39 +116,101 @@ struct ErrorResponse {
 }
 
 impl AppError {
-    /// Returns a user-friendly error message
+    /// Returns a user-friendly error message with sensitive information sanitized
     pub fn user_message(&self) -> String {
         match self {
             Self::FileNotFound { .. } => "The requested file could not be found".to_string(),
-            Self::NotFound { message } => format!("Not found: {}", message),
+            Self::NotFound { .. } => "The requested resource was not found".to_string(),
             Self::AccessDenied { .. } => "Access to this resource is denied".to_string(),
             Self::InvalidPath { .. } => "The provided path is invalid".to_string(),
-            Self::AiError { .. } => "AI service is temporarily unavailable".to_string(),
-            Self::DatabaseError { .. } => "Database operation failed".to_string(),
-            Self::ConfigError { .. } => "Configuration is invalid".to_string(),
-            Self::NetworkError { .. } => "Network connection failed".to_string(),
-            Self::ParseError { .. } => "Failed to parse the data".to_string(),
-            Self::ProcessingError { message } => message.clone(),
+            Self::AiError { .. } => "AI service is temporarily unavailable. Please check your Ollama connection.".to_string(),
+            Self::DatabaseError { .. } => "Database operation failed. Please try again or restart the application.".to_string(),
+            Self::ConfigError { .. } => "Configuration is invalid. Please check your settings.".to_string(),
+            Self::NetworkError { .. } => "Network connection failed. Please check your internet connection.".to_string(),
+            Self::ParseError { .. } => "Failed to parse the data. The file format may be unsupported.".to_string(),
+            Self::ProcessingError { message } => Self::sanitize_message(message),
             Self::Cancelled => "Operation was cancelled".to_string(),
-            Self::ResourceNotAvailable { resource } => format!("{} is not available", resource),
-            Self::InvalidInput { message } => message.clone(),
-            Self::SecurityError { .. } => "Security violation detected".to_string(),
-            Self::SystemError { .. } => "System operation failed".to_string(),
-            Self::StorageFull => "Storage space is full".to_string(),
-            Self::ModelNotFound { model } => format!("Model '{}' is not installed", model),
-            Self::Io(_) => "File operation failed".to_string(),
-            Self::Tauri(_) => "Application error occurred".to_string(),
-            Self::SqlxError(_) => "Database error occurred".to_string(),
-            Self::SerdeJson(_) => "Data processing error".to_string(),
-            Self::NotifyError(_) => "File watching error occurred".to_string(),
-            Self::ReqwestError(_) => "Network request failed".to_string(),
-            Self::Other(_) => "An unexpected error occurred".to_string(),
-            Self::ResourceLimitExceeded { message } => message.clone(),
-            Self::Timeout { message } => message.clone(),
-            Self::ValidationError { field: _, message } => message.clone(),
-            Self::OperationError { message } => message.clone(),
-            Self::InvalidOperation { message } => message.clone(),
+            Self::ResourceNotAvailable { resource } => {
+                // Sanitize resource name to prevent exposing internal paths
+                let safe_resource = Self::sanitize_resource_name(resource);
+                format!("{} is not available", safe_resource)
+            },
+            Self::InvalidInput { message } => Self::sanitize_message(message),
+            Self::SecurityError { .. } => "A security check failed. Operation was blocked for safety.".to_string(),
+            Self::SystemError { .. } => "System operation failed. Please check system permissions.".to_string(),
+            Self::StorageFull => "Storage space is full. Please free up some disk space.".to_string(),
+            Self::ModelNotFound { model } => {
+                // Only show model name, not full path or internal details
+                let safe_model = Self::sanitize_model_name(model);
+                format!("AI model '{}' is not installed. Please install it via Ollama.", safe_model)
+            },
+            Self::Io(_) => "File operation failed. Please check file permissions and disk space.".to_string(),
+            Self::Tauri(_) => "Application error occurred. Please restart the application.".to_string(),
+            Self::SqlxError(_) => "Database error occurred. Please restart the application.".to_string(),
+            Self::SerdeJson(_) => "Data processing error. The data format may be invalid.".to_string(),
+            Self::NotifyError(_) => "File monitoring error occurred. File watching may be temporarily disabled.".to_string(),
+            Self::ReqwestError(_) => "Network request failed. Please check your connection and try again.".to_string(),
+            Self::Other(_) => "An unexpected error occurred. Please try again or restart the application.".to_string(),
+            Self::ResourceLimitExceeded { message } => Self::sanitize_message(message),
+            Self::Timeout { .. } => "Operation timed out. Please try again with a smaller selection.".to_string(),
+            Self::ValidationError { field: _, message } => Self::sanitize_message(message),
+            Self::OperationError { message } => Self::sanitize_message(message),
+            Self::InvalidOperation { message } => Self::sanitize_message(message),
         }
+    }
+
+    /// Sanitize error messages to remove sensitive information
+    fn sanitize_message(message: &str) -> String {
+        // Remove absolute paths (Windows and Unix)
+        let mut sanitized = message.to_string();
+
+        // Remove Windows absolute paths
+        let win_path_regex = regex::Regex::new(r#"[A-Z]:[\\\/][^\s"']+"#).unwrap();
+        sanitized = win_path_regex.replace_all(&sanitized, "[path]").to_string();
+
+        // Remove Unix absolute paths
+        let unix_path_regex = regex::Regex::new(r#"\/[^\s"']+"#).unwrap();
+        sanitized = unix_path_regex.replace_all(&sanitized, "[path]").to_string();
+
+        // Remove potential URLs with credentials
+        let url_regex = regex::Regex::new(r"https?://[^@\s]+@[^\s]+").unwrap();
+        sanitized = url_regex.replace_all(&sanitized, "[url]").to_string();
+
+        // Remove IP addresses
+        let ip_regex = regex::Regex::new(r"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b").unwrap();
+        sanitized = ip_regex.replace_all(&sanitized, "[ip]").to_string();
+
+        // Remove port numbers
+        let port_regex = regex::Regex::new(r":[0-9]{2,5}\b").unwrap();
+        sanitized = port_regex.replace_all(&sanitized, ":[port]").to_string();
+
+        // Limit message length to prevent verbose error dumps
+        if sanitized.len() > 200 {
+            sanitized.truncate(197);
+            sanitized.push_str("...");
+        }
+
+        sanitized
+    }
+
+    /// Sanitize resource names to prevent path disclosure
+    fn sanitize_resource_name(resource: &str) -> String {
+        // Extract just the filename if it's a path
+        std::path::Path::new(resource)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("resource")
+            .to_string()
+    }
+
+    /// Sanitize model names to prevent internal detail disclosure
+    fn sanitize_model_name(model: &str) -> String {
+        // Remove version numbers and technical suffixes
+        model.split(':').next()
+            .unwrap_or("model")
+            .split('/').last()
+            .unwrap_or("model")
+            .to_string()
     }
 
     /// Returns the error type for frontend handling

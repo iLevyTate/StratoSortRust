@@ -75,14 +75,12 @@ struct MemoryGuard {
 }
 
 // RAII guard for operation tracking to prevent resource leaks
-#[allow(dead_code)]
 struct OperationGuard {
     operation_id: uuid::Uuid,
     state: std::sync::Arc<AppState>,
     completed: bool,
 }
 
-#[allow(dead_code)]
 impl OperationGuard {
     fn new(
         state: std::sync::Arc<AppState>,
