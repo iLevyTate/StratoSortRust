@@ -9,6 +9,13 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 
+#[derive(Debug, Clone)]
+struct ChannelMetrics {
+    dropped_events: u64,
+    total_events: u64,
+    last_drop_time: Option<Instant>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileEvent {
     pub event_type: String,
@@ -120,8 +127,16 @@ impl FileWatcher {
             }
         }
 
-        let (tx, mut rx) = mpsc::channel(1000); // Increased buffer for high-activity directories
+        // Use bounded channel with backpressure handling
+        let (tx, mut rx) = mpsc::channel(100); // Reduced buffer to detect backpressure earlier
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
+
+        // Metrics for monitoring channel health
+        let channel_metrics = Arc::new(RwLock::new(ChannelMetrics {
+            dropped_events: 0,
+            total_events: 0,
+            last_drop_time: None,
+        }));
 
         let app_handle = self.app_handle.clone();
         let state = self.state.clone();
@@ -130,12 +145,35 @@ impl FileWatcher {
         let user_actions = self.user_actions.clone();
         let recent_operations = self.recent_operations.clone();
 
-        // Create enhanced watcher with learning capabilities
+        // Create enhanced watcher with backpressure handling
+        let metrics_clone = channel_metrics.clone();
         let mut watcher = notify::recommended_watcher(move |res| match res {
             Ok(event) => {
                 let tx_clone = tx.clone();
-                tokio::task::spawn_blocking(move || {
-                    let _ = tx_clone.blocking_send(event);
+                let metrics = metrics_clone.clone();
+                tokio::task::spawn(async move {
+                    // Try to send with timeout to detect backpressure
+                    match tokio::time::timeout(
+                        Duration::from_millis(100),
+                        tx_clone.send(event)
+                    ).await {
+                        Ok(Ok(_)) => {
+                            // Event sent successfully
+                            let mut m = metrics.write().await;
+                            m.total_events += 1;
+                        }
+                        Ok(Err(_)) | Err(_) => {
+                            // Channel full or timeout - apply backpressure
+                            let mut m = metrics.write().await;
+                            m.dropped_events += 1;
+                            m.last_drop_time = Some(Instant::now());
+
+                            // Log only periodically to avoid log spam
+                            if m.dropped_events % 100 == 1 {
+                                warn!("File watcher channel congested, dropped {} events", m.dropped_events);
+                            }
+                        }
+                    }
                 });
             }
             Err(e) => {
@@ -257,17 +295,23 @@ impl FileWatcher {
         self.watch_config.read().await.clone()
     }
 
-    /// Record a user action for learning
+    /// Record a user action for learning with proper cleanup
     pub async fn record_user_action(&self, action: UserAction) {
         let mut actions = self.user_actions.write().await;
         actions.push(action.clone());
 
-        // Keep only recent actions (last 1000)
-        if actions.len() > 1000 {
-            actions.drain(0..500); // Remove older half
+        // Cleanup old actions by time (keep only last hour)
+        let cutoff = chrono::Utc::now().timestamp() - 3600;
+        actions.retain(|a| a.timestamp > cutoff);
+
+        // Also limit by count to prevent unbounded growth
+        const MAX_ACTIONS: usize = 500; // Reduced from 1000 for better memory management
+        if actions.len() > MAX_ACTIONS {
+            let excess = actions.len() - MAX_ACTIONS;
+            actions.drain(0..excess);
         }
 
-        debug!("Recorded user action: {:?}", action);
+        debug!("Recorded user action: {:?} (total actions: {})", action, actions.len());
     }
 
     /// Get recent user actions for pattern learning
@@ -320,7 +364,7 @@ impl FileWatcher {
         Ok(())
     }
 
-    /// Auto-organization processor that runs continuously
+    /// Auto-organization processor that runs continuously with cleanup
     async fn auto_organization_processor(
         config: Arc<RwLock<WatchModeConfig>>,
         pending_files: Arc<RwLock<HashMap<PathBuf, PendingFile>>>,
@@ -328,9 +372,24 @@ impl FileWatcher {
         app_handle: AppHandle,
     ) {
         let mut interval = tokio::time::interval(Duration::from_millis(1000)); // Check every second
+        let mut cleanup_counter = 0u32;
 
         loop {
             interval.tick().await;
+            cleanup_counter = cleanup_counter.wrapping_add(1);
+
+            // Perform periodic cleanup every 60 seconds
+            if cleanup_counter % 60 == 0 {
+                // Cleanup old pending files (older than 5 minutes)
+                let mut pending = pending_files.write().await;
+                let now = Instant::now();
+                pending.retain(|_, file| {
+                    now.duration_since(file.detected_at) < Duration::from_secs(300)
+                });
+                drop(pending);
+
+                debug!("Performed periodic cleanup of pending files");
+            }
 
             let config_read = config.read().await;
             if !config_read.enabled {

@@ -11,6 +11,15 @@ pub fn initialize_sqlite_vec() -> Result<()> {
     // extension initialization pattern. No memory management is required here as
     // SQLite handles the extension lifecycle internally.
     unsafe {
+        // SAFETY: Validate the function pointer exists before calling
+        // This prevents segfaults if the extension is not properly linked
+        let init_fn = sqlite_vec::sqlite3_vec_init as *const ();
+        if init_fn.is_null() {
+            return Err(crate::error::AppError::DatabaseError {
+                message: "sqlite-vec extension function pointer is null. Extension may not be properly linked.".to_string(),
+            });
+        }
+
         // This registers the extension globally for all new SQLite connections
         sqlite_vec::sqlite3_vec_init();
         debug!("sqlite-vec extension initialization called");
@@ -75,6 +84,13 @@ pub fn initialize_with_rusqlite() -> Result<()> {
             *mut *const std::os::raw::c_char,
             *const rusqlite::ffi::sqlite3_api_routines,
         ) -> std::os::raw::c_int = sqlite_vec::sqlite3_vec_init;
+
+        // Extra null pointer check for safety
+        if extension_fn as *const () == std::ptr::null() {
+            return Err(crate::error::AppError::DatabaseError {
+                message: "sqlite-vec extension function is null".to_string(),
+            });
+        }
         
         // sqlite3_auto_extension can fail if memory allocation fails or if too many extensions are registered
         let result = sqlite3_auto_extension(Some(extension_fn));

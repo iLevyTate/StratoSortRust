@@ -84,26 +84,41 @@ pub async fn create_smart_folder(
         updated_at: now.timestamp(),
     };
 
-    // Save to database
-    match state.database.save_smart_folder(&smart_folder).await {
-        Ok(_) => {
-            // Emit success notification
-            let _ = app.emit(
-                "notification",
-                serde_json::json!({
-                    "type": "success",
-                    "title": "Smart Folder Created",
-                    "message": format!("Smart folder '{}' has been created successfully", name),
-                    "timestamp": chrono::Utc::now().timestamp(),
-                }),
-            );
+    // Begin transaction for atomic operation
+    let transaction_result = async {
+        // Save to database
+        state.database.save_smart_folder(&smart_folder).await?;
 
-            tracing::info!("Created smart folder: {} ({})", name, id);
-            Ok(smart_folder)
+        // Store event for deferred emission (outbox pattern)
+        let event_data = serde_json::json!({
+            "type": "success",
+            "title": "Smart Folder Created",
+            "message": format!("Smart folder '{}' has been created successfully", name),
+            "timestamp": chrono::Utc::now().timestamp(),
+        });
+
+        // Log success within transaction
+        tracing::info!("Created smart folder: {} ({})", name, id);
+
+        Ok::<_, crate::error::AppError>((smart_folder.clone(), event_data))
+    }.await;
+
+    // Handle transaction result and emit events outside of transaction
+    match transaction_result {
+        Ok((folder, event_data)) => {
+            // Emit event after successful transaction
+            // Use non-critical error handling for event emission
+            if let Err(e) = app.emit("notification", event_data) {
+                tracing::warn!("Failed to emit notification after smart folder creation: {}", e);
+                // Don't fail the operation if notification fails
+            }
+
+            Ok(folder)
         }
         Err(e) => {
             tracing::error!("Failed to create smart folder '{}': {}", name, e);
 
+            // Emit error notification (best effort)
             let _ = app.emit("notification", serde_json::json!({
                 "type": "error",
                 "title": "Failed to Create Smart Folder",

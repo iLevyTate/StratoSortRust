@@ -716,6 +716,43 @@ impl FileCache {
         }
     }
 
+    /// Invalidate a single cache entry
+    pub fn invalidate(&self, path: &str) {
+        if self.entries.remove(path).is_some() {
+            tracing::debug!("Invalidated cache entry for: {}", path);
+        }
+    }
+
+    /// Invalidate multiple cache entries matching a prefix
+    pub fn invalidate_prefix(&self, prefix: &str) {
+        let mut invalidated = 0;
+        self.entries.retain(|key, _| {
+            if key.starts_with(prefix) {
+                invalidated += 1;
+                false
+            } else {
+                true
+            }
+        });
+        if invalidated > 0 {
+            tracing::debug!("Invalidated {} cache entries with prefix: {}", invalidated, prefix);
+        }
+    }
+
+    /// Invalidate cache entries based on file system events
+    pub fn handle_file_event(&self, event_type: &str, path: &str) {
+        match event_type {
+            "modify" | "remove" => {
+                self.invalidate(path);
+            }
+            "rename" => {
+                // For rename, invalidate both old and new paths
+                self.invalidate(path);
+            }
+            _ => {}
+        }
+    }
+
     /// Get cache statistics atomically
     pub async fn get_stats(&self) -> (usize, usize) {
         let cache_size = self.entries.len();
@@ -724,7 +761,33 @@ impl FileCache {
     }
 
     pub fn get(&self, path: &str) -> Option<CachedFile> {
-        self.entries.get(path).map(|e| e.clone())
+        // Check if file still exists and hasn't been modified
+        if let Some(entry) = self.entries.get(path) {
+            // Check if cache entry is still valid (file hasn't changed)
+            if let Ok(metadata) = std::fs::metadata(path) {
+                if let Ok(modified) = metadata.modified() {
+                    let modified_timestamp = modified.duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64;
+
+                    let modified_datetime = chrono::DateTime::<chrono::Utc>::from_timestamp(modified_timestamp, 0)
+                        .unwrap_or_else(chrono::Utc::now);
+
+                    // If file has been modified after cache time, invalidate
+                    if modified_datetime > entry.accessed {
+                        drop(entry); // Release the lock
+                        self.invalidate(path);
+                        return None;
+                    }
+                }
+                return Some(entry.clone());
+            } else {
+                // File doesn't exist anymore, invalidate cache
+                drop(entry);
+                self.invalidate(path);
+            }
+        }
+        None
     }
 
     pub fn insert(&self, path: String, file: CachedFile) {

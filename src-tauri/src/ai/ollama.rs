@@ -171,6 +171,7 @@ struct ConnectionHealth {
     last_check: std::time::Instant,
     consecutive_failures: u32,
     available_models: Vec<String>,
+    models_cache_time: Option<std::time::Instant>,
 }
 
 impl Default for ConnectionHealth {
@@ -180,6 +181,7 @@ impl Default for ConnectionHealth {
             last_check: std::time::Instant::now(),
             consecutive_failures: 0,
             available_models: Vec::new(),
+            models_cache_time: None,
         }
     }
 }
@@ -283,6 +285,7 @@ impl OllamaClient {
                 last_check: std::time::Instant::now(),
                 consecutive_failures: 0,
                 available_models: Vec::new(),
+                models_cache_time: None,
             })),
             connection_pool: ConnectionPool::new(pool_size), // Use specified pool size
         };
@@ -312,6 +315,7 @@ impl OllamaClient {
                 health.consecutive_failures = 0;
                 health.last_check = std::time::Instant::now();
                 health.available_models = models.iter().map(|m| m.name.clone()).collect();
+                health.models_cache_time = Some(std::time::Instant::now());
 
                 debug!(
                     "Ollama is healthy with {} models available",
@@ -445,6 +449,64 @@ impl OllamaClient {
             .available_models
             .iter()
             .any(|m| m.starts_with(model_name))
+    }
+
+    /// Get cached list of available models with TTL
+    pub async fn list_models_cached(&self) -> Result<Vec<String>> {
+        const CACHE_TTL: Duration = Duration::from_secs(60); // Cache for 1 minute
+
+        // Check if cache is still valid
+        {
+            let health = self.connection_health.read().await;
+            if let Some(cache_time) = health.models_cache_time {
+                if cache_time.elapsed() < CACHE_TTL && !health.available_models.is_empty() {
+                    debug!("Returning cached model list ({} models)", health.available_models.len());
+                    return Ok(health.available_models.clone());
+                }
+            }
+        }
+
+        // Cache miss or expired, fetch new list
+        debug!("Fetching fresh model list from Ollama");
+        match timeout(Duration::from_secs(5), self.client.list_local_models()).await {
+            Ok(Ok(models)) => {
+                let model_names: Vec<String> = models.iter().map(|m| m.name.clone()).collect();
+
+                // Update cache
+                let mut health = self.connection_health.write().await;
+                health.available_models = model_names.clone();
+                health.models_cache_time = Some(std::time::Instant::now());
+                health.is_healthy = true;
+                health.consecutive_failures = 0;
+
+                info!("Updated model cache with {} models", model_names.len());
+                Ok(model_names)
+            }
+            Ok(Err(e)) => {
+                // On error, return cached data if available
+                let health = self.connection_health.read().await;
+                if !health.available_models.is_empty() {
+                    warn!("Failed to fetch models, using stale cache: {}", e);
+                    Ok(health.available_models.clone())
+                } else {
+                    Err(AppError::AiError {
+                        message: format!("Failed to list models: {}", e),
+                    })
+                }
+            }
+            Err(_) => {
+                // Timeout - return cached data if available
+                let health = self.connection_health.read().await;
+                if !health.available_models.is_empty() {
+                    warn!("Model list request timed out, using stale cache");
+                    Ok(health.available_models.clone())
+                } else {
+                    Err(AppError::AiError {
+                        message: "Failed to list models: request timed out".to_string(),
+                    })
+                }
+            }
+        }
     }
 
     /// Get connection pool statistics
