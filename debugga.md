@@ -620,7 +620,145 @@ Comprehensive audit of StratoSort - a Tauri v2 application with Svelte frontend,
 - Database connection pool saturation
 - Network timeout scenarios
 
+## Deep Audit Round 4 - Additional Critical Findings
+
+### Path Traversal Vulnerabilities
+
+#### Issue: Unvalidated Path Construction in history.rs
+**Severity**: HIGH
+**Files**: src-tauri/src/commands/history.rs (lines 463-640)
+**Description**: Multiple instances of `PathBuf::from(&operation.source)` without validation
+- Direct construction from user input without `validate_path()`
+- Could allow operations outside allowed directories
+- Affects undo/redo operations
+**Risk**: Users could potentially manipulate history to access unauthorized files
+**Fix**: Add `validate_path()` checks before all path operations
+
+### Rate Limiting Gaps
+
+#### Issue: No API-Level Rate Limiting
+**Severity**: MEDIUM-HIGH
+**Description**: While there's semaphore-based concurrency control, no per-user/per-endpoint rate limiting
+- Commands can be called unlimited times
+- No protection against rapid-fire API calls
+- Could lead to DoS through resource exhaustion
+**Affected**: All `#[tauri::command]` endpoints
+**Fix**: Implement middleware-based rate limiting with per-endpoint quotas
+
+### Resource Exhaustion Vulnerabilities
+
+#### Issue: Large File Handling Without Streaming
+**Severity**: HIGH
+**Files**: Multiple command files
+**Description**: Files are read entirely into memory without size checks
+- No streaming for large files
+- Could cause OOM with large files
+- No file size validation before reading
+**Risk**: Memory exhaustion attack vector
+**Fix**: Implement streaming for files > 10MB, add size validation
+
+#### Issue: Unbounded Collection Growth
+**Severity**: MEDIUM
+**Additional Locations Found**:
+- File watcher metrics (ChannelMetrics) - no cleanup
+- Recent operations map - limited cleanup but could grow
+**Fix**: Add periodic cleanup tasks and size limits
+
+### Security Monitoring Gaps
+
+#### Issue: No Audit Logging
+**Severity**: MEDIUM
+**Description**: No security event logging for:
+- Failed authentication attempts
+- Path traversal attempts
+- Rate limit violations
+- Permission denied events
+**Fix**: Implement comprehensive audit logging system
+
+### Database Performance Issues
+
+#### Issue: Missing Indexes
+**Severity**: MEDIUM
+**Tables Needing Indexes**:
+- `vec_embeddings`: No index on `path` column (frequent lookups)
+- `file_history`: No index on `timestamp` (range queries)
+- `smart_folders`: No compound index for complex queries
+**Fix**: Add appropriate indexes based on query patterns
+
+### Architectural Issues
+
+#### Issue: Potential Circular Dependencies
+**Severity**: LOW-MEDIUM
+**Description**: Complex interdependencies between:
+- AppState → Services → AppState (circular reference)
+- Commands → State → Services → Commands
+**Risk**: Difficult testing, potential deadlocks
+**Fix**: Implement dependency injection pattern
+
+### Concurrent Operation Issues
+
+#### Issue: Missing Transaction Isolation
+**Severity**: MEDIUM
+**Description**: Some operations perform multiple database operations without proper isolation
+- Could lead to inconsistent state
+- Race conditions between concurrent operations
+**Fix**: Use proper transaction isolation levels
+
+### Additional Security Concerns
+
+#### Issue: Command Injection Risk in system.rs
+**Severity**: MEDIUM
+**Description**: While paths are validated, command construction could be vulnerable
+**Fix**: Use proper command builders, avoid shell interpretation
+
+#### Issue: Missing Content-Type Validation
+**Severity**: LOW
+**Description**: File operations don't validate content matches extension
+**Risk**: Malicious file execution
+**Fix**: Add magic number validation
+
+## Fixes Implemented (Round 3)
+
+### Critical Security & Stability Fixes ✅
+1. **Null Pointer Checks** - Added FFI safety validations
+2. **Transactional Boundaries** - Smart folder operations now atomic
+3. **Memory Leak Prevention** - Automatic cleanup for collections
+4. **Async Runtime Optimization** - Fixed blocking operations
+5. **Backpressure Handling** - Channel flow control implemented
+6. **Cache Invalidation** - File system aware caching
+7. **Model List Caching** - Reduced network overhead
+8. **Error Recovery UI** - Frontend resilience improved
+
+## Remaining Critical Work
+
+### Immediate Priority (Security)
+1. Fix path traversal in history.rs
+2. Implement API rate limiting
+3. Add audit logging
+
+### High Priority (Stability)
+1. Add streaming for large files
+2. Create database indexes
+3. Fix circular dependencies
+
+### Medium Priority (Performance)
+1. Implement request size limits
+2. Add telemetry/monitoring
+3. Optimize concurrent operations
+
+## Risk Assessment
+
+### Current State
+- **Security**: MEDIUM-HIGH risk due to path traversal and rate limiting gaps
+- **Stability**: MEDIUM risk from resource exhaustion vectors
+- **Performance**: MEDIUM impact from missing indexes and streaming
+
+### After Proposed Fixes
+- **Security**: LOW risk with comprehensive validation and monitoring
+- **Stability**: LOW risk with proper resource management
+- **Performance**: GOOD with optimized queries and streaming
+
 ---
-*Last Updated: 2025-09-22*
-*Audit Version: 3.0*
-*Status: Deep comprehensive audit completed, 15+ additional issues identified*
+*Last Updated: 2025-09-23*
+*Audit Version: 4.0*
+*Status: Deep comprehensive audit completed, 25+ critical issues identified, 8 fixed*

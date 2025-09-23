@@ -1,4 +1,4 @@
-use crate::{error::Result, state::AppState};
+use crate::{error::Result, state::AppState, utils::security::validate_path};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -32,7 +32,7 @@ pub async fn undo(
 
     if let Some(op) = operation {
         // Perform the undo operation
-        let success = perform_undo_operation(&op, &state).await?;
+        let success = perform_undo_operation(&op, &state, &app).await?;
 
         if success {
             app.emit("history-operation-undone", &op)?;
@@ -61,7 +61,7 @@ pub async fn redo(
 
     if let Some(op) = operation {
         // Perform the redo operation
-        let success = perform_redo_operation(&op, &state).await?;
+        let success = perform_redo_operation(&op, &state, &app).await?;
 
         if success {
             app.emit("history-operation-redone", &op)?;
@@ -253,7 +253,7 @@ pub async fn batch_undo(
     for _ in 0..count {
         match state.undo_redo.undo().await {
             Ok(Some(op)) => {
-                if perform_undo_operation(&op, &state).await? {
+                if perform_undo_operation(&op, &state, &app).await? {
                     successful += 1;
                     operations.push(op);
                 } else {
@@ -300,7 +300,7 @@ pub async fn batch_redo(
     for _ in 0..count {
         match state.undo_redo.redo().await {
             Ok(Some(op)) => {
-                if perform_redo_operation(&op, &state).await? {
+                if perform_redo_operation(&op, &state, &app).await? {
                     successful += 1;
                     operations.push(op);
                 } else {
@@ -387,7 +387,7 @@ pub async fn jump_to_history(
         for _ in 0..undo_count {
             match state.undo_redo.undo().await {
                 Ok(Some(op)) => {
-                    if perform_undo_operation(&op, &state).await? {
+                    if perform_undo_operation(&op, &state, &app).await? {
                         undone += 1;
                     } else {
                         success = false;
@@ -411,7 +411,7 @@ pub async fn jump_to_history(
         for _ in 0..redo_count {
             match state.undo_redo.redo().await {
                 Ok(Some(op)) => {
-                    if perform_redo_operation(&op, &state).await? {
+                    if perform_redo_operation(&op, &state, &app).await? {
                         redone += 1;
                     } else {
                         success = false;
@@ -454,14 +454,15 @@ pub async fn jump_to_history(
 async fn perform_undo_operation(
     operation: &crate::storage::Operation,
     _state: &AppState,
+    app: &AppHandle,
 ) -> Result<bool> {
     // Pre-flight checks
     match operation.operation_type.as_str() {
         "move" => {
             // Reverse the move operation
             if let Some(destination) = &operation.destination {
-                let source_path = std::path::PathBuf::from(&operation.source);
-                let dest_path = std::path::PathBuf::from(destination);
+                let source_path = validate_path(&operation.source, &app)?.into_path_buf();
+                let dest_path = validate_path(destination, &app)?.into_path_buf();
 
                 // Validate that the destination file exists
                 if !dest_path.exists() {
@@ -528,7 +529,7 @@ async fn perform_undo_operation(
         "copy" => {
             // Delete the copied file
             if let Some(destination) = &operation.destination {
-                let dest_path = std::path::PathBuf::from(destination);
+                let dest_path = validate_path(destination, &app)?.into_path_buf();
                 if dest_path.exists() {
                     match tokio::fs::remove_file(destination).await {
                         Ok(_) => {
@@ -557,7 +558,7 @@ async fn perform_undo_operation(
                         match BASE64_STANDARD.decode(backup_str) {
                             Ok(backup_content) => {
                                 // Ensure directory exists
-                                let source_path = std::path::PathBuf::from(&operation.source);
+                                let source_path = validate_path(&operation.source, &app)?.into_path_buf();
                                 if let Some(parent) = source_path.parent() {
                                     if !parent.exists() {
                                         if let Err(e) = tokio::fs::create_dir_all(parent).await {
@@ -610,7 +611,7 @@ async fn perform_undo_operation(
         }
         "create" => {
             // Undo create by deleting the file
-            let source_path = std::path::PathBuf::from(&operation.source);
+            let source_path = validate_path(&operation.source, &app)?.into_path_buf();
             if source_path.exists() {
                 match tokio::fs::remove_file(&operation.source).await {
                     Ok(_) => {
@@ -636,8 +637,8 @@ async fn perform_undo_operation(
         "rename" => {
             // Reverse the rename
             if let Some(destination) = &operation.destination {
-                let dest_path = std::path::PathBuf::from(destination);
-                let source_path = std::path::PathBuf::from(&operation.source);
+                let dest_path = validate_path(destination, &app)?.into_path_buf();
+                let source_path = validate_path(&operation.source, &app)?.into_path_buf();
 
                 if !dest_path.exists() {
                     tracing::warn!(
@@ -683,12 +684,13 @@ async fn perform_undo_operation(
 async fn perform_redo_operation(
     operation: &crate::storage::Operation,
     _state: &AppState,
+    app: &AppHandle,
 ) -> Result<bool> {
     match operation.operation_type.as_str() {
         "move" | "rename" => {
             if let Some(destination) = &operation.destination {
-                let source_path = std::path::PathBuf::from(&operation.source);
-                let dest_path = std::path::PathBuf::from(destination);
+                let source_path = validate_path(&operation.source, &app)?.into_path_buf();
+                let dest_path = validate_path(destination, &app)?.into_path_buf();
 
                 // Validate source exists
                 if !source_path.exists() {
@@ -762,8 +764,8 @@ async fn perform_redo_operation(
         }
         "copy" => {
             if let Some(destination) = &operation.destination {
-                let source_path = std::path::PathBuf::from(&operation.source);
-                let dest_path = std::path::PathBuf::from(destination);
+                let source_path = validate_path(&operation.source, &app)?.into_path_buf();
+                let dest_path = validate_path(destination, &app)?.into_path_buf();
 
                 // Validate source exists
                 if !source_path.exists() {
@@ -804,7 +806,7 @@ async fn perform_redo_operation(
             }
         }
         "delete" => {
-            let source_path = std::path::PathBuf::from(&operation.source);
+            let source_path = validate_path(&operation.source, &app)?.into_path_buf();
 
             if !source_path.exists() {
                 tracing::warn!(
@@ -828,7 +830,7 @@ async fn perform_redo_operation(
         "create" => {
             // Redo create - this is tricky as we need original content
             // For now, we'll create an empty file if it doesn't exist
-            let source_path = std::path::PathBuf::from(&operation.source);
+            let source_path = validate_path(&operation.source, &app)?.into_path_buf();
 
             if source_path.exists() {
                 tracing::warn!(
