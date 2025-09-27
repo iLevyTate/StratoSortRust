@@ -1472,6 +1472,51 @@ export async function getWatchPaths(): Promise<string[]> {
 	}
 }
 
+export async function getWatchConfig(): Promise<{ enabled: boolean; paths: string[] }> {
+	try {
+		return await secureInvoke<{ enabled: boolean; paths: string[] }>('get_watch_config');
+	} catch (error) {
+		console.error('Failed to get watch config:', error);
+		return { enabled: false, paths: [] };
+	}
+}
+
+export async function updateWatchConfig(config: { enabled: boolean; paths: string[] }): Promise<void> {
+	try {
+		return await secureInvoke('update_watch_config', { config });
+	} catch (error) {
+		console.error('Failed to update watch config:', error);
+		throw error;
+	}
+}
+
+export async function startWatchMode(): Promise<void> {
+	try {
+		return await secureInvoke('start_watch_mode');
+	} catch (error) {
+		console.error('Failed to start watch mode:', error);
+		throw error;
+	}
+}
+
+export async function stopWatchMode(): Promise<void> {
+	try {
+		return await secureInvoke('stop_watch_mode');
+	} catch (error) {
+		console.error('Failed to stop watch mode:', error);
+		throw error;
+	}
+}
+
+export async function getWatchStatus(): Promise<{ active: boolean; lastCheck?: number; filesProcessed?: number }> {
+	try {
+		return await secureInvoke<{ active: boolean; lastCheck?: number; filesProcessed?: number }>('get_watch_status');
+	} catch (error) {
+		console.error('Failed to get watch status:', error);
+		return { active: false };
+	}
+}
+
 // System Monitoring Operations
 export async function getHealthStatus(): Promise<HealthStatus> {
 	try {
