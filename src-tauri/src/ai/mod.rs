@@ -238,15 +238,13 @@ impl AiService {
             }
             AiProvider::Fallback => {
                 // Periodically try to reconnect to Ollama (every 10th call)
-                static mut FALLBACK_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-                unsafe {
-                    if FALLBACK_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % 10 == 0 {
-                        tracing::info!("Attempting to reconnect to Ollama...");
-                        if let Ok(true) = self.is_connected().await {
-                            tracing::info!("Ollama reconnected, switching back to Ollama provider");
-                            *self.provider.write() = AiProvider::Ollama;
-                            // Will try Ollama on next call
-                        }
+                static FALLBACK_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                if FALLBACK_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % 10 == 0 {
+                    tracing::info!("Attempting to reconnect to Ollama...");
+                    if let Ok(true) = self.is_connected().await {
+                        tracing::info!("Ollama reconnected, switching back to Ollama provider");
+                        *self.provider.write() = AiProvider::Ollama;
+                        // Will try Ollama on next call
                     }
                 }
                 self.fallback_analysis_with_path(content, file_type, path)

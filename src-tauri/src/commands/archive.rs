@@ -3,8 +3,7 @@ use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tauri::{AppHandle, Runtime, State};
-use crate::utils::security::{validate_path, is_path_allowed};
-use std::fs::File;
+use crate::utils::security::validate_path;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,24 +40,24 @@ pub struct ExtractResult {
 async fn compress_files_internal<R: Runtime>(
     options: CompressOptions,
     app: AppHandle<R>,
-    state: State<'_, Arc<AppState>>,
+    _state: State<'_, Arc<AppState>>,
 ) -> Result<CompressResult> {
     // Validate all input paths
     for file_path in &options.files {
         validate_path(file_path, &app)?;
     }
 
-    let output_path = validate_path(&options.output_path, &app)?.into_path_buf();
+    let _output_path = validate_path(&options.output_path, &app)?.into_path_buf();
 
     // Default to ZIP format if not specified
     let format = options.format.unwrap_or_else(|| "zip".to_string());
 
     // Calculate total size of original files
-    let mut original_size = 0u64;
+    let mut _original_size = 0u64;
     for file_path in &options.files {
         let path = PathBuf::from(file_path);
         if path.exists() {
-            original_size += std::fs::metadata(&path)?.len();
+            _original_size += std::fs::metadata(&path)?.len();
         }
     }
 
@@ -70,10 +69,10 @@ async fn compress_files_internal<R: Runtime>(
                 use zip::write::SimpleFileOptions;
                 use std::io::Write;
 
-                let file = File::create(&output_path)?;
+                let file = std::fs::File::create(&_output_path)?;
                 let mut zip = ZipWriter::new(file);
 
-                let options = SimpleFileOptions::default()
+                let zip_options = SimpleFileOptions::default()
                     .compression_method(CompressionMethod::Deflated);
 
                 for file_path in &options.files {
@@ -88,47 +87,47 @@ async fn compress_files_internal<R: Runtime>(
                                 message: "Non-UTF8 file name".to_string(),
                             })?;
 
-                        zip.start_file(file_name, options)?;
+                        zip.start_file(file_name, zip_options)?;
                         let contents = std::fs::read(&path)?;
                         zip.write_all(&contents)?;
                     }
                 }
 
                 zip.finish()?;
+
+                // Get compressed file size
+                let compressed_size = std::fs::metadata(&_output_path)?.len();
+                let compression_ratio = if _original_size > 0 {
+                    compressed_size as f32 / _original_size as f32
+                } else {
+                    1.0
+                };
+
+                // Log the operation
+                tracing::info!("Compressed {} files to {}", options.files.len(), _output_path.display());
+
+                Ok(CompressResult {
+                    success: true,
+                    output_file: _output_path.to_string_lossy().to_string(),
+                    compressed_size,
+                    original_size: _original_size,
+                    compression_ratio,
+                })
             }
 
             #[cfg(not(feature = "zip"))]
             {
-                return Err(AppError::ProcessingError {
+                Err(AppError::ProcessingError {
                     message: "ZIP compression not available. Enable the 'zip' feature.".to_string(),
-                });
+                })
             }
         }
         _ => {
-            return Err(AppError::ProcessingError {
+            Err(AppError::ProcessingError {
                 message: format!("Unsupported archive format: {}", format),
-            });
+            })
         }
     }
-
-    // Get compressed file size
-    let compressed_size = std::fs::metadata(&output_path)?.len();
-    let compression_ratio = if original_size > 0 {
-        compressed_size as f32 / original_size as f32
-    } else {
-        1.0
-    };
-
-    // Log the operation
-    tracing::info!("Compressed {} files to {}", options.files.len(), output_path.display());
-
-    Ok(CompressResult {
-        success: true,
-        output_file: output_path.to_string_lossy().to_string(),
-        compressed_size,
-        original_size,
-        compression_ratio,
-    })
 }
 
 // Non-generic wrapper for Tauri command registration
@@ -145,7 +144,7 @@ pub async fn compress_files(
 async fn extract_archive_internal<R: Runtime>(
     options: ExtractOptions,
     app: AppHandle<R>,
-    state: State<'_, Arc<AppState>>,
+    _state: State<'_, Arc<AppState>>,
 ) -> Result<ExtractResult> {
     let archive_path = validate_path(&options.archive_path, &app)?.into_path_buf();
     let output_dir = validate_path(&options.output_directory, &app)?.into_path_buf();
@@ -161,7 +160,7 @@ async fn extract_archive_internal<R: Runtime>(
         std::fs::create_dir_all(&output_dir)?;
     }
 
-    let mut extracted_files = Vec::new();
+    let mut extracted_files: Vec<String> = Vec::new();
     let mut total_size = 0u64;
 
     // Detect archive format from extension
@@ -175,6 +174,7 @@ async fn extract_archive_internal<R: Runtime>(
             #[cfg(feature = "zip")]
             {
                 use zip::ZipArchive;
+                use std::fs::File;
 
                 let file = File::open(&archive_path)?;
                 let mut archive = ZipArchive::new(file)?;
@@ -202,39 +202,39 @@ async fn extract_archive_internal<R: Runtime>(
                             }
                         }
 
-                        let mut outfile = File::create(&output_path)?;
+                        let mut outfile = std::fs::File::create(&output_path)?;
                         std::io::copy(&mut file, &mut outfile)?;
                         total_size += file.size();
                         extracted_files.push(output_path.to_string_lossy().to_string());
                     }
                 }
+
+                // Log the operation
+                tracing::info!("Extracted {} files from {} to {}",
+                    extracted_files.len(),
+                    archive_path.display(),
+                    output_dir.display());
+
+                Ok(ExtractResult {
+                    success: true,
+                    extracted_files,
+                    total_size,
+                })
             }
 
             #[cfg(not(feature = "zip"))]
             {
-                return Err(AppError::ProcessingError {
+                Err(AppError::ProcessingError {
                     message: "ZIP extraction not available. Enable the 'zip' feature.".to_string(),
-                });
+                })
             }
         }
         _ => {
-            return Err(AppError::ProcessingError {
+            Err(AppError::ProcessingError {
                 message: format!("Unsupported archive format: {}", ext),
-            });
+            })
         }
     }
-
-    // Log the operation
-    tracing::info!("Extracted {} files from {} to {}",
-        extracted_files.len(),
-        archive_path.display(),
-        output_dir.display());
-
-    Ok(ExtractResult {
-        success: true,
-        extracted_files,
-        total_size,
-    })
 }
 
 // Non-generic wrapper for Tauri command registration

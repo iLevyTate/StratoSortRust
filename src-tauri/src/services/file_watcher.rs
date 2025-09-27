@@ -158,8 +158,8 @@ impl FileWatcher {
         let mut watcher = notify::recommended_watcher(move |res| match res {
             Ok(event) => {
                 let tx_clone = tx.clone();
-                let metrics = metrics_clone.clone();
-                let semaphore = semaphore_clone.clone();
+                let _metrics = metrics_clone.clone();
+                let _semaphore = semaphore_clone.clone();
 
                 // FIX: Use try_send without spawning any tasks to prevent memory exhaustion
                 // Metrics updates are now handled in a single background task
@@ -278,7 +278,7 @@ impl FileWatcher {
             loop {
                 interval.tick().await;
 
-                let mut m = metrics_monitor.write().await;
+                let m = metrics_monitor.write().await;
 
                 // Check for increased dropped events
                 if m.dropped_events > last_dropped_events {

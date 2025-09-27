@@ -193,7 +193,6 @@ impl AppError {
             Self::AssertionError { message } => Self::sanitize_message(message),
             Self::SerializationError { message } => Self::sanitize_message(message),
             Self::IoError { message } => Self::sanitize_message(message),
-            Self::ConfigError { message } => Self::sanitize_message(message),
             Self::ExternalServiceError { service, message } => {
                 format!("{} service error: {}", service, Self::sanitize_message(message))
             }
@@ -237,7 +236,6 @@ impl AppError {
             Self::AssertionError { .. } => "AssertionError",
             Self::SerializationError { .. } => "SerializationError",
             Self::IoError { .. } => "IoError",
-            Self::ConfigError { .. } => "ConfigurationError",
             Self::ExternalServiceError { .. } => "ExternalServiceError",
         }
     }
@@ -357,7 +355,6 @@ impl AppError {
             Self::AssertionError { .. } => "ASSERTION_ERROR",
             Self::SerializationError { .. } => "SERIALIZATION_ERROR",
             Self::IoError { .. } => "IO_ERROR",
-            Self::ConfigError { .. } => "CONFIGURATION_ERROR",
             Self::ExternalServiceError { .. } => "EXTERNAL_SERVICE_ERROR",
         }
         .to_string()
