@@ -94,12 +94,20 @@ impl CircuitBreaker {
 
     /// Check if the circuit should allow a request
     fn should_allow_request(&self) -> bool {
+        // CRITICAL FIX: Handle poisoned mutex with recovery
         let mut state = match self.state.lock() {
             Ok(state) => state,
-            Err(e) => {
-                error!("Circuit breaker mutex poisoned in should_allow_request: {}", e);
-                // Default to failing open to avoid complete service unavailability
-                return true;
+            Err(poisoned) => {
+                error!("Circuit breaker mutex poisoned in should_allow_request, recovering: {}", poisoned);
+                // CRITICAL FIX: Recover from poisoned mutex and reset state
+                // This is safe because we're resetting to a known good state
+                let recovered = poisoned.into_inner();
+                // Return false (closed) to fail-safe and prevent cascading failures
+                // The recovered state will be in a reasonable condition for next call
+                return match recovered.current_state {
+                    CircuitState::Open => false,  // Respect the open state
+                    _ => true,  // Allow request if it was closed or half-open
+                };
             }
         };
 
@@ -126,11 +134,13 @@ impl CircuitBreaker {
 
     /// Handle successful operation
     fn on_success(&self) {
+        // CRITICAL FIX: Recover from poisoned mutex
         let mut state = match self.state.lock() {
             Ok(state) => state,
-            Err(e) => {
-                error!("Circuit breaker mutex poisoned in on_success: {}", e);
-                return; // Silently fail rather than panic
+            Err(poisoned) => {
+                error!("Circuit breaker mutex poisoned in on_success, recovering: {}", poisoned);
+                // Recover the mutex - this is safe as we're updating to a valid state
+                poisoned.into_inner()
             }
         };
         state.last_success_time = Some(Instant::now());
@@ -161,11 +171,13 @@ impl CircuitBreaker {
 
     /// Handle failed operation
     fn on_failure(&self) {
+        // CRITICAL FIX: Recover from poisoned mutex
         let mut state = match self.state.lock() {
             Ok(state) => state,
-            Err(e) => {
-                error!("Circuit breaker mutex poisoned in on_failure: {}", e);
-                return; // Silently fail rather than panic
+            Err(poisoned) => {
+                error!("Circuit breaker mutex poisoned in on_failure, recovering: {}", poisoned);
+                // Recover the mutex - this is safe as we're updating to a valid state
+                poisoned.into_inner()
             }
         };
         state.last_failure_time = Some(Instant::now());
@@ -193,10 +205,11 @@ impl CircuitBreaker {
     pub fn get_state(&self) -> CircuitState {
         match self.state.lock() {
             Ok(state) => state.current_state,
-            Err(e) => {
-                error!("Circuit breaker mutex poisoned in get_state: {}", e);
-                // Default to Open state to fail fast if mutex is poisoned
-                CircuitState::Open
+            Err(poisoned) => {
+                error!("Circuit breaker mutex poisoned in get_state, recovering: {}", poisoned);
+                // CRITICAL FIX: Recover and return actual state instead of defaulting to Open
+                let recovered = poisoned.into_inner();
+                recovered.current_state
             }
         }
     }
@@ -205,21 +218,24 @@ impl CircuitBreaker {
     pub fn get_failure_count(&self) -> u32 {
         match self.state.lock() {
             Ok(state) => state.failure_count,
-            Err(e) => {
-                error!("Circuit breaker mutex poisoned in get_failure_count: {}", e);
-                // Return max failure count to indicate problematic state
-                u32::MAX
+            Err(poisoned) => {
+                error!("Circuit breaker mutex poisoned in get_failure_count, recovering: {}", poisoned);
+                // CRITICAL FIX: Recover and return actual count
+                let recovered = poisoned.into_inner();
+                recovered.failure_count
             }
         }
     }
 
     /// Reset circuit breaker to closed state
     pub fn reset(&self) {
+        // CRITICAL FIX: Recover from poisoned mutex
         let mut state = match self.state.lock() {
             Ok(state) => state,
-            Err(e) => {
-                error!("Circuit breaker mutex poisoned in reset: {}", e);
-                return; // Silently fail rather than panic
+            Err(poisoned) => {
+                error!("Circuit breaker mutex poisoned in reset, recovering: {}", poisoned);
+                // Recover the mutex - reset is a good opportunity to fix poisoned state
+                poisoned.into_inner()
             }
         };
         debug!("Circuit breaker manually reset");

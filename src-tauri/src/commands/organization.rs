@@ -592,9 +592,20 @@ pub async fn suggest_file_organization(
 #[tauri::command]
 pub async fn apply_organization(
     operations: Vec<OrganizationOperation>,
+    __csrf_token: Option<String>,
     state: State<'_, std::sync::Arc<AppState>>,
     app: AppHandle,
 ) -> Result<Vec<OrganizationResult>> {
+    // CRITICAL: Validate CSRF token for security
+    if let Some(token) = __csrf_token {
+        if !state.csrf_store.validate_token(&token) {
+            return Err(crate::error::AppError::SecurityError {
+                message: "Invalid or expired CSRF token".to_string(),
+            });
+        }
+    }
+    // TODO: Once migration is complete, make CSRF token required (remove Option)
+
     if operations.is_empty() {
         return Err(crate::error::AppError::InvalidInput {
             message: "No operations provided".to_string(),

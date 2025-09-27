@@ -96,9 +96,10 @@ impl TestFixtures {
     }
 
     /// Create sample smart folders for testing
-    pub fn create_sample_smart_folders() -> Vec<stratosort::commands::organization::SmartFolder> {
+    pub fn create_sample_smart_folders() -> Vec<stratosort::core::smart_folders::SmartFolder> {
+        use stratosort::core::smart_folders::SmartFolder;
         use stratosort::commands::organization::{
-            OrganizationRule, RuleCondition, RuleType, SmartFolder,
+            OrganizationRule, RuleCondition, RuleType,
         };
 
         vec![

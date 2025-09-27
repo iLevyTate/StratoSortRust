@@ -530,9 +530,10 @@ impl LLMWorkflow {
         })?;
 
         // Create target directory if needed
-        let target_dir = Path::new(target_path).parent().unwrap();
-        if !target_dir.exists() {
-            tokio::fs::create_dir_all(target_dir).await?;
+        if let Some(target_dir) = Path::new(target_path).parent() {
+            if !target_dir.exists() {
+                tokio::fs::create_dir_all(target_dir).await?;
+            }
         }
 
         // Move file

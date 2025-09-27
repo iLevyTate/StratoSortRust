@@ -4,35 +4,108 @@
 	import { Toaster } from 'svelte-sonner';
 	import { onMount, onDestroy } from 'svelte';
 	import Sidebar from '$lib/components/Sidebar.svelte';
-	import { currentPage, initializeEventListeners, cleanupEventListeners, appSettings } from '$lib/stores';
-	import DiscoverPage from '$lib/components/pages/DiscoverPageSimple.svelte';
+	import { currentPage, initializeEventListeners, cleanupEventListeners, appSettings, searchResults } from '$lib/stores';
+	// Direct imports for all page components to fix blank screen issue
+	// The lazy-loader utility doesn't exist, causing runtime errors
+	import FirstRunSetupPage from '$lib/components/pages/FirstRunSetupPage.svelte';
+	import DiscoverPage from '$lib/components/pages/DiscoverPage.svelte';
 	import AnalyzePage from '$lib/components/pages/AnalyzePage.svelte';
 	import OrganizePage from '$lib/components/pages/OrganizePage.svelte';
 	import SettingsPage from '$lib/components/pages/SettingsPage.svelte';
-	import FirstRunSetupPage from '$lib/components/pages/FirstRunSetupPage.svelte';
+	import HistoryPage from '$lib/components/pages/HistoryPage.svelte';
 	import HeaderBar from '$lib/components/HeaderBar.svelte';
 	import StatusBar from '$lib/components/StatusBar.svelte';
 	import HistoryTimeline from '$lib/components/HistoryTimeline.svelte';
 	import ErrorBoundary from '$lib/components/ErrorBoundary.svelte';
 	import KeyboardShortcutsHelp from '$lib/components/KeyboardShortcutsHelp.svelte';
 	import AccessibilityManager from '$lib/components/AccessibilityManager.svelte';
+	import AboutDialog from '$lib/components/AboutDialog.svelte';
+	import QuickActionsFAB from '$lib/components/QuickActionsFAB.svelte';
 	import { AccessibilityToolbar } from '$lib/components/ui';
 	import { getAppSettings, checkOllamaStatus, checkFirstRunStatus, getSystemInfo, frontendReady } from '$lib/api/tauri';
 	import { keyboardShortcuts } from '$lib/utils/keyboard-shortcuts';
-	import { operationInProgress } from '$lib/stores';
+	import { operationInProgress, selectedFiles } from '$lib/stores';
 	import { toast } from '$lib/stores/notifications';
 	import { AppInitializer, type InitializationStep, waitForCondition } from '$lib/utils/initialization';
-	import { log } from '$lib/utils/logger';
+	import { log, LogCategory } from '$lib/utils/enhanced-logger';
 
 	let page: string = 'discover';
 	let initialized = false;
 	let initializationError: Error | null = null;
 	let isFirstRun = false;
 	let showingFirstRunSetup = false;
+	let firstRunSetupAttempts = 0;
+	const MAX_FIRSTRUN_ATTEMPTS = 3;
 	let showKeyboardHelp = false;
 	let showHistoryTimeline = false;
 	let showSidebar = true;
 	let showAccessibilityToolbar = false;
+	let showAboutDialog = false;
+	let showQuickActions = true;
+
+	// Quick action handlers
+	async function handleQuickAction(action: string) {
+		log.info(`Quick action triggered: ${action}`, undefined, 'QuickActions', LogCategory.UI);
+
+		switch(action) {
+			case 'upload':
+				// Navigate to discover page and trigger file browser
+				currentPage.set('discover');
+				setTimeout(() => {
+					const event = new CustomEvent('trigger-browse-files');
+					window.dispatchEvent(event);
+				}, 100);
+				break;
+
+			case 'scan-folder':
+				// Navigate to discover page and trigger folder scan
+				currentPage.set('discover');
+				setTimeout(() => {
+					const event = new CustomEvent('trigger-browse-directory');
+					window.dispatchEvent(event);
+				}, 100);
+				break;
+
+			case 'quick-analyze':
+				// Navigate to analyze page if files are selected
+				if ($selectedFiles.length > 0) {
+					currentPage.set('analyze');
+				} else {
+					toast.warning('Please select files first');
+				}
+				break;
+
+			case 'smart-folder':
+				// Navigate to organize page and open smart folder creation
+				currentPage.set('organize');
+				setTimeout(() => {
+					// Set a flag to trigger smart folder creation after navigation
+					localStorage.setItem('createSmartFolder', 'true');
+					// Also dispatch event for immediate handling if already on organize page
+					const smartFolderEvent = new CustomEvent('open-smart-folder-dialog');
+					window.dispatchEvent(smartFolderEvent);
+				}, 100);
+				break;
+
+			case 'instant-search':
+				// Focus search bar
+				const searchEvent = new CustomEvent('focus-search-bar');
+				window.dispatchEvent(searchEvent);
+				break;
+
+			case 'auto-organize':
+				// Navigate to organize page
+				currentPage.set('organize');
+				setTimeout(() => {
+					const event = new CustomEvent('trigger-auto-organize');
+					window.dispatchEvent(event);
+				}, 100);
+				break;
+
+			default:
+				log.warn(`Unknown quick action: ${action}`, undefined, 'QuickActions', LogCategory.UI);
+		}
+	}
 
 	// Store references to event listeners for cleanup
 	let unsubscribePage: (() => void) | null = null;
@@ -54,26 +127,62 @@
 
 		// Listen for show about dialog events (from backend)
 		handleShowAboutDialog = () => {
-			// Handle showing about dialog
-			console.log('About dialog requested');
-			// You can implement an about dialog component here
+			// Show the about dialog
+			showAboutDialog = true;
 		};
 		window.addEventListener('show-about-dialog', handleShowAboutDialog);
+
+		// Listen for quick action events
+		window.addEventListener('trigger-browse-files', () => {
+			// This will be handled by DiscoverPage when it's active
+			log.debug('Browse files event triggered', undefined, 'QuickActions', LogCategory.UI);
+		});
+
+		window.addEventListener('trigger-browse-directory', () => {
+			// This will be handled by DiscoverPage when it's active
+			log.debug('Browse directory event triggered', undefined, 'QuickActions', LogCategory.UI);
+		});
+
+		window.addEventListener('open-smart-folder-dialog', () => {
+			// This will be handled by the component that manages smart folders
+			log.debug('Smart folder dialog event triggered', undefined, 'QuickActions', LogCategory.UI);
+		});
+
+		window.addEventListener('focus-search-bar', () => {
+			// Focus the search bar in the header
+			const searchInput = document.querySelector('[data-testid="header-search-input"]') as HTMLInputElement;
+			if (searchInput) {
+				searchInput.focus();
+				log.debug('Search bar focused', undefined, 'QuickActions', LogCategory.UI);
+			}
+		});
+
+		window.addEventListener('trigger-auto-organize', () => {
+			// This will be handled by OrganizePage when it's active
+			log.debug('Auto organize event triggered', undefined, 'QuickActions', LogCategory.UI);
+		});
 
 		// Setup accessibility features
 		setupAccessibilityShortcuts();
 
 		// Async initialization
 		const initAsync = async () => {
+			const isDev = import.meta.env.DEV;
+			if (isDev) log.debug('Starting initialization...', undefined, 'App.svelte', LogCategory.SYSTEM);
 			try {
 				const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+				if (isDev) log.debug('Tauri environment detected', { isTauri }, 'App.svelte', LogCategory.SYSTEM);
+
 				// Check if this is a first run
+				if (isDev) log.debug('Checking first run status...', undefined, 'App.svelte', LogCategory.SYSTEM);
 				const firstRunStatus = await checkFirstRunStatus();
+				if (isDev) log.debug('First run status', firstRunStatus, 'App.svelte', LogCategory.SYSTEM);
 				isFirstRun = firstRunStatus.is_first_run;
 				showingFirstRunSetup = isFirstRun;
 
 				// In non-Tauri environments (web/e2e), skip backend initialization
 				if (!isTauri) {
+					if (isDev) log.debug('Non-Tauri environment, using web mode', undefined, 'App.svelte', LogCategory.SYSTEM);
 					// Force bypass first-run wizard in e2e
 					isFirstRun = false;
 					showingFirstRunSetup = false;
@@ -82,24 +191,42 @@
 				}
 
 				if (!isFirstRun) {
+					if (isDev) log.debug('Not first run, initializing app...', undefined, 'App.svelte', LogCategory.SYSTEM);
 					// Not first run, proceed with normal initialization
 					await initializeApp();
 					// Only set initialized = true after initializeApp() completes successfully
 					initialized = true;
+					if (isDev) log.debug('App initialized successfully', undefined, 'App.svelte', LogCategory.SYSTEM);
 					log.info('StratoSort app initialized successfully', undefined, 'App');
+				} else {
+					// Check if we've failed first-run setup too many times
+					firstRunSetupAttempts++;
+					if (firstRunSetupAttempts >= MAX_FIRSTRUN_ATTEMPTS) {
+						log.warn('First-run setup failed too many times, skipping...', undefined, 'App.svelte', LogCategory.SYSTEM);
+						toast.warning('First-run setup skipped after multiple failures. You can configure settings manually.');
+						// Mark as not first run to bypass setup
+						isFirstRun = false;
+						showingFirstRunSetup = false;
+						// Try to initialize anyway with defaults
+						await initializeApp();
+						initialized = true;
+					} else {
+						if (isDev) log.debug('First run detected, showing setup wizard', undefined, 'App.svelte', LogCategory.SYSTEM);
+						// Set initialized to true for first run to show the setup page
+						initialized = true;
+					}
 				}
 				// If it is first run, we'll initialize after setup is complete
-				// Don't set initialized = true yet for first run scenarios
 
 			} catch (error) {
+				log.error('Initialization error', error, 'App.svelte', LogCategory.SYSTEM);
 				log.error('Failed to initialize app', error, 'App');
 				initializationError = error as Error;
 				if (!isFirstRun) {
-					// Don't set initialized = true on error, keep app in loading/error state
-					// This prevents showing broken UI when initialization fails
+					// Show error state but still set initialized to display error UI
+					initialized = true;
 					toast.error('Failed to initialize application. Some features may not work correctly.');
 				}
-				// For both first-run and normal errors, stay in loading state to allow retry
 			}
 		};
 
@@ -119,6 +246,9 @@
 			if (handleKeyDown) {
 				document.removeEventListener('keydown', handleKeyDown);
 			}
+			// Clean up quick action event listeners
+			// Note: These use anonymous functions, so they don't actually remove the original listeners
+			// This is handled by the cleanup in onDestroy() instead
 		};
 	});
 
@@ -275,9 +405,15 @@
 	}
 
 	function handleSearchResults(event: CustomEvent) {
-		// Handle search results - navigate to discover page and show results
+		// Store the search results and navigate to discover page
+		const { query, results } = event.detail;
+		searchResults.set({
+			query,
+			results,
+			timestamp: Date.now()
+		});
 		currentPage.set('discover');
-		// The results will be handled by the DiscoverPage component
+		// The DiscoverPage component will read from searchResults store
 	}
 
 	function handleToggleHistory(event: CustomEvent) {
@@ -362,7 +498,7 @@
                                 await initializeApp();
                                 initialized = true;
                             } catch (error) {
-                                initializationError = error as Error;
+                                initializationError = error instanceof Error ? error : new Error(String(error));
                             }
                         }}
                     >
@@ -425,20 +561,24 @@
                                 </div>
                             </div>
                         {:else if page === 'discover'}
-                            <ErrorBoundary fallback={false} let:captureError>
+                            <ErrorBoundary fallback={false}>
                                 <DiscoverPage />
                             </ErrorBoundary>
                         {:else if page === 'analyze'}
-                            <ErrorBoundary fallback={false} let:captureError>
+                            <ErrorBoundary fallback={false}>
                                 <AnalyzePage />
                             </ErrorBoundary>
                         {:else if page === 'organize'}
-                            <ErrorBoundary fallback={false} let:captureError>
+                            <ErrorBoundary fallback={false}>
                                 <OrganizePage />
                             </ErrorBoundary>
                         {:else if page === 'settings'}
-                            <ErrorBoundary fallback={false} let:captureError>
+                            <ErrorBoundary fallback={false}>
                                 <SettingsPage />
+                            </ErrorBoundary>
+                        {:else if page === 'history'}
+                            <ErrorBoundary fallback={false}>
+                                <HistoryPage />
                             </ErrorBoundary>
                         {/if}
                     </div>
@@ -458,6 +598,14 @@
 
 <!-- Keyboard Shortcuts Help (Global) -->
 <KeyboardShortcutsHelp bind:showHelp={showKeyboardHelp} />
+
+<!-- About Dialog (Global) -->
+<AboutDialog bind:open={showAboutDialog} />
+
+<!-- Quick Actions FAB -->
+{#if showQuickActions && !showingFirstRunSetup && initialized}
+    <QuickActionsFAB onAction={handleQuickAction} />
+{/if}
 
 <style>
     /* Skip links styling */

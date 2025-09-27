@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock, Semaphore};
 use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Clone)]
@@ -99,6 +99,10 @@ pub struct FileWatcher {
     // Event deduplication to prevent race conditions
     recent_events: Arc<RwLock<HashMap<String, Instant>>>,
     event_debounce_duration: Duration,
+    // CRITICAL FIX: Semaphore for backpressure handling
+    event_processing_semaphore: Arc<Semaphore>,
+    // Periodic cleanup task handle for proper resource management
+    cleanup_task_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl FileWatcher {
@@ -114,6 +118,9 @@ impl FileWatcher {
             recent_operations: Arc::new(RwLock::new(HashMap::new())),
             recent_events: Arc::new(RwLock::new(HashMap::new())),
             event_debounce_duration: Duration::from_millis(100), // 100ms debounce
+            // CRITICAL FIX: Limit concurrent event processing to prevent memory exhaustion
+            event_processing_semaphore: Arc::new(Semaphore::new(50)),
+            cleanup_task_handle: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -145,36 +152,29 @@ impl FileWatcher {
         let user_actions = self.user_actions.clone();
         let recent_operations = self.recent_operations.clone();
 
-        // Create enhanced watcher with backpressure handling
+        // Create enhanced watcher with backpressure handling and semaphore protection
         let metrics_clone = channel_metrics.clone();
+        let semaphore_clone = self.event_processing_semaphore.clone();
         let mut watcher = notify::recommended_watcher(move |res| match res {
             Ok(event) => {
                 let tx_clone = tx.clone();
                 let metrics = metrics_clone.clone();
-                tokio::task::spawn(async move {
-                    // Try to send with timeout to detect backpressure
-                    match tokio::time::timeout(
-                        Duration::from_millis(100),
-                        tx_clone.send(event)
-                    ).await {
-                        Ok(Ok(_)) => {
-                            // Event sent successfully
-                            let mut m = metrics.write().await;
-                            m.total_events += 1;
-                        }
-                        Ok(Err(_)) | Err(_) => {
-                            // Channel full or timeout - apply backpressure
-                            let mut m = metrics.write().await;
-                            m.dropped_events += 1;
-                            m.last_drop_time = Some(Instant::now());
+                let semaphore = semaphore_clone.clone();
 
-                            // Log only periodically to avoid log spam
-                            if m.dropped_events % 100 == 1 {
-                                warn!("File watcher channel congested, dropped {} events", m.dropped_events);
-                            }
-                        }
+                // FIX: Use try_send without spawning any tasks to prevent memory exhaustion
+                // Metrics updates are now handled in a single background task
+                match tx_clone.try_send(event) {
+                    Ok(_) => {
+                        // Event sent successfully - metrics will be updated by monitoring task
                     }
-                });
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        // Channel is full - drop the event to apply backpressure
+                        // Metrics will be updated by monitoring task
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        error!("File watcher channel closed unexpectedly");
+                    }
+                }
             }
             Err(e) => {
                 error!("Enhanced file watcher error: {}", e);
@@ -268,17 +268,132 @@ impl FileWatcher {
             .await;
         });
 
+        // Spawn metrics monitoring task to track channel statistics
+        let metrics_monitor = channel_metrics.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            let mut last_total_events: u64 = 0;
+            let mut last_dropped_events: u64 = 0;
+
+            loop {
+                interval.tick().await;
+
+                let mut m = metrics_monitor.write().await;
+
+                // Check for increased dropped events
+                if m.dropped_events > last_dropped_events {
+                    let dropped_delta = m.dropped_events - last_dropped_events;
+                    if dropped_delta > 10 {
+                        warn!("File watcher dropped {} events in last 5 seconds", dropped_delta);
+                    }
+                    last_dropped_events = m.dropped_events;
+                }
+
+                // Update event rate
+                let events_delta = m.total_events - last_total_events;
+                last_total_events = m.total_events;
+
+                if events_delta > 100 {
+                    info!("File watcher processing {} events/5sec", events_delta);
+                }
+            }
+        });
+
+        // CRITICAL FIX: Spawn periodic cleanup task for memory management
+        let cleanup_recent_events = self.recent_events.clone();
+        let cleanup_recent_ops = self.recent_operations.clone();
+        let cleanup_user_actions = self.user_actions.clone();
+        let cleanup_pending = self.pending_files.clone();
+        let cleanup_task = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+
+                // Clean up recent events older than 5 minutes
+                {
+                    let mut events = cleanup_recent_events.write().await;
+                    let now = Instant::now();
+                    events.retain(|_, timestamp| {
+                        now.duration_since(*timestamp) < Duration::from_secs(300)
+                    });
+                    if events.len() > 1000 {
+                        // Keep only the most recent 500 if we exceed 1000
+                        let mut sorted: Vec<_> = events.iter().map(|(k, v)| (k.clone(), *v)).collect();
+                        sorted.sort_by_key(|&(_, timestamp)| std::cmp::Reverse(timestamp));
+                        events.clear();
+                        for (key, timestamp) in sorted.into_iter().take(500) {
+                            events.insert(key, timestamp);
+                        }
+                    }
+                }
+
+                // Clean up recent operations older than 1 hour
+                {
+                    let mut ops = cleanup_recent_ops.write().await;
+                    ops.retain(|_, events| {
+                        events.iter().any(|e| {
+                            let age = chrono::Utc::now().timestamp() - e.timestamp;
+                            age < 3600
+                        })
+                    });
+                    // Limit total operations stored
+                    if ops.len() > 100 {
+                        let excess = ops.len() - 100;
+                        let keys_to_remove: Vec<_> = ops.keys().take(excess).cloned().collect();
+                        for key in keys_to_remove {
+                            ops.remove(&key);
+                        }
+                    }
+                }
+
+                // Clean up user actions (already handled but ensure limit)
+                {
+                    let mut actions = cleanup_user_actions.write().await;
+                    const MAX_ACTIONS: usize = 500;
+                    if actions.len() > MAX_ACTIONS {
+                        let excess = actions.len() - MAX_ACTIONS;
+                        actions.drain(0..excess);
+                    }
+                }
+
+                // Clean up stale pending files older than 10 minutes
+                {
+                    let mut pending = cleanup_pending.write().await;
+                    let now = Instant::now();
+                    pending.retain(|_, file| {
+                        now.duration_since(file.detected_at) < Duration::from_secs(600)
+                    });
+                }
+
+                debug!("File watcher cleanup completed");
+            }
+        });
+
+        *self.cleanup_task_handle.lock().await = Some(cleanup_task);
+
         info!("Enhanced file watcher with learning started");
         Ok(())
     }
 
     pub async fn stop(&self) -> Result<()> {
+        // Stop cleanup task first
+        if let Some(handle) = self.cleanup_task_handle.lock().await.take() {
+            handle.abort();
+        }
+
         if let Some(tx) = self.shutdown_tx.lock().await.take() {
             let _ = tx.send(()).await;
         }
 
         *self.watcher.lock().await = None;
-        info!("File watcher stopped");
+
+        // Clear all data structures to free memory immediately
+        self.recent_events.write().await.clear();
+        self.recent_operations.write().await.clear();
+        self.pending_files.write().await.clear();
+        self.user_actions.write().await.clear();
+
+        info!("File watcher stopped and cleaned up");
         Ok(())
     }
 

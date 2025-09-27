@@ -6,6 +6,66 @@ use tauri::{AppHandle, Runtime};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 
+/// Validates a file name for safety and correctness
+pub fn validate_file_name(name: &str) -> Result<()> {
+    // Reject empty names
+    if name.is_empty() {
+        return Err(AppError::ValidationError {
+            message: "File name cannot be empty".to_string(),
+        });
+    }
+
+    // Reject special path components
+    if name == "." || name == ".." {
+        return Err(AppError::ValidationError {
+            message: "Invalid file name: special path component".to_string(),
+        });
+    }
+
+    // Check for Windows reserved names
+    #[cfg(windows)]
+    {
+        let reserved_names = [
+            "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4",
+            "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2",
+            "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
+        ];
+
+        let name_upper = name.to_uppercase();
+        let base_name = name_upper.split('.').next().unwrap_or("");
+
+        if reserved_names.contains(&base_name) {
+            return Err(AppError::ValidationError {
+                message: format!("Invalid file name: '{}' is a reserved name on Windows", name),
+            });
+        }
+    }
+
+    // Check for invalid characters
+    let invalid_chars = if cfg!(windows) {
+        "<>:\"|?*"
+    } else {
+        "\0"
+    };
+
+    for c in invalid_chars.chars() {
+        if name.contains(c) {
+            return Err(AppError::ValidationError {
+                message: format!("Invalid file name: contains illegal character '{}'", c),
+            });
+        }
+    }
+
+    // Check for control characters
+    if name.chars().any(|c| c.is_control() && c != '\t') {
+        return Err(AppError::ValidationError {
+            message: "Invalid file name: contains control characters".to_string(),
+        });
+    }
+
+    Ok(())
+}
+
 /// Validates and sanitizes a path for safe access
 pub fn validate_path<R: Runtime>(path: &str, app: &AppHandle<R>) -> Result<ValidatedPath> {
     // Reject empty paths
@@ -15,12 +75,9 @@ pub fn validate_path<R: Runtime>(path: &str, app: &AppHandle<R>) -> Result<Valid
         });
     }
 
-    // Reject null bytes and control characters (except \r and \n for file names)
-    if path.contains('\0')
-        || path
-            .chars()
-            .any(|c| c.is_control() && c != '\r' && c != '\n')
-    {
+    // Reject null bytes and control characters
+    // FIX: Don't allow \r and \n in file paths - they're not valid path characters
+    if path.contains('\0') || path.chars().any(|c| c.is_control()) {
         return Err(AppError::SecurityError {
             message: "Invalid path: contains null bytes or control characters".to_string(),
         });
@@ -167,13 +224,21 @@ pub fn is_path_allowed<R: Runtime>(path: &Path, _app: &AppHandle<R>) -> Result<b
     let path_str = path.to_string_lossy();
 
     // Block access to sensitive system directories
+    // FIX: Add more comprehensive list of sensitive paths
     let blocked_paths = [
         "/etc/passwd",
         "/etc/shadow",
+        "/etc/sudoers",
         "/root/",
+        "/var/log/auth.log",
+        "/var/log/secure",
         "C:\\Windows\\System32\\",
+        "C:\\Windows\\System\\",
+        "C:\\Windows\\SysWOW64\\",
         "C:\\System Volume Information\\",
         "C:\\$Recycle.Bin\\",
+        "C:\\Users\\Administrator\\",
+        "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\",
     ];
 
     for blocked in &blocked_paths {
@@ -248,8 +313,12 @@ pub fn sanitize_path(path_str: &str) -> Result<PathBuf> {
     }
 
     // Reject null bytes and dangerous characters
-    if path_str.contains('\0') || path_str.contains("..")
-        || path_str.chars().any(|c| c.is_control() && c != '\r' && c != '\n') {
+    // FIX: Properly check for path traversal patterns
+    if path_str.contains('\0')
+        || path_str.contains("..\\")
+        || path_str.contains("../")
+        || path_str.starts_with("..")
+        || path_str.chars().any(|c| c.is_control()) {
         return Err(AppError::InvalidPath {
             message: "Invalid path: contains null bytes or path traversal".to_string(),
         });

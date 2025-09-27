@@ -1,11 +1,12 @@
 use crate::{
     error::Result,
+    state::AppState,
     utils::security::{is_path_allowed, validate_path},
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use sysinfo::{Disks, System};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::info;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -489,7 +490,21 @@ pub async fn show_in_folder(path: String, app: AppHandle) -> Result<()> {
 }
 
 #[tauri::command]
-pub async fn clear_cache(app: AppHandle) -> Result<()> {
+pub async fn clear_cache(
+    __csrf_token: Option<String>,
+    state: State<'_, std::sync::Arc<AppState>>,
+    app: AppHandle,
+) -> Result<()> {
+    // CRITICAL: Validate CSRF token for security
+    if let Some(token) = __csrf_token {
+        if !state.csrf_store.validate_token(&token) {
+            return Err(crate::error::AppError::SecurityError {
+                message: "Invalid or expired CSRF token".to_string(),
+            });
+        }
+    }
+    // TODO: Once migration is complete, make CSRF token required (remove Option)
+
     // Clear application cache directory
     if let Ok(cache_dir) = app.path().app_cache_dir() {
         if cache_dir.exists() {
@@ -498,7 +513,7 @@ pub async fn clear_cache(app: AppHandle) -> Result<()> {
             info!("Application cache cleared successfully");
         }
     }
-    
+
     Ok(())
 }
 
@@ -524,9 +539,23 @@ pub async fn get_app_logs(app: AppHandle) -> Result<String> {
 }
 
 #[tauri::command]
-pub async fn restart_app(app: AppHandle) -> Result<()> {
+pub async fn restart_app(
+    __csrf_token: Option<String>,
+    state: State<'_, std::sync::Arc<AppState>>,
+    app: AppHandle,
+) -> Result<()> {
+    // CRITICAL: Validate CSRF token for security
+    if let Some(token) = __csrf_token {
+        if !state.csrf_store.validate_token(&token) {
+            return Err(crate::error::AppError::SecurityError {
+                message: "Invalid or expired CSRF token".to_string(),
+            });
+        }
+    }
+    // TODO: Once migration is complete, make CSRF token required (remove Option)
+
     info!("Application restart requested");
-    
+
     // Emit restart event to frontend
     let _ = app.emit(
         "app-restart-requested",
@@ -534,7 +563,7 @@ pub async fn restart_app(app: AppHandle) -> Result<()> {
             "message": "Application will restart shortly"
         }),
     );
-    
+
     // Give a moment for the event to be processed
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
@@ -555,9 +584,23 @@ pub async fn check_for_updates() -> Result<serde_json::Value> {
 }
 
 #[tauri::command]
-pub async fn shutdown_application(app: AppHandle) -> Result<()> {
+pub async fn shutdown_application(
+    __csrf_token: Option<String>,
+    state: State<'_, std::sync::Arc<AppState>>,
+    app: AppHandle,
+) -> Result<()> {
+    // CRITICAL: Validate CSRF token for security
+    if let Some(token) = __csrf_token {
+        if !state.csrf_store.validate_token(&token) {
+            return Err(crate::error::AppError::SecurityError {
+                message: "Invalid or expired CSRF token".to_string(),
+            });
+        }
+    }
+    // TODO: Once migration is complete, make CSRF token required (remove Option)
+
     info!("Application shutdown requested");
-    
+
     // Emit shutdown event to frontend
     let _ = app.emit(
         "app-shutdown-requested",
@@ -565,13 +608,13 @@ pub async fn shutdown_application(app: AppHandle) -> Result<()> {
             "message": "Application will shutdown shortly"
         }),
     );
-    
+
     // Give a moment for cleanup
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-    
+
     // Exit the application
     app.exit(0);
-    
+
     Ok(())
 }
 
@@ -611,11 +654,25 @@ pub async fn get_resource_usage() -> Result<ResourceUsage> {
 }
 
 #[tauri::command]
-pub async fn force_shutdown(app: AppHandle) -> Result<()> {
+pub async fn force_shutdown(
+    __csrf_token: Option<String>,
+    state: State<'_, std::sync::Arc<AppState>>,
+    app: AppHandle,
+) -> Result<()> {
+    // CRITICAL: Validate CSRF token for security
+    if let Some(token) = __csrf_token {
+        if !state.csrf_store.validate_token(&token) {
+            return Err(crate::error::AppError::SecurityError {
+                message: "Invalid or expired CSRF token".to_string(),
+            });
+        }
+    }
+    // TODO: Once migration is complete, make CSRF token required (remove Option)
+
     info!("Forced application shutdown requested");
-    
+
     // Immediate shutdown without waiting for cleanup
     app.exit(0);
-    
+
     Ok(())
 }

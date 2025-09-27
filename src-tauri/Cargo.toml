@@ -19,10 +19,10 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# Core Tauri
-tauri = { version = "2", features = ["protocol-asset",
-    "tray-icon",
-    "devtools"
+# Core Tauri - devtools removed for production
+tauri = { version = "2", features = [
+    "protocol-asset",
+    "tray-icon"
 ] }
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
@@ -50,8 +50,8 @@ async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# HTTP client for update checking
-reqwest = { version = "0.12", features = ["json", "stream"] }
+# HTTP client for update checking - with security features
+reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"], default-features = false }
 url = "2.5"
 regex = "1.10"
 
@@ -62,8 +62,8 @@ thiserror = "1"
 # Environment configuration
 dotenv = "0.15"
 
-# Database & Embeddings
-sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono"] }
+# Database & Embeddings - with security features
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono", "migrate"] }
 libsqlite3-sys = { version = "0.28", features = ["bundled"] }
 # Modern vector search with sqlite-vec
 sqlite-vec = "0.1.6"
@@ -141,7 +141,7 @@ chardet = "0.2"                                  # Character encoding detection
 content_inspector = "0.2"                        # Binary vs text file detection
 
 # Large file processing & streaming
-async-stream = { version = "0.3", optional = true }  # Async streaming utilities
+async-stream = "0.3"                                 # Async streaming utilities (required for streaming.rs)
 memmap2 = { version = "0.9", optional = true }      # Memory-mapped file I/O
 tempfile = "3.14"                                    # Temporary file management (updated)
 
@@ -194,7 +194,7 @@ multimedia-core = ["id3", "audiotags"]  # Essential audio metadata
 multimedia-full = ["multimedia", "ffmpeg-next"]  # Full multimedia (requires FFmpeg)
 
 # Large file processing
-large-files = ["memmap2", "async-stream"]
+large-files = ["memmap2"]
 
 # Preset feature combinations
 essential = ["documents-core", "images-core", "archives-core", "multimedia-core"]
@@ -211,6 +211,12 @@ advanced-analytics = []  # Advanced analytics feature flag (for future expansion
 [profile.dev]
 incremental = true
 opt-level = 0
+
+[profile.test]
+opt-level = 1              # Some optimization for faster test execution
+debug = 1                  # Reduced debug info
+incremental = true         # Speed up incremental builds
+overflow-checks = true     # Keep safety checks
 
 [dev-dependencies]
 mockito = "1.5"
@@ -261,9 +267,13 @@ name = "test_sql_injection_comprehensive"
 path = "tests/security/test_sql_injection_comprehensive.rs"
 
 [profile.release]
-panic = "abort"  # Immediate abort prevents resource leaks and info disclosure
-codegen-units = 1
-lto = true
-opt-level = "s"
-strip = true
-incremental = false
+panic = "abort"        # Immediate abort prevents resource leaks and info disclosure
+codegen-units = 1      # Better optimization at cost of compile time
+lto = "fat"            # Link-time optimization for smaller binary
+opt-level = "z"        # Optimize for size (production builds)
+strip = true           # Strip debug symbols for smaller binary
+incremental = false    # Disable for reproducible builds
+overflow-checks = true # Enable overflow checks even in release
+debug = false          # Disable debug info
+debug-assertions = false # Disable debug assertions
+rpath = false          # Disable rpath for security

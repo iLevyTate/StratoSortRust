@@ -1,5 +1,6 @@
 import { http, HttpResponse } from 'msw';
-import { mockFileInfo, mockFileAnalysis, mockOllamaStatus, mockAppSettings, mockSmartFolder } from './tauri-api';
+// Import only if needed for handlers
+// import { mockFileInfo, mockFileAnalysis, mockOllamaStatus, mockAppSettings, mockSmartFolder } from './tauri-api';
 
 // MSW handlers for HTTP requests (if any)
 export const handlers = [

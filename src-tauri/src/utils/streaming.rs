@@ -3,7 +3,7 @@ use futures::stream::{Stream, StreamExt};
 use std::path::Path;
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-use tracing::debug;
+use tracing::{debug, error, warn};
 
 /// Configuration for streaming operations
 #[derive(Debug, Clone)]
@@ -44,9 +44,14 @@ pub async fn stream_file(
     config: &StreamConfig,
 ) -> Result<(impl Stream<Item = Result<Vec<u8>>>, StreamMetadata)> {
     // Validate file exists and get metadata
-    let metadata = tokio::fs::metadata(path).await.map_err(|_e| {
-        AppError::FileNotFound {
-            path: path.to_string_lossy().to_string(),
+    let metadata = tokio::fs::metadata(path).await.map_err(|e| {
+        // FIX: Better error handling - distinguish between not found and permission errors
+        if e.kind() == std::io::ErrorKind::NotFound {
+            AppError::FileNotFound {
+                path: path.to_string_lossy().to_string(),
+            }
+        } else {
+            AppError::Io(e)
         }
     })?;
 
@@ -84,7 +89,7 @@ pub async fn stream_file(
         config.chunk_size
     );
 
-    let chunks_total = (file_size as usize + config.chunk_size - 1) / config.chunk_size;
+    let chunks_total = (file_size as usize).div_ceil(config.chunk_size);
 
     let file = File::open(path).await?;
     let mut reader = BufReader::with_capacity(config.buffer_size, file);
@@ -100,7 +105,8 @@ pub async fn stream_file(
                 Ok(n) => {
                     total_read += n as u64;
 
-                    // Resize buffer to actual bytes read
+                    // FIX: Avoid unnecessary allocation by using slice directly
+                    // Only clone when necessary for ownership transfer
                     let chunk = buffer[..n].to_vec();
 
                     debug!(
@@ -109,6 +115,11 @@ pub async fn stream_file(
                     );
 
                     yield Ok(chunk);
+
+                    // FIX: Check for unexpected EOF
+                    if total_read >= file_size {
+                        break;
+                    }
                 }
                 Err(e) => {
                     error!("Error reading file stream: {}", e);
@@ -350,8 +361,12 @@ impl SafeFileReader {
 
     /// Read file header (first N bytes)
     pub async fn read_header(&self, path: &Path, header_size: usize) -> Result<Vec<u8>> {
+        // FIX: Validate header_size to prevent excessive memory allocation
+        const MAX_HEADER_SIZE: usize = 1024 * 1024; // 1MB max header
+        let safe_header_size = header_size.min(MAX_HEADER_SIZE);
+
         let mut file = File::open(path).await?;
-        let mut buffer = vec![0u8; header_size];
+        let mut buffer = vec![0u8; safe_header_size];
         let n = file.read(&mut buffer).await?;
         buffer.truncate(n);
         Ok(buffer)

@@ -3,6 +3,7 @@ use crate::{
     config::Config,
     core::{FileAnalyzer, OperationQueue, Organizer, SmartFolderManager, UndoRedoManager, pattern_learner::PatternLearner},
     error::Result,
+    middleware::csrf::CsrfStore,
     services::FileWatcher,
     storage::Database,
 };
@@ -10,6 +11,7 @@ use dashmap::DashMap;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio::sync::Semaphore;
 use uuid::Uuid;
@@ -53,6 +55,8 @@ pub struct AppState<R: Runtime = tauri::Wry> {
     pub background_tasks: Arc<RwLock<Vec<tokio::task::JoinHandle<()>>>>,
     /// Semaphore to limit concurrent background tasks
     pub task_pool_semaphore: Arc<Semaphore>,
+    /// CSRF token store for security
+    pub csrf_store: Arc<CsrfStore>,
 }
 
 impl<R: Runtime> AppState<R> {
@@ -67,6 +71,7 @@ impl<R: Runtime> AppState<R> {
         let file_analyzer = Arc::new(FileAnalyzer::new(ai_service.clone(), config_arc.clone()));
         let smart_folders = Arc::new(SmartFolderManager::new(database.clone()));
         let organizer = Arc::new(Organizer::new(smart_folders.clone()));
+        let csrf_store = Arc::new(CsrfStore::new());
         let undo_redo = Arc::new(UndoRedoManager::new(database.clone()));
         let file_cache = Arc::new(FileCache::new());
         let monitoring_service = Arc::new(crate::services::MonitoringService::new());
@@ -93,6 +98,16 @@ impl<R: Runtime> AppState<R> {
             pattern_learner,
             background_tasks: Arc::new(RwLock::new(Vec::new())),
             task_pool_semaphore: Arc::new(Semaphore::new(50)), // Limit to 50 concurrent background tasks
+            csrf_store,
+        })
+    }
+
+    /// Creates a minimal AppState for testing
+    pub async fn new_for_testing() -> Result<Self> {
+        // This would need proper implementation with test doubles
+        // For now, return an error
+        Err(crate::error::AppError::SystemError {
+            message: "Test AppState not implemented yet".to_string()
         })
     }
 
@@ -109,25 +124,79 @@ impl<R: Runtime> AppState<R> {
         Ok(())
     }
 
-    /// Starts a new operation (internal) - fixed to be atomic
+    /// Starts a new operation (internal) - CRITICAL FIX: Truly atomic with proper RAII
     fn start_operation_internal(&self, operation_type: OperationType) -> Uuid {
         let id = Uuid::new_v4();
         let timeout_duration = get_operation_timeout(&operation_type);
         let now = chrono::Utc::now();
 
-        let status = OperationStatus {
-            id,
-            operation_type: operation_type.clone(),
-            progress: 0.0,
-            message: String::new(),
-            cancellation_token: tokio_util::sync::CancellationToken::new(),
-            started_at: now,
-            timeout_duration,
-            last_update: Arc::new(RwLock::new(now)),
-        };
+        // CRITICAL FIX: Create the timeout task BEFORE inserting to prevent TOCTOU
+        // Store weak reference to avoid circular dependency
+        let operations_weak = Arc::downgrade(&self.active_operations);
+        let handle_clone = self.handle.clone();
+        let semaphore_clone = self.task_pool_semaphore.clone();
 
-        // Clone what we need before inserting to avoid holding references
-        let status_clone = OperationStatus {
+        // Pre-create the timeout check task
+        let timeout_task = tokio::spawn(async move {
+            // Acquire permit for this monitoring task
+            let _permit = match semaphore_clone.acquire_owned().await {
+                Ok(permit) => permit,
+                Err(_) => {
+                    tracing::error!("Failed to acquire permit for operation timeout check");
+                    return;
+                }
+            };
+
+            // Wait initial delay before first check
+            tokio::time::sleep(Duration::from_secs(30)).await;
+
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+
+                // Try to upgrade weak reference
+                let Some(operations) = operations_weak.upgrade() else {
+                    // AppState dropped, exit task
+                    break;
+                };
+
+                // Check if operation still exists and should timeout
+                let should_timeout = operations.get(&id).is_some_and(|status| {
+                    let now = chrono::Utc::now();
+                    let last_update = *status.last_update.read();
+                    let elapsed_since_update = now.signed_duration_since(last_update);
+                    let total_elapsed = now.signed_duration_since(status.started_at);
+
+                    elapsed_since_update > chrono::Duration::minutes(2) ||
+                    total_elapsed > status.timeout_duration
+                });
+
+                if should_timeout {
+                    if let Some((_, status)) = operations.remove(&id) {
+                        tracing::warn!("Operation {} timed out", id);
+                        status.cancellation_token.cancel();
+
+                        let timeout_event = serde_json::json!({
+                            "operation_id": id.to_string(),
+                            "operation_type": status.operation_type,
+                            "error": "Operation timed out",
+                            "timeout_duration_seconds": status.timeout_duration.num_seconds(),
+                        });
+
+                        crate::emit_event!(handle_clone, crate::events::operation::ERROR, timeout_event);
+                    }
+                    break; // Exit after timeout
+                }
+
+                // Also exit if operation completed normally
+                if !operations.contains_key(&id) {
+                    break;
+                }
+            }
+        });
+
+        // Now create and insert the status atomically
+        let status = OperationStatus {
             id,
             operation_type,
             progress: 0.0,
@@ -138,11 +207,13 @@ impl<R: Runtime> AppState<R> {
             last_update: Arc::new(RwLock::new(now)),
         };
 
-        // Insert and schedule atomically
+        // Insert the operation - timeout monitoring is already running
         self.active_operations.insert(id, status);
 
-        // Start timeout check for this operation - now guaranteed to exist in map
-        self.schedule_timeout_check(id);
+        // Track the timeout task for cleanup
+        if let Some(mut tasks) = self.background_tasks.try_write() {
+            tasks.push(timeout_task);
+        }
 
         id
     }
@@ -294,7 +365,8 @@ impl<R: Runtime> AppState<R> {
         Ok(())
     }
 
-    /// Schedule timeout check for an operation - FIXED RESOURCE LIMITS
+    /// Schedule timeout check for an operation - DEPRECATED: Now handled in start_operation_internal
+    #[allow(dead_code)]
     fn schedule_timeout_check(&self, operation_id: Uuid) {
         let operations_ref = Arc::downgrade(&self.active_operations);
         let handle = self.handle.clone();
@@ -550,16 +622,13 @@ impl<R: Runtime> AppState<R> {
             // If we can't update timestamp immediately, that's okay - just continue
 
             // Create event data and immediately drop the lock
-            let event = ProgressEvent {
+            ProgressEvent {
                 id: id.to_string(),
                 operation_type: status.operation_type.clone(),
                 progress: clamped_progress,
                 message,
                 completed: false,
-            };
-
-            // Lock is automatically dropped at end of scope
-            event
+            }
         }; // Lock released here before any event emission
 
         // CRITICAL: All event emission happens outside of any locks

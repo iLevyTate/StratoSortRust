@@ -2,15 +2,9 @@ import { vi } from 'vitest';
 import type {
 	FileInfo,
 	FileAnalysis,
-	AnalysisResult,
-	OrganizationSuggestion,
 	OllamaStatus,
 	AppSettings,
-	SystemInfo,
 	SmartFolder,
-	HistoryEntry,
-	FirstRunStatus,
-	BatchOperationResult,
 	SearchResult
 } from '$lib/types/backend';
 

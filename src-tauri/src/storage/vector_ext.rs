@@ -200,10 +200,18 @@ impl VectorExtension {
             });
         }
 
-        // Validate table name to prevent SQL injection
+        // SECURITY: SQL injection prevention - validate table name
         if !crate::storage::database::is_valid_sql_identifier(table_name) {
             return Err(AppError::SecurityError {
                 message: "Invalid table name format".to_string(),
+            });
+        }
+
+        // SECURITY: Additional whitelist check for defense in depth
+        const ALLOWED_TABLES: &[&str] = &["vec_embeddings", "file_embeddings", "search_history"];
+        if !ALLOWED_TABLES.contains(&table_name) {
+            return Err(AppError::SecurityError {
+                message: format!("Table '{}' is not in allowed list for vector search", table_name),
             });
         }
 
@@ -219,7 +227,7 @@ impl VectorExtension {
 
         let query_bytes = Self::f32_vec_to_bytes(query_embedding);
 
-        // Safe to use format! after validation - sqlite-vec's distance function for similarity search
+        // SECURITY: Safe to use format! after validation and whitelist check - sqlite-vec's distance function for similarity search
         let search_query = format!(
             r#"
             SELECT path, vec_distance_cosine(embedding, ?) as distance
@@ -400,7 +408,8 @@ impl VectorExtension {
         let mut tx = pool.begin().await?;
 
         for path in paths {
-            // Safe to use format! after validation
+            // SECURITY: SQL injection prevention - table_name has been validated above
+            // using is_valid_sql_identifier() and checked against whitelist
             let delete_query = format!("DELETE FROM {} WHERE path = ?", table_name);
             let result = sqlx::query(&delete_query)
                 .bind(path)
@@ -429,6 +438,21 @@ impl VectorExtension {
         if !self.is_available {
             return Err(AppError::DatabaseError {
                 message: "Vector extension not available".to_string(),
+            });
+        }
+
+        // SECURITY: SQL injection prevention - validate table name
+        if !crate::storage::database::is_valid_sql_identifier(table_name) {
+            return Err(AppError::SecurityError {
+                message: "Invalid table name format".to_string(),
+            });
+        }
+
+        // SECURITY: Additional whitelist check for defense in depth
+        const ALLOWED_TABLES: &[&str] = &["vec_embeddings", "file_embeddings", "search_history"];
+        if !ALLOWED_TABLES.contains(&table_name) {
+            return Err(AppError::SecurityError {
+                message: format!("Table '{}' is not in allowed list for filtered search", table_name),
             });
         }
 
@@ -505,14 +529,22 @@ impl VectorExtension {
             return Ok(());
         }
 
-        // Validate table name to prevent SQL injection
+        // SECURITY: SQL injection prevention - validate table name
         if !crate::storage::database::is_valid_sql_identifier(table_name) {
             return Err(AppError::SecurityError {
                 message: "Invalid table name format".to_string(),
             });
         }
 
-        // Safe to use format! after validation
+        // SECURITY: Additional whitelist check for defense in depth
+        const ALLOWED_TABLES: &[&str] = &["vec_embeddings", "file_embeddings", "search_history"];
+        if !ALLOWED_TABLES.contains(&table_name) {
+            return Err(AppError::SecurityError {
+                message: format!("Table '{}' is not in allowed list for optimization", table_name),
+            });
+        }
+
+        // SECURITY: Safe to use format! after validation and whitelist check
         sqlx::query(&format!("ANALYZE {}", table_name))
             .execute(pool)
             .await?;
@@ -527,14 +559,22 @@ impl VectorExtension {
         pool: &SqlitePool,
         table_name: &str,
     ) -> Result<VectorStats> {
-        // Validate table name to prevent SQL injection
+        // SECURITY: SQL injection prevention - validate table name
         if !crate::storage::database::is_valid_sql_identifier(table_name) {
             return Err(AppError::SecurityError {
                 message: "Invalid table name format".to_string(),
             });
         }
 
-        // Safe to use format! after validation
+        // SECURITY: Additional whitelist check for defense in depth
+        const ALLOWED_TABLES: &[&str] = &["vec_embeddings", "file_embeddings", "search_history"];
+        if !ALLOWED_TABLES.contains(&table_name) {
+            return Err(AppError::SecurityError {
+                message: format!("Table '{}' is not in allowed list", table_name),
+            });
+        }
+
+        // SECURITY: Safe to use format! after validation and whitelist check
         let count_query = format!("SELECT COUNT(*) as count FROM {}", table_name);
 
         let count: i64 = sqlx::query_scalar(&count_query)

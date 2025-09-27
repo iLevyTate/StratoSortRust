@@ -8,7 +8,6 @@ import { setupServer } from 'msw/node';
 import { beforeAll, afterEach, afterAll } from 'vitest';
 import type {
   FileInfo,
-  FileAnalysis,
   AppSettings,
   OllamaStatus,
   SystemInfo

@@ -148,11 +148,14 @@ impl Default for AuditConfig {
     }
 }
 
+// Type alias for alert callback function
+type AlertCallback = Box<dyn Fn(&AuditEntry) + Send + Sync>;
+
 /// Audit logger service
 pub struct AuditLogger {
     config: Arc<RwLock<AuditConfig>>,
     current_file: Arc<RwLock<Option<PathBuf>>>,
-    alerts: Arc<RwLock<Vec<Box<dyn Fn(&AuditEntry) + Send + Sync>>>>,
+    alerts: Arc<RwLock<Vec<AlertCallback>>>,
 }
 
 impl AuditLogger {
@@ -282,7 +285,13 @@ impl AuditLogger {
             return Ok(path);
         }
 
-        Ok(current.as_ref().unwrap().clone())
+        // SAFETY: Use safe pattern to avoid expect()
+        Ok(current.as_ref().map(|p| p.clone()).unwrap_or_else(|| {
+            // Fallback: create new file if somehow None
+            let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
+            let filename = format!("audit_{}_fallback.jsonl", timestamp);
+            log_dir.join(filename)
+        }))
     }
 
     /// Rotate log files
@@ -316,6 +325,9 @@ impl AuditLogger {
 
         // Sort by modification time
         files.sort_by_key(|p| {
+            // Use UNIX_EPOCH as a fallback for files without metadata
+            // This is safe because we're just sorting, and missing metadata
+            // means the file will be treated as very old
             std::fs::metadata(p)
                 .and_then(|m| m.modified())
                 .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
@@ -356,7 +368,7 @@ impl AuditLogger {
         &self,
         start_time: Option<DateTime<Utc>>,
         end_time: Option<DateTime<Utc>>,
-        event_types: Option<Vec<SecurityEventType>>,
+        _event_types: Option<Vec<SecurityEventType>>,
         severity: Option<Severity>,
         client_id: Option<String>,
     ) -> Result<Vec<AuditEntry>> {
@@ -464,7 +476,8 @@ mod tests {
             ..Default::default()
         };
 
-        let logger = AuditLogger::new(config).await.unwrap();
+        let logger = AuditLogger::new(config).await
+            .expect("Failed to create test logger");
 
         // Log various events
         logger.log_security_event(
@@ -474,7 +487,8 @@ mod tests {
             Severity::High,
             Some("test_client".to_string()),
             None,
-        ).await.unwrap();
+        ).await
+            .expect("Failed to log security event");
 
         logger.log_security_event(
             SecurityEventType::RateLimitExceeded {
@@ -484,12 +498,13 @@ mod tests {
             Severity::Medium,
             Some("abusive_client".to_string()),
             None,
-        ).await.unwrap();
+        ).await
+            .expect("Failed to log security event");
 
         // Search logs
         let results = logger.search(None, None, None, None, Some("test_client".to_string()))
             .await
-            .unwrap();
+            .expect("Failed to search logs");
 
         assert_eq!(results.len(), 1);
 

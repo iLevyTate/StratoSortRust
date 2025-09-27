@@ -1,7 +1,9 @@
 pub mod ai;
 pub mod ai_status;
+pub mod archive;
 pub mod diagnostics;
 pub mod files;
+pub mod health; // Add health check module for comprehensive monitoring
 pub mod history;
 pub mod monitoring;
 pub mod notifications;

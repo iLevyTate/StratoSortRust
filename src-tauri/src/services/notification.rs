@@ -60,8 +60,11 @@ impl NotificationService {
             }
         }
 
-        // Also emit to frontend
-        self.app_handle.emit("notification", &notification)?;
+        // SAFETY: Emit to frontend with error recovery
+        if let Err(e) = self.app_handle.emit("notification", &notification) {
+            tracing::warn!("Failed to emit notification to frontend: {}", e);
+            // Don't fail the entire operation if emission fails
+        }
 
         Ok(id)
     }
@@ -127,8 +130,8 @@ impl NotificationService {
             urgency: NotificationUrgency::Critical,
         };
 
-        // Also emit detailed failure event to frontend
-        self.app_handle.emit(
+        // SAFETY: Emit detailed failure event to frontend with error recovery
+        if let Err(e) = self.app_handle.emit(
             "operation-failure",
             serde_json::json!({
                 "operation": operation,
@@ -137,7 +140,9 @@ impl NotificationService {
                 "timestamp": chrono::Utc::now().timestamp(),
                 "notification_id": notification.id
             }),
-        )?;
+        ) {
+            tracing::warn!("Failed to emit operation-failure event: {}", e);
+        }
 
         self.send_notification(notification).await
     }
@@ -162,8 +167,8 @@ impl NotificationService {
             urgency: NotificationUrgency::Normal,
         };
 
-        // Emit timeout event to frontend
-        self.app_handle.emit(
+        // SAFETY: Emit timeout event to frontend with error recovery
+        if let Err(e) = self.app_handle.emit(
             "operation-timeout",
             serde_json::json!({
                 "operation": operation,
@@ -171,7 +176,9 @@ impl NotificationService {
                 "timestamp": chrono::Utc::now().timestamp(),
                 "notification_id": notification.id
             }),
-        )?;
+        ) {
+            tracing::warn!("Failed to emit operation-timeout event: {}", e);
+        }
 
         self.send_notification(notification).await
     }
@@ -197,8 +204,8 @@ impl NotificationService {
             urgency: NotificationUrgency::Normal,
         };
 
-        // Emit resource limit event to frontend
-        self.app_handle.emit(
+        // SAFETY: Emit resource limit event to frontend with error recovery
+        if let Err(e) = self.app_handle.emit(
             "resource-limit",
             serde_json::json!({
                 "resource_type": resource_type,
@@ -207,7 +214,9 @@ impl NotificationService {
                 "timestamp": chrono::Utc::now().timestamp(),
                 "notification_id": notification.id
             }),
-        )?;
+        ) {
+            tracing::warn!("Failed to emit resource-limit event: {}", e);
+        }
 
         self.send_notification(notification).await
     }

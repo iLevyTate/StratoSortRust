@@ -215,7 +215,9 @@ impl AiService {
                             Ok(analysis)
                         }
                         Err(circuit_breaker::CircuitBreakerError::CircuitOpen) => {
-                            tracing::warn!("Circuit breaker open, falling back to local analysis");
+                            tracing::warn!("Circuit breaker open, automatically switching to fallback mode");
+                            // Persist fallback mode when circuit breaker is open
+                            *self.provider.write() = AiProvider::Fallback;
                             self.fallback_analysis_with_path(content, file_type, path)
                         }
                         Err(circuit_breaker::CircuitBreakerError::Timeout) => {
@@ -228,10 +230,27 @@ impl AiService {
                         }
                     }
                 } else {
+                    // No Ollama client available, switch to fallback
+                    tracing::info!("No Ollama client available, switching to fallback mode");
+                    *self.provider.write() = AiProvider::Fallback;
                     self.fallback_analysis_with_path(content, file_type, path)
                 }
             }
-            AiProvider::Fallback => self.fallback_analysis_with_path(content, file_type, path),
+            AiProvider::Fallback => {
+                // Periodically try to reconnect to Ollama (every 10th call)
+                static mut FALLBACK_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                unsafe {
+                    if FALLBACK_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % 10 == 0 {
+                        tracing::info!("Attempting to reconnect to Ollama...");
+                        if let Ok(true) = self.is_connected().await {
+                            tracing::info!("Ollama reconnected, switching back to Ollama provider");
+                            *self.provider.write() = AiProvider::Ollama;
+                            // Will try Ollama on next call
+                        }
+                    }
+                }
+                self.fallback_analysis_with_path(content, file_type, path)
+            }
         }
     }
 
@@ -804,6 +823,29 @@ impl AiService {
         }
 
         Ok(suggestions)
+    }
+
+    /// Check if the AI service is connected
+    pub async fn is_connected(&self) -> Result<bool> {
+        let provider = self.provider.read().clone();
+
+        match provider {
+            AiProvider::Ollama => {
+                let client_opt = self.ollama_client.read().clone();
+                if let Some(client) = client_opt {
+                    match client.health_check().await {
+                        Ok(_) => Ok(true),
+                        Err(_) => Ok(false),
+                    }
+                } else {
+                    Ok(false)
+                }
+            }
+            AiProvider::Fallback => {
+                // Fallback is always "connected" since it's local
+                Ok(true)
+            }
+        }
     }
 }
 

@@ -196,19 +196,26 @@ pub struct RateLimiter {
     /// Endpoint configurations
     endpoints: Arc<EndpointLimits>,
     /// Global rate limit (across all clients)
+    #[allow(dead_code)]
     global_limits: Arc<RwLock<RequestInfo>>,
     /// Enable/disable rate limiting
     enabled: Arc<RwLock<bool>>,
 }
 
-impl RateLimiter {
-    pub fn new() -> Self {
+impl Default for RateLimiter {
+    fn default() -> Self {
         Self {
             requests: Arc::new(DashMap::new()),
             endpoints: Arc::new(EndpointLimits::default()),
             global_limits: Arc::new(RwLock::new(RequestInfo::new(100))),
             enabled: Arc::new(RwLock::new(true)),
         }
+    }
+}
+
+impl RateLimiter {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Check if request should be allowed
@@ -234,8 +241,8 @@ impl RateLimiter {
             });
 
         // Build request key
-        let key = if config.per_ip && client_id.is_some() {
-            format!("{}:{}", client_id.unwrap(), endpoint)
+        let key = if let Some(client) = client_id.filter(|_| config.per_ip) {
+            format!("{}:{}", client, endpoint)
         } else {
             format!("global:{}", endpoint)
         };

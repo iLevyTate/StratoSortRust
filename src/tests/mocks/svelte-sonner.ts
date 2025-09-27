@@ -58,7 +58,7 @@ export const toast = {
   dismiss: vi.fn((id?: string) => {
     console.log('Mock toast dismiss:', id);
   }),
-  custom: vi.fn((component: any, options?: any) => {
+  custom: vi.fn((_component: any, options?: any) => {
     console.log('Mock toast custom:', options);
     return '1';
   }),

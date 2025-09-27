@@ -2,12 +2,11 @@
 	import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Switch, LoadingSpinner, DirectoryPicker, StatusIndicator } from '$lib/components/ui';
 	import { ChevronRight, ChevronLeft, Check, Settings, Folder, Palette, Shield } from 'lucide-svelte';
 	import { onMount } from 'svelte';
-	import type { FirstRunStatus, FirstRunSetup, OllamaStatus, AppSettings } from '$lib/types/backend';
+	import type { FirstRunSetup, AppSettings } from '$lib/types/backend';
 	import {
 		checkFirstRunStatus,
 		completeFirstRunSetup,
 		checkOllamaStatus,
-		openDirectoryDialog,
 		getAppSettings,
 		saveAppSettings
 	} from '$lib/api/tauri';
@@ -18,7 +17,14 @@
 	type SetupStep = 'welcome' | 'ai_setup' | 'directories' | 'preferences' | 'complete';
 
 	let currentStep: SetupStep = 'welcome';
-	let setupData: FirstRunSetup = {
+	// Initialize with all required fields to avoid undefined values
+	let setupData: FirstRunSetup & {
+		ollama_host: string;
+		ollama_model: string;
+		default_smart_folder_location: string;
+		enable_telemetry: boolean;
+		enable_crash_reports: boolean;
+	} = {
 		ai_provider: 'ollama',
 		ollama_host: 'http://localhost:11434',
 		ollama_model: 'llama3.2:3b',
@@ -92,7 +98,7 @@
 				// Ensure models is always an array, even if undefined or null
 				availableModels = Array.isArray(status.models) ? status.models : [];
 				if (availableModels.length > 0) {
-					setupData.ollama_model = availableModels[0]; // Default to first available model
+					setupData.ollama_model = availableModels[0] || 'llama3.2:3b'; // Default to first available model
 				}
 			} else {
 				// Reset models if not running
@@ -106,31 +112,7 @@
 		}
 	}
 
-	async function addWatchPath() {
-		try {
-			const selectedPath = await openDirectoryDialog('Select Directory to Watch');
-			if (selectedPath) {
-				// Ensure watch_paths is always an array
-				const currentPaths = Array.isArray(setupData.watch_paths) ? setupData.watch_paths : [];
-				if (!currentPaths.includes(selectedPath)) {
-					setupData.watch_paths = [...currentPaths, selectedPath];
-				}
-			}
-		} catch (error) {
-			addNotification('error', 'Directory Selection Failed', String(error));
-		}
-	}
-
-	async function selectSmartFolderLocation() {
-		try {
-			const selectedPath = await openDirectoryDialog('Select Default Smart Folder Location');
-			if (selectedPath) {
-				setupData.default_smart_folder_location = selectedPath;
-			}
-		} catch (error) {
-			addNotification('error', 'Directory Selection Failed', String(error));
-		}
-	}
+	// Note: Directory selection is handled inline by DirectoryPicker components
 
 	function removeWatchPath(path: string) {
 		// Ensure watch_paths is always an array before filtering
@@ -140,15 +122,17 @@
 
 	function nextStep() {
 		const currentIndex = stepIndex(currentStep);
-		if (currentIndex < steps.length - 1) {
-			currentStep = steps[currentIndex + 1].id;
+		const nextStepItem = steps[currentIndex + 1];
+		if (currentIndex < steps.length - 1 && nextStepItem) {
+			currentStep = nextStepItem.id;
 		}
 	}
 
 	function previousStep() {
 		const currentIndex = stepIndex(currentStep);
-		if (currentIndex > 0) {
-			currentStep = steps[currentIndex - 1].id;
+		const prevStepItem = steps[currentIndex - 1];
+		if (currentIndex > 0 && prevStepItem) {
+			currentStep = prevStepItem.id;
 		}
 	}
 
@@ -158,7 +142,7 @@
 			// Apply the setup data as app settings
 			const currentSettings = await getAppSettings();
 			const updatedSettings: AppSettings = {
-				...currentSettings,
+				...(currentSettings || {}),
 				ai_provider: setupData.ai_provider || 'ollama',
 				ollama_host: setupData.ollama_host || 'http://localhost:11434',
 				ollama_model: setupData.ollama_model || 'llama3.2:3b',
@@ -173,12 +157,12 @@
 
 			// Mark first run as complete - map to backend expected format
 			const backendSetupData = {
-				smart_folder_location: setupData.default_smart_folder_location,
-				enable_watch_mode: setupData.watch_paths && setupData.watch_paths.length > 0,
+				smart_folder_location: setupData.default_smart_folder_location || '',
+				enable_watch_mode: Boolean(setupData.watch_paths && setupData.watch_paths.length > 0),
 				watch_directories: setupData.watch_paths || [],
 				enable_notifications: true, // Default to true for notifications
 				auto_analyze: false, // Default to false for auto-analyze
-				ollama_host: setupData.ollama_host
+				ollama_host: setupData.ollama_host || 'http://localhost:11434'
 			};
 
 			await completeFirstRunSetup(backendSetupData);

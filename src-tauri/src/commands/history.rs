@@ -461,8 +461,8 @@ async fn perform_undo_operation(
         "move" => {
             // Reverse the move operation
             if let Some(destination) = &operation.destination {
-                let source_path = validate_path(&operation.source, &app)?.into_path_buf();
-                let dest_path = validate_path(destination, &app)?.into_path_buf();
+                let source_path = validate_path(&operation.source, app)?.into_path_buf();
+                let dest_path = validate_path(destination, app)?.into_path_buf();
 
                 // Validate that the destination file exists
                 if !dest_path.exists() {
@@ -529,7 +529,7 @@ async fn perform_undo_operation(
         "copy" => {
             // Delete the copied file
             if let Some(destination) = &operation.destination {
-                let dest_path = validate_path(destination, &app)?.into_path_buf();
+                let dest_path = validate_path(destination, app)?.into_path_buf();
                 if dest_path.exists() {
                     match tokio::fs::remove_file(destination).await {
                         Ok(_) => {
@@ -558,7 +558,7 @@ async fn perform_undo_operation(
                         match BASE64_STANDARD.decode(backup_str) {
                             Ok(backup_content) => {
                                 // Ensure directory exists
-                                let source_path = validate_path(&operation.source, &app)?.into_path_buf();
+                                let source_path = validate_path(&operation.source, app)?.into_path_buf();
                                 if let Some(parent) = source_path.parent() {
                                     if !parent.exists() {
                                         if let Err(e) = tokio::fs::create_dir_all(parent).await {
@@ -611,7 +611,7 @@ async fn perform_undo_operation(
         }
         "create" => {
             // Undo create by deleting the file
-            let source_path = validate_path(&operation.source, &app)?.into_path_buf();
+            let source_path = validate_path(&operation.source, app)?.into_path_buf();
             if source_path.exists() {
                 match tokio::fs::remove_file(&operation.source).await {
                     Ok(_) => {
@@ -637,8 +637,8 @@ async fn perform_undo_operation(
         "rename" => {
             // Reverse the rename
             if let Some(destination) = &operation.destination {
-                let dest_path = validate_path(destination, &app)?.into_path_buf();
-                let source_path = validate_path(&operation.source, &app)?.into_path_buf();
+                let dest_path = validate_path(destination, app)?.into_path_buf();
+                let source_path = validate_path(&operation.source, app)?.into_path_buf();
 
                 if !dest_path.exists() {
                     tracing::warn!(
@@ -689,8 +689,8 @@ async fn perform_redo_operation(
     match operation.operation_type.as_str() {
         "move" | "rename" => {
             if let Some(destination) = &operation.destination {
-                let source_path = validate_path(&operation.source, &app)?.into_path_buf();
-                let dest_path = validate_path(destination, &app)?.into_path_buf();
+                let source_path = validate_path(&operation.source, app)?.into_path_buf();
+                let dest_path = validate_path(destination, app)?.into_path_buf();
 
                 // Validate source exists
                 if !source_path.exists() {
@@ -764,8 +764,8 @@ async fn perform_redo_operation(
         }
         "copy" => {
             if let Some(destination) = &operation.destination {
-                let source_path = validate_path(&operation.source, &app)?.into_path_buf();
-                let dest_path = validate_path(destination, &app)?.into_path_buf();
+                let source_path = validate_path(&operation.source, app)?.into_path_buf();
+                let dest_path = validate_path(destination, app)?.into_path_buf();
 
                 // Validate source exists
                 if !source_path.exists() {
@@ -806,7 +806,7 @@ async fn perform_redo_operation(
             }
         }
         "delete" => {
-            let source_path = validate_path(&operation.source, &app)?.into_path_buf();
+            let source_path = validate_path(&operation.source, app)?.into_path_buf();
 
             if !source_path.exists() {
                 tracing::warn!(
@@ -830,7 +830,7 @@ async fn perform_redo_operation(
         "create" => {
             // Redo create - this is tricky as we need original content
             // For now, we'll create an empty file if it doesn't exist
-            let source_path = validate_path(&operation.source, &app)?.into_path_buf();
+            let source_path = validate_path(&operation.source, app)?.into_path_buf();
 
             if source_path.exists() {
                 tracing::warn!(

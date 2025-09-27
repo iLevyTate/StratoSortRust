@@ -70,6 +70,9 @@ pub async fn configure_watch_mode(
 
     if let Some(watcher_arc) = watcher_arc {
         watcher_arc.configure_watch_mode(config).await?;
+    } else {
+        // Log a warning when file watcher is not initialized
+        tracing::warn!("Cannot configure watch mode: file watcher service is not initialized");
     }
     Ok(())
 }
@@ -92,6 +95,9 @@ pub async fn enable_watch_mode(
 
         watcher_arc.configure_watch_mode(config).await?;
         info!("Watch mode enabled");
+    } else {
+        // Log a warning when file watcher is not initialized
+        tracing::warn!("Cannot enable watch mode: file watcher service is not initialized");
     }
     Ok(())
 }
@@ -110,6 +116,9 @@ pub async fn disable_watch_mode(state: State<'_, Arc<AppState>>) -> Result<()> {
 
         watcher_arc.configure_watch_mode(config).await?;
         info!("Watch mode disabled");
+    } else {
+        // Log a warning when file watcher is not initialized
+        tracing::warn!("Cannot disable watch mode: file watcher service is not initialized");
     }
     Ok(())
 }
@@ -148,6 +157,9 @@ pub async fn record_user_organization_action(
     if let Some(watcher_arc) = watcher_arc {
         watcher_arc.record_user_action(user_action).await;
         info!("Recorded user organization action for learning");
+    } else {
+        // Log a warning when file watcher is not initialized
+        tracing::warn!("Cannot record user action: file watcher service is not initialized");
     }
     Ok(())
 }
@@ -180,7 +192,6 @@ pub async fn update_auto_organize_threshold(
 ) -> Result<()> {
     if !(0.0..=1.0).contains(&threshold) {
         return Err(crate::error::AppError::ValidationError {
-            field: "threshold".to_string(),
             message: "Threshold must be between 0.0 and 1.0".to_string(),
         });
     }
@@ -195,8 +206,11 @@ pub async fn update_auto_organize_threshold(
         config.confidence_threshold = threshold;
 
         watcher_arc.configure_watch_mode(config).await?;
+        info!("Updated auto-organize threshold to {}", threshold);
+    } else {
+        // Log a warning when file watcher is not initialized
+        tracing::warn!("Cannot update threshold: file watcher service is not initialized");
     }
-    info!("Updated auto-organize threshold to {}", threshold);
     Ok(())
 }
 
@@ -259,6 +273,9 @@ pub async fn add_watch_directory(
             watcher_arc.configure_watch_mode(config).await?;
             info!("Added directory to watch list: {}", directory_path);
         }
+    } else {
+        // Log a warning when file watcher is not initialized
+        tracing::warn!("Cannot add watch directory: file watcher service is not initialized");
     }
 
     Ok(())
@@ -283,6 +300,9 @@ pub async fn remove_watch_directory(
             .retain(|dir| dir != &directory_path);
         watcher_arc.configure_watch_mode(config).await?;
         info!("Removed directory from watch list: {}", directory_path);
+    } else {
+        // Log a warning when file watcher is not initialized
+        tracing::warn!("Cannot remove watch directory: file watcher service is not initialized");
     }
 
     Ok(())

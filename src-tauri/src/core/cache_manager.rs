@@ -685,16 +685,30 @@ impl CacheManager {
                     let cache_size = cache.len();
                     if cache_size > 1000 {
                         tracing::info!("Large cache detected ({} entries), considering cleanup", cache_size);
-                    }
-                    
-                        // Could trigger memory pressure cleanup if needed
-                        let stats_guard = stats.read();
-                        if stats_guard.total_size_bytes > 100 * 1024 * 1024 {  // 100MB
-                            drop(stats_guard);
-                            tracing::warn!("High cache memory usage, triggering LRU eviction");
-                            // Would call evict_lru() but need access to self
+                        // SAFETY: Implement basic cleanup for oversized cache
+                        if cache_size > 5000 {
+                            // Remove oldest entries
+                            let keys_to_remove: Vec<CacheKey> = cache
+                                .iter()
+                                .take(cache_size - 4000)  // Keep 4000 most recent
+                                .map(|entry| entry.key().clone())
+                                .collect();
+
+                            for key in keys_to_remove {
+                                cache.remove(&key);
+                            }
+                            tracing::info!("Removed {} old cache entries", cache_size - 4000);
                         }
                     }
+
+                    // Check memory pressure
+                    let stats_guard = stats.read();
+                    if stats_guard.total_size_bytes > 100 * 1024 * 1024 {  // 100MB
+                        drop(stats_guard);
+                        tracing::warn!("High cache memory usage detected");
+                        // Note: Would need access to self to trigger evict_lru()
+                    }
+                }
                     }
                     _ = tokio::task::yield_now() => {
                         // Allow task cancellation

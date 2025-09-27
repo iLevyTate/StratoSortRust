@@ -4,7 +4,7 @@ use std::sync::Arc;
 use stratosort::config::Config;
 use stratosort::error::AppError;
 use stratosort::state::AppState;
-use stratosort::utils::security::{sanitize_filename, validate_path_legacy};
+use stratosort::utils::security::{sanitize_filename, validate_and_sanitize_path_legacy};
 use tauri::test::mock_app;
 use tokio::runtime::Runtime;
 
@@ -243,7 +243,7 @@ fn test_path_traversal_injection_prevention() {
     ];
 
     for malicious_path in malicious_paths {
-        let result = validate_path_legacy(malicious_path, &app.handle());
+        let result = validate_and_sanitize_path_legacy(malicious_path, &app.handle());
 
         match result {
             Err(AppError::SecurityError { message }) => {
@@ -505,7 +505,7 @@ fn test_unicode_normalization_attacks() {
 
     for attack_path in unicode_attacks {
         let app_handle = app.handle();
-        let result = validate_path_legacy(attack_path, &app_handle);
+        let result = validate_and_sanitize_path_legacy(attack_path, &app_handle);
 
         match result {
             Ok(path) => {

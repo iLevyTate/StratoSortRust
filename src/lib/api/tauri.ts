@@ -1,5 +1,6 @@
-import { invoke } from '@tauri-apps/api/core';
-import { listen, UnlistenFn } from '@tauri-apps/api/event';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { secureInvoke } from '$lib/utils/csrf-protection';
+import { log, LogCategory } from '$lib/utils/enhanced-logger';
 // Runtime helpers for non-Tauri/browser E2E environment
 function isTauriRuntime(): boolean {
     return typeof window !== 'undefined' && !!(window as any).__TAURI__;
@@ -11,16 +12,133 @@ function getTauriMock(): any | null {
 }
 
 import { toast } from '$lib/stores/notifications';
-import { withRetry, parseBackendError, isRetryableError, createApiCallLegacy as createApiCall } from './error-handler';
-import { CircuitBreaker, handleUserError, withFallback } from '$lib/utils/async-error-handler';
+import { withRetry, parseBackendError, createApiCallLegacy as createApiCall } from './error-handler';
+import { CircuitBreaker, withFallback } from '$lib/utils/async-error-handler';
 import { isValidAnyUuid } from '$lib/utils/uuid';
+import { debug } from '$lib/utils/debug';
+import {
+	convertOrganizationSuggestions as convertOrgSuggestions
+} from '$lib/utils/type-converters';
 
-// Helper to unwrap standardized event envelopes emitted via emit_event! macro
+// Helper to unwrap and validate standardized event envelopes emitted via emit_event! macro
 function unwrapEventPayload<T = any>(payload: any): T {
-  if (payload && typeof payload === 'object' && 'data' in payload && (payload as any).data != null) {
-    return (payload as any).data as T;
+  // CRITICAL FIX: Add comprehensive validation for event payloads
+
+  // 1. Basic structure validation
+  if (payload === null || payload === undefined) {
+    debug.warn('Received null or undefined event payload');
+    return null as T;
   }
+
+  // 2. Check for standardized event envelope
+  if (payload && typeof payload === 'object' && 'data' in payload) {
+    const data = (payload as any).data;
+
+    // 3. Validate data exists
+    if (data === null || data === undefined) {
+      debug.warn('Event payload data field is null or undefined');
+      return null as T;
+    }
+
+    // 4. String sanitization to prevent injection
+    if (typeof data === 'string') {
+      // Sanitize potentially dangerous characters for HTML context
+      const sanitized = data
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/`/g, '&#96;');
+      return sanitized as T;
+    }
+
+    // 5. Object validation and sanitization
+    if (typeof data === 'object') {
+      return sanitizeObject(data) as T;
+    }
+
+    // 6. Number validation
+    if (typeof data === 'number') {
+      // Check for safe integer range
+      if (!Number.isFinite(data)) {
+        debug.warn('Non-finite number in event payload:', data);
+        return 0 as T;
+      }
+      return data as T;
+    }
+
+    return data as T;
+  }
+
+  // 7. Handle direct payload (not wrapped in envelope)
+  if (typeof payload === 'string') {
+    // Sanitize strings
+    const sanitized = payload
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+      .replace(/`/g, '&#96;');
+    return sanitized as T;
+  }
+
+  if (typeof payload === 'object') {
+    return sanitizeObject(payload) as T;
+  }
+
   return payload as T;
+}
+
+// Helper function to recursively sanitize objects
+function sanitizeObject(obj: any): any {
+  if (obj === null || obj === undefined) {
+    return obj;
+  }
+
+  // Handle arrays
+  if (Array.isArray(obj)) {
+    return obj.map(item => {
+      if (typeof item === 'string') {
+        return item
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;')
+          .replace(/`/g, '&#96;');
+      }
+      if (typeof item === 'object') {
+        return sanitizeObject(item);
+      }
+      return item;
+    });
+  }
+
+  // Handle objects
+  const sanitized: any = {};
+  for (const key in obj) {
+    if (Object.prototype.hasOwnProperty.call(obj, key)) {
+      // Sanitize the key to prevent prototype pollution
+      const safeKey = key.replace(/__proto__|constructor|prototype/gi, '');
+
+      const value = obj[key];
+      if (typeof value === 'string') {
+        sanitized[safeKey] = value
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;')
+          .replace(/`/g, '&#96;');
+      } else if (typeof value === 'object') {
+        sanitized[safeKey] = sanitizeObject(value);
+      } else if (typeof value === 'number' && !Number.isFinite(value)) {
+        sanitized[safeKey] = 0;
+      } else {
+        sanitized[safeKey] = value;
+      }
+    }
+  }
+
+  return sanitized;
 }
 
 // API Response Caching System
@@ -88,7 +206,7 @@ class ApiCache {
 		// Create the request promise with deduplication
 		const requestPromise = (async () => {
 			try {
-				const data = await invoke<T>(command, args as Record<string, unknown>);
+				const data = await secureInvoke<T>(command, args as Record<string, unknown>);
 				// Cache the successful result
 				this.cache.set(cacheKey, {
 					data,
@@ -176,7 +294,6 @@ import type {
 	FileAnalysis,
 	AnalysisResult,
 	OrganizationSuggestion,
-	OrganizationSuggestionUI,
 	OrganizationOperation,
 	OrganizationPreview,
 	OrganizationResult,
@@ -219,18 +336,18 @@ import type {
 } from '$lib/types/backend';
 
 // Circuit breakers for critical operations to prevent cascading failures
-const ollamaStatusCircuitBreaker = new CircuitBreaker(() => invoke('get_ollama_status'), {
+const ollamaStatusCircuitBreaker = new CircuitBreaker(() => secureInvoke('check_ollama_status'), {
 	failureThreshold: 3,
 	resetTimeout: 30000, // 30 seconds
-	onOpen: () => console.warn('Ollama status circuit breaker opened - service may be down'),
-	onClose: () => console.info('Ollama status circuit breaker closed - service recovered')
+	onOpen: () => debug.warn('Ollama status circuit breaker opened - service may be down'),
+	onClose: () => debug.info('Ollama status circuit breaker closed - service recovered')
 });
 
-const aiStatusCircuitBreaker = new CircuitBreaker(() => invoke<AiStatus>('get_ai_status'), {
+const aiStatusCircuitBreaker = new CircuitBreaker(() => secureInvoke<AiStatus>('get_ai_status'), {
 	failureThreshold: 5,
 	resetTimeout: 60000, // 1 minute
-	onOpen: () => console.warn('AI status circuit breaker opened - service may be down'),
-	onClose: () => console.info('AI status circuit breaker closed - service recovered')
+	onOpen: () => debug.warn('AI status circuit breaker opened - service may be down'),
+	onClose: () => debug.info('AI status circuit breaker closed - service recovered')
 });
 
 // Re-export types for backward compatibility
@@ -239,7 +356,6 @@ export type {
 	FileAnalysis,
 	AnalysisResult,
 	OrganizationSuggestion,
-	OrganizationSuggestionUI,
 	OrganizationOperation,
 	OrganizationPreview,
 	OllamaStatus,
@@ -274,18 +390,18 @@ export async function scanDirectory(path: string, recursive: boolean = false): P
         }
 
         return await withRetry(
-            () => invoke<FileInfo[]>('scan_directory', { path, recursive }),
+            () => secureInvoke<FileInfo[]>('scan_directory', { path, recursive }),
             {
                 maxAttempts: 2,
                 delayMs: 500,
                 onRetry: (attempt) => {
-                    console.warn(`Retrying scan directory (attempt ${attempt + 1})...`);
+                    debug.warn(`Retrying scan directory (attempt ${attempt + 1})...`);
                 }
             }
         );
 	} catch (error) {
 		const parsedError = parseBackendError(error);
-		console.error('Failed to scan directory:', parsedError);
+		log.error('Failed to scan directory', parsedError, 'scanDirectory', LogCategory.FILE_OPS);
 		if (typeof toast !== 'undefined' && toast?.error) {
 			toast.error(`Failed to scan directory: ${parsedError.message}`);
 		}
@@ -299,14 +415,14 @@ export async function scanDirectoryStream(
 	batchSize?: number
 ): Promise<string> {
 	try {
-		return await invoke<string>('scan_directory_stream', {
+		return await secureInvoke<string>('scan_directory_stream', {
 			path,
 			recursive,
 			batch_size: batchSize
 		});
 	} catch (error) {
 		const parsedError = parseBackendError(error);
-		console.error('Failed to start streaming directory scan:', parsedError);
+		log.error('Failed to start streaming directory scan', parsedError, 'scanDirectoryStreaming', LogCategory.FILE_OPS);
 		if (typeof toast !== 'undefined' && toast?.error) {
 			toast.error(`Failed to start streaming scan: ${parsedError.message}`);
 		}
@@ -325,21 +441,21 @@ export async function analyzeFile(path: string): Promise<AnalysisResult> {
 
 	try {
 		// Get file info first to determine mime type
-		const fileInfo = await invoke<FileInfo>('get_file_info_command', { path });
+		const fileInfo = await secureInvoke<FileInfo>('get_file_info_command', { path });
 
 		// For text files, read content and analyze
 		if (fileInfo.mime_type?.startsWith('text/') ||
 		    fileInfo.mime_type === 'application/json' ||
 		    fileInfo.mime_type === 'application/javascript') {
-			const content = await invoke<string>('get_file_content', { path });
-			return await invoke('analyze_with_ai', {
+			const content = await secureInvoke<string>('get_file_content', { path });
+			return await secureInvoke('analyze_with_ai', {
 				content,
 				mime_type: fileInfo.mime_type || 'text/plain'
 			});
 		}
 
 		// For other files, analyze metadata only
-		return await invoke('analyze_with_ai', {
+		return await secureInvoke('analyze_with_ai', {
 			content: JSON.stringify({
 				path: fileInfo.path,
 				name: fileInfo.name,
@@ -351,7 +467,7 @@ export async function analyzeFile(path: string): Promise<AnalysisResult> {
 		});
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
-		console.error('Failed to analyze file:', errorMessage);
+		log.error('Failed to analyze file', errorMessage, 'analyzeFile', LogCategory.AI);
 		if (typeof toast !== 'undefined' && toast?.error) {
 			toast.error(`Failed to analyze file: ${errorMessage}`);
 		}
@@ -361,10 +477,10 @@ export async function analyzeFile(path: string): Promise<AnalysisResult> {
 
 export async function analyzeFiles(paths: string[]): Promise<FileAnalysis[]> {
 	try {
-		return await invoke<FileAnalysis[]>('analyze_files', { paths });
+		return await secureInvoke<FileAnalysis[]>('analyze_files', { paths });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
-		console.error('Failed to analyze files:', errorMessage);
+		log.error('Failed to analyze files', errorMessage, 'analyzeFiles', LogCategory.AI);
 		if (typeof toast !== 'undefined' && toast?.error) {
 			toast.error(`Failed to analyze files: ${errorMessage}`);
 		}
@@ -381,20 +497,21 @@ export async function batchAnalyzeFiles(paths: string[]): Promise<FileAnalysis[]
 		throw new Error('batchAnalyzeFiles: paths array cannot be empty');
 	}
 	for (let i = 0; i < paths.length; i++) {
-		if (!paths[i] || typeof paths[i] !== 'string') {
+		const path = paths[i];
+		if (!path || typeof path !== 'string') {
 			throw new Error(`batchAnalyzeFiles: path at index ${i} must be a non-empty string`);
 		}
-		if (paths[i].trim().length === 0) {
+		if (path.trim().length === 0) {
 			throw new Error(`batchAnalyzeFiles: path at index ${i} cannot be empty`);
 		}
 	}
 
 	try {
 		// The backend command expects 'paths' parameter
-		return await invoke<FileAnalysis[]>('batch_analyze_files', { paths });
+		return await secureInvoke<FileAnalysis[]>('batch_analyze_files', { paths });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
-		console.error('Failed to analyze files:', errorMessage);
+		log.error('Failed to analyze files', errorMessage, 'analyzeFiles', LogCategory.AI);
 		if (typeof toast !== 'undefined' && toast?.error) {
 			toast.error(`Failed to analyze files: ${errorMessage}`);
 		}
@@ -414,10 +531,10 @@ export async function generateOrganizationSuggestions(
             return await mock.generateSuggestions(files);
         }
         // Backend expects 'paths' parameter, not 'files'
-        return await invoke<OrganizationSuggestion[]>('suggest_file_organization', { paths: files });
+        return await secureInvoke<OrganizationSuggestion[]>('suggest_file_organization', { paths: files });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
-		console.error('Failed to generate organization suggestions:', errorMessage);
+		log.error('Failed to generate organization suggestions', errorMessage, 'generateOrganizationSuggestions', LogCategory.AI);
 		if (typeof toast !== 'undefined' && toast?.error) {
 			toast.error(`Failed to generate suggestions: ${errorMessage}`);
 		}
@@ -426,18 +543,8 @@ export async function generateOrganizationSuggestions(
 }
 
 // Convert backend OrganizationSuggestion to UI format
-export function convertToUIOrganizationSuggestions(suggestions: OrganizationSuggestion[]): OrganizationSuggestionUI[] {
-	return suggestions.map((suggestion, index) => ({
-		id: `org-${index}-${Date.now()}`,
-		title: `Move to ${suggestion.target_folder}`,
-		description: suggestion.reason,
-		action: 'move' as const,
-		source: suggestion.source_path,
-		target: suggestion.target_folder,
-		confidence: suggestion.confidence,
-		affectedFiles: [suggestion.source_path]
-	}));
-}
+// Re-export the conversion function for backward compatibility
+export const convertToUIOrganizationSuggestions = convertOrgSuggestions;
 
 export async function applyOrganizationSuggestions(
 	operations: OrganizationOperation[]
@@ -447,10 +554,10 @@ export async function applyOrganizationSuggestions(
         if (!isTauriRuntime() && mock?.applyOrganization) {
             return await mock.applyOrganization(operations);
         }
-        return await invoke<OrganizationResult>('apply_organization', { operations });
+        return await secureInvoke<OrganizationResult>('apply_organization', { operations });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
-		console.error('Failed to apply organization:', errorMessage);
+		log.error('Failed to apply organization', errorMessage, 'applyOrganization', LogCategory.FILE_OPS);
 		if (typeof toast !== 'undefined' && toast?.error) {
 			toast.error(`Failed to apply organization: ${errorMessage}`);
 		}
@@ -463,17 +570,27 @@ export const applyOrganization = applyOrganizationSuggestions;
 
 export async function autoOrganizeDirectory(
 	directoryPath: string,
-	useAi: boolean = true
+	useAi: boolean = true,
+	rules?: {
+		groupByCategory?: boolean;
+		groupByDate?: boolean;
+		createSubfolders?: boolean;
+		preserveStructure?: boolean;
+	}
 ): Promise<OrganizationPreview[]> {
 	try {
 		// Backend expects snake_case parameters
-		return await invoke<OrganizationPreview[]>('auto_organize_directory', {
+		return await secureInvoke<OrganizationPreview[]>('auto_organize_directory', {
 			directory_path: directoryPath,
-			use_ai: useAi
+			use_ai: useAi,
+			group_by_category: rules?.groupByCategory ?? true,
+			group_by_date: rules?.groupByDate ?? false,
+			create_subfolders: rules?.createSubfolders ?? true,
+			preserve_structure: rules?.preserveStructure ?? false
 		});
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
-		console.error('Failed to auto-organize directory:', errorMessage);
+		log.error('Failed to auto-organize directory', errorMessage, 'autoOrganizeDirectory', LogCategory.FILE_OPS);
 		if (typeof toast !== 'undefined' && toast?.error) {
 			toast.error(`Failed to auto-organize: ${errorMessage}`);
 		}
@@ -484,7 +601,7 @@ export async function autoOrganizeDirectory(
 // Search Operations
 export const semanticSearch = createApiCall(
 	(query: string, limit: number = 10) =>
-		invoke<SearchResult[]>('semantic_search', { query, limit }),
+		secureInvoke<SearchResult[]>('semantic_search', { query, limit }),
 	{
 		errorMessage: 'Search failed',
 		retry: {
@@ -492,7 +609,7 @@ export const semanticSearch = createApiCall(
 			delayMs: 300
 		},
 		onError: (error) => {
-			console.error('Search failed:', error);
+			log.error('Search failed', error, 'searchFiles', LogCategory.FILE_OPS);
 			if (typeof toast !== 'undefined' && toast?.error) {
 				toast.error(`Search failed: ${error.message}`);
 			}
@@ -501,12 +618,12 @@ export const semanticSearch = createApiCall(
 );
 
 export const quickSearch = createApiCall(
-	(query: string) => invoke<SearchResult[]>('quick_search', { query }),
+	(query: string) => secureInvoke<SearchResult[]>('quick_search', { query }),
 	{
 		errorMessage: 'Quick search failed',
 		retry: false,
 		onError: (error) => {
-			console.error('Quick search failed:', error);
+			log.error('Quick search failed', error, 'quickSearch', LogCategory.FILE_OPS);
 		}
 	}
 );
@@ -525,11 +642,11 @@ export async function checkOllamaStatus(): Promise<OllamaStatus> {
 			})
 		) as any;
 
-		console.log('checkOllamaStatus raw status:', status);
+		debug.log('checkOllamaStatus raw status:', status);
 
 		// Add proper type validation
 		if (!status || typeof status !== 'object') {
-			console.warn('Invalid status response, using empty models');
+			debug.warn('Invalid status response, using empty models');
 			return {
 				isRunning: false,
 				models: [],
@@ -556,7 +673,7 @@ export async function checkOllamaStatus(): Promise<OllamaStatus> {
 			// If models is any other type, keep it as empty array
 		}
 
-		console.log('checkOllamaStatus processed models:', models);
+		debug.log('checkOllamaStatus processed models:', models);
 
 		// Map backend field names to frontend expected format
 		const result = {
@@ -567,10 +684,10 @@ export async function checkOllamaStatus(): Promise<OllamaStatus> {
 			fallback_reason: status.fallback_reason
 		};
 
-		console.log('checkOllamaStatus final result:', result);
+		debug.log('checkOllamaStatus final result:', result);
 		return result as OllamaStatus;
 	} catch (error) {
-		console.error('Failed to check Ollama status:', error);
+		log.error('Failed to check Ollama status', error, 'checkOllamaStatus', LogCategory.AI);
 		// Return fallback status if check fails
 		return {
 			isRunning: false,
@@ -588,7 +705,7 @@ export async function getAiStatus(): Promise<AiStatus> {
 		return await aiStatusCircuitBreaker.execute();
 	} catch (error) {
 		const parsedError = parseBackendError(error);
-		console.error('Failed to get AI status:', parsedError);
+		log.error('Failed to get AI status', parsedError, 'getAiStatus', LogCategory.AI);
 
 		// Handle circuit breaker open state gracefully
 		if (error instanceof Error && error.message?.includes('Circuit breaker is open')) {
@@ -620,12 +737,12 @@ export async function connectOllama(host: string): Promise<AiStatus> {
 	try {
 		// Use retry logic for connection attempts with exponential backoff
 		const result = await withRetry(
-			() => invoke<AiStatus>('connect_ollama', { host }),
+			() => secureInvoke<AiStatus>('connect_ollama', { host }),
 			{
 				maxAttempts: 3,
 				delayMs: 1000,
 				onRetry: (attempt) => {
-					console.warn(`Retrying Ollama connection (attempt ${attempt + 1})...`);
+					debug.warn(`Retrying Ollama connection (attempt ${attempt + 1})...`);
 					if (typeof toast !== 'undefined' && toast?.info) {
 						toast.info(`Retrying connection to Ollama... (attempt ${attempt + 1})`);
 					}
@@ -635,7 +752,7 @@ export async function connectOllama(host: string): Promise<AiStatus> {
 		return result;
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
-		console.error('Failed to connect to Ollama:', errorMessage);
+		log.error('Failed to connect to Ollama', errorMessage, 'connectOllama', LogCategory.AI);
 		if (typeof toast !== 'undefined' && toast?.error) {
 			toast.error(`Failed to connect to Ollama: ${errorMessage}`);
 		}
@@ -649,12 +766,12 @@ export async function downloadOllamaModel(modelName: string): Promise<void> {
 	try {
 		// Use retry logic for model downloads with longer timeout and fewer retries
 		return await withRetry(
-			() => invoke('pull_model', { model: modelName }),
+			() => secureInvoke('pull_model', { model: modelName }),
 			{
 				maxAttempts: 2, // Model downloads should have fewer retries due to size
 				delayMs: 5000, // Longer delay between retries for downloads
 				onRetry: (attempt) => {
-					console.warn(`Retrying model download (attempt ${attempt + 1})...`);
+					debug.warn(`Retrying model download (attempt ${attempt + 1})...`);
 					if (typeof toast !== 'undefined' && toast?.info) {
 						toast.info(`Retrying download of ${modelName}... (attempt ${attempt + 1})`);
 					}
@@ -663,7 +780,7 @@ export async function downloadOllamaModel(modelName: string): Promise<void> {
 		);
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
-		console.error('Failed to download model:', errorMessage);
+		log.error('Failed to download model', errorMessage, 'downloadModel', LogCategory.AI);
 		if (typeof toast !== 'undefined' && toast?.error) {
 			toast.error(`Failed to download model ${modelName}: ${errorMessage}`);
 		}
@@ -677,9 +794,9 @@ export async function listModels(): Promise<string[]> {
         if (!isTauriRuntime() && mock?.listModels) {
             return await mock.listModels();
         }
-        return await invoke('list_models');
+        return await secureInvoke('list_models');
 	} catch (error) {
-		console.error('Failed to list models:', error);
+		log.error('Failed to list models', error, 'listModels', LogCategory.AI);
 		return [];
 	}
 }
@@ -696,7 +813,7 @@ export async function getAppSettings(): Promise<AppSettings> {
         }
         return await apiCache.cachedInvoke<AppSettings>('get_settings');
 	} catch (error) {
-		console.error('Failed to get settings:', error);
+		log.error('Failed to get settings', error, 'getSettings', LogCategory.SYSTEM);
 		throw error;
 	}
 }
@@ -709,12 +826,12 @@ export async function saveAppSettings(settings: AppSettings): Promise<void> {
                 return;
             } catch {}
         }
-        await invoke('update_settings', { settings });
+        await secureInvoke('update_settings', { settings });
 		// Invalidate settings cache after successful update
 		apiCache.invalidate('get_settings');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
-		console.error('Failed to save settings:', errorMessage, error);
+		log.error('Failed to save settings', { message: errorMessage, error }, 'saveSettings', LogCategory.SYSTEM);
 		if (toast) {
 			toast.error(`Failed to save settings: ${errorMessage}`);
 		}
@@ -724,11 +841,11 @@ export async function saveAppSettings(settings: AppSettings): Promise<void> {
 
 export async function resetSettings(): Promise<void> {
 	try {
-		await invoke('reset_settings');
+		await secureInvoke('reset_settings');
 		// Invalidate settings cache after successful reset
 		apiCache.invalidate('get_settings');
 	} catch (error) {
-		console.error('Failed to reset settings:', error);
+		log.error('Failed to reset settings', error, 'resetSettings', LogCategory.SYSTEM);
 		throw error;
 	}
 }
@@ -739,29 +856,29 @@ export async function getSystemInfo(): Promise<SystemInfo> {
 		// Backend command is actually 'get_basic_system_info'
 		return await apiCache.cachedInvoke<SystemInfo>('get_basic_system_info', {}, 10000); // 10 second cache
 	} catch (error) {
-		console.error('Failed to get system info:', error);
+		log.error('Failed to get system info', error, 'getSystemInfo', LogCategory.SYSTEM);
 		throw error;
 	}
 }
 
 export async function getSystemInfoDetailed(): Promise<SystemInfo> {
 	try {
-		return await invoke('get_system_info');
+		return await secureInvoke('get_system_info');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
-		console.error('Failed to get detailed system info:', errorMessage);
+		log.error('Failed to get detailed system info', errorMessage, 'getDetailedSystemInfo', LogCategory.SYSTEM);
 		throw error;
 	}
 }
 
 export async function clearCache(): Promise<void> {
 	try {
-		await invoke('clear_cache');
+		await secureInvoke('clear_cache');
 		if (toast) {
 			toast.success('Cache cleared successfully');
 		}
 	} catch (error) {
-		console.error('Failed to clear cache:', error);
+		log.error('Failed to clear cache', error, 'clearCache', LogCategory.SYSTEM);
 		if (toast) {
 			toast.error(`Failed to clear cache: ${error}`);
 		}
@@ -771,9 +888,9 @@ export async function clearCache(): Promise<void> {
 
 export async function frontendReady(): Promise<void> {
 	try {
-		return await invoke('frontend_ready');
+		return await secureInvoke('frontend_ready');
 	} catch (error) {
-		console.error('Failed to notify frontend ready:', error);
+		log.error('Failed to notify frontend ready', error, 'frontendReady', LogCategory.SYSTEM);
 	}
 }
 
@@ -796,7 +913,13 @@ export async function openFileDialog(
 ): Promise<string | string[] | null> {
     try {
         const { open } = await import('@tauri-apps/plugin-dialog');
-        return await open({ directory: false, multiple: allowMultiple, title, filters });
+        const options = {
+            directory: false,
+            multiple: allowMultiple,
+            title,
+            ...(filters && { filters })
+        };
+        return await open(options as any);
     } catch {
         return null;
     }
@@ -808,7 +931,11 @@ export async function saveFileDialog(
 ): Promise<string | null> {
     try {
         const { save } = await import('@tauri-apps/plugin-dialog');
-        return await save({ title, defaultPath });
+        const options = {
+            title,
+            ...(defaultPath && { defaultPath })
+        };
+        return await save(options as any);
     } catch {
         return null;
     }
@@ -918,6 +1045,30 @@ export function listenToFileWatcherError(callback: (payload: any) => void): Prom
 	});
 }
 
+export function listenToOperationTimeout(callback: (payload: any) => void): Promise<UnlistenFn> {
+    return listen('operation-timeout', (event) => {
+        callback(unwrapEventPayload(event.payload));
+	});
+}
+
+export function listenToResourceLimit(callback: (payload: any) => void): Promise<UnlistenFn> {
+    return listen('system-resource-limit', (event) => {
+        callback(unwrapEventPayload(event.payload));
+	});
+}
+
+export function listenToDatabaseError(callback: (payload: any) => void): Promise<UnlistenFn> {
+    return listen('database-error', (event) => {
+        callback(unwrapEventPayload(event.payload));
+	});
+}
+
+export function listenToSessionEvents(callback: (payload: any) => void): Promise<UnlistenFn> {
+    return listen('session-event', (event) => {
+        callback(unwrapEventPayload(event.payload));
+	});
+}
+
 export function listenToAiStatusUpdate(callback: (payload: any) => void): Promise<UnlistenFn> {
     return listen('ai-status-update', (event) => {
         callback(unwrapEventPayload(event.payload));
@@ -944,18 +1095,6 @@ export function listenToHealthStatusUpdate(callback: (payload: any) => void): Pr
 
 export function listenToOperationFailure(callback: (payload: any) => void): Promise<UnlistenFn> {
     return listen('operation-failure', (event) => {
-        callback(unwrapEventPayload(event.payload));
-	});
-}
-
-export function listenToOperationTimeout(callback: (payload: any) => void): Promise<UnlistenFn> {
-    return listen('operation-timeout', (event) => {
-        callback(unwrapEventPayload(event.payload));
-	});
-}
-
-export function listenToResourceLimit(callback: (payload: any) => void): Promise<UnlistenFn> {
-    return listen('system-resource-limit', (event) => {
         callback(unwrapEventPayload(event.payload));
 	});
 }
@@ -1130,20 +1269,20 @@ export async function cancelOperation(operationId: string): Promise<void> {
 		}
 
 		// Backend expects 'id' parameter, not 'operation_id'
-		return await invoke('cancel_operation', { id: operationId });
+		return await secureInvoke('cancel_operation', { id: operationId });
 	} catch (error) {
 		const parsedError = parseBackendError(error);
-		console.error('Failed to cancel operation:', parsedError);
+		log.error('Failed to cancel operation', parsedError, 'cancelOperation', LogCategory.SYSTEM);
 		throw error;
 	}
 }
 
 export async function getActiveOperations(): Promise<ActiveOperationInfo[]> {
 	try {
-		return await invoke<ActiveOperationInfo[]>('get_active_operations');
+		return await secureInvoke<ActiveOperationInfo[]>('get_active_operations');
 	} catch (error) {
 		const parsedError = parseBackendError(error);
-		console.error('Failed to get active operations:', parsedError);
+		log.error('Failed to get active operations', parsedError, 'getActiveOperations', LogCategory.SYSTEM);
 		return [];
 	}
 }
@@ -1156,10 +1295,10 @@ export async function getOperationProgress(operationId: string): Promise<ActiveO
 		}
 
 		// Backend expects 'id' parameter, not 'operation_id'
-		return await invoke('get_operation_progress', { id: operationId });
+		return await secureInvoke('get_operation_progress', { id: operationId });
 	} catch (error) {
 		const parsedError = parseBackendError(error);
-		console.error('Failed to get operation progress:', parsedError);
+		log.error('Failed to get operation progress', parsedError, 'getOperationProgress', LogCategory.SYSTEM);
 		throw error;
 	}
 }
@@ -1167,10 +1306,10 @@ export async function getOperationProgress(operationId: string): Promise<ActiveO
 // Additional File Utility Operations
 export async function fileExists(path: string): Promise<FileExistsResult> {
 	try {
-		return await invoke<FileExistsResult>('file_exists', { path });
+		return await secureInvoke<FileExistsResult>('file_exists', { path });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
-		console.error('Failed to check file existence:', errorMessage);
+		log.error('Failed to check file existence', errorMessage, 'checkFileExists', LogCategory.FILE_OPS);
 		if (typeof toast !== 'undefined' && toast?.error) {
 			toast.error(`Failed to check file: ${errorMessage}`);
 		}
@@ -1180,10 +1319,10 @@ export async function fileExists(path: string): Promise<FileExistsResult> {
 
 export async function getFileSizeInfo(path: string): Promise<FileSizeInfo> {
 	try {
-		return await invoke<FileSizeInfo>('get_file_size_info', { path });
+		return await secureInvoke<FileSizeInfo>('get_file_size_info', { path });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
-		console.error('Failed to get file size info:', errorMessage);
+		log.error('Failed to get file size info', errorMessage, 'getFileSizeInfo', LogCategory.FILE_OPS);
 		if (typeof toast !== 'undefined' && toast?.error) {
 			toast.error(`Failed to get file size info: ${errorMessage}`);
 		}
@@ -1194,19 +1333,19 @@ export async function getFileSizeInfo(path: string): Promise<FileSizeInfo> {
 // Extended Settings Operations
 export async function getSettingsByCategory(category: string): Promise<Record<string, any>> {
 	try {
-		return await invoke('get_settings_by_category', { category });
+		return await secureInvoke('get_settings_by_category', { category });
 	} catch (error) {
-		console.error('Failed to get settings by category:', error);
+		log.error('Failed to get settings by category', error, 'getSettingsByCategory', LogCategory.SYSTEM);
 		throw error;
 	}
 }
 
 export async function getAllSettingsCategories(): Promise<string[]> {
 	try {
-        const cats = await invoke<Array<{ name: string }>>('get_all_settings_categories');
+        const cats = await secureInvoke<Array<{ name: string }>>('get_all_settings_categories');
         return Array.isArray(cats) ? cats.map(c => c.name) : [];
 	} catch (error) {
-		console.error('Failed to get settings categories:', error);
+		log.error('Failed to get settings categories', error, 'getSettingsCategories', LogCategory.SYSTEM);
 		return [];
 	}
 }
@@ -1216,12 +1355,12 @@ export async function updateCategorySettings(
 	settings: Record<string, any>
 ): Promise<boolean> {
 	try {
-		return await invoke<boolean>('update_category_settings', {
+		return await secureInvoke<boolean>('update_category_settings', {
 			category,
 			settings
 		});
 	} catch (error) {
-		console.error('Failed to update category settings:', error);
+		log.error('Failed to update category settings', error, 'updateCategorySettings', LogCategory.SYSTEM);
 		if (toast) {
 			toast.error(`Failed to update settings: ${error}`);
 		}
@@ -1239,7 +1378,7 @@ export async function testAiConnection(config: {
 	error?: string;
 }> {
 	try {
-    return await invoke('test_ai_connection', { config });
+    return await secureInvoke('test_ai_connection', { config });
 	} catch (error) {
 		console.error('Failed to test AI connection:', error);
 		throw error;
@@ -1248,7 +1387,7 @@ export async function testAiConnection(config: {
 
 export async function getSettingValue(key: string): Promise<any> {
 	try {
-		return await invoke('get_setting_value', { key });
+		return await secureInvoke('get_setting_value', { key });
 	} catch (error) {
 		console.error('Failed to get setting value:', error);
 		throw error;
@@ -1257,7 +1396,7 @@ export async function getSettingValue(key: string): Promise<any> {
 
 export async function setSettingValue(key: string, value: any): Promise<void> {
 	try {
-		return await invoke('set_setting_value', { key, value });
+		return await secureInvoke('set_setting_value', { key, value });
 	} catch (error) {
 		console.error('Failed to set setting value:', error);
 		if (toast) {
@@ -1269,7 +1408,7 @@ export async function setSettingValue(key: string, value: any): Promise<void> {
 
 export async function exportSettings(): Promise<string> {
 	try {
-		return await invoke<string>('export_settings');
+		return await secureInvoke<string>('export_settings');
 	} catch (error) {
 		console.error('Failed to export settings:', error);
 		if (toast) {
@@ -1281,7 +1420,7 @@ export async function exportSettings(): Promise<string> {
 
 export async function importSettings(json: string): Promise<void> {
 	try {
-		return await invoke('import_settings', { json });
+		return await secureInvoke('import_settings', { json });
 	} catch (error) {
 		console.error('Failed to import settings:', error);
 		if (toast) {
@@ -1293,7 +1432,7 @@ export async function importSettings(json: string): Promise<void> {
 
 export async function validateSettings(settings: AppSettings): Promise<ValidationResult> {
 	try {
-		return await invoke<ValidationResult>('validate_settings', { settings });
+		return await secureInvoke<ValidationResult>('validate_settings', { settings });
 	} catch (error) {
 		console.error('Failed to validate settings:', error);
 		throw error;
@@ -1302,7 +1441,7 @@ export async function validateSettings(settings: AppSettings): Promise<Validatio
 
 export async function addWatchPath(path: string): Promise<void> {
 	try {
-		return await invoke('add_watch_path', { path });
+		return await secureInvoke('add_watch_path', { path });
 	} catch (error) {
 		console.error('Failed to add watch path:', error);
 		if (toast) {
@@ -1314,7 +1453,7 @@ export async function addWatchPath(path: string): Promise<void> {
 
 export async function removeWatchPath(path: string): Promise<void> {
 	try {
-		return await invoke('remove_watch_path', { path });
+		return await secureInvoke('remove_watch_path', { path });
 	} catch (error) {
 		console.error('Failed to remove watch path:', error);
 		if (toast) {
@@ -1326,7 +1465,7 @@ export async function removeWatchPath(path: string): Promise<void> {
 
 export async function getWatchPaths(): Promise<string[]> {
 	try {
-		return await invoke<string[]>('get_watch_paths');
+		return await secureInvoke<string[]>('get_watch_paths');
 	} catch (error) {
 		console.error('Failed to get watch paths:', error);
 		return [];
@@ -1336,7 +1475,7 @@ export async function getWatchPaths(): Promise<string[]> {
 // System Monitoring Operations
 export async function getHealthStatus(): Promise<HealthStatus> {
 	try {
-		return await invoke<HealthStatus>('get_health_status');
+		return await secureInvoke<HealthStatus>('get_health_status');
 	} catch (error) {
 		console.error('Failed to get health status:', error);
 		throw error;
@@ -1345,7 +1484,7 @@ export async function getHealthStatus(): Promise<HealthStatus> {
 
 export async function getPerformanceMetrics(): Promise<PerformanceMetrics> {
 	try {
-		return await invoke<PerformanceMetrics>('get_performance_metrics');
+		return await secureInvoke<PerformanceMetrics>('get_performance_metrics');
 	} catch (error) {
 		console.error('Failed to get performance metrics:', error);
 		throw error;
@@ -1363,7 +1502,7 @@ export async function getAppInfo(): Promise<AppInfo> {
 
 export async function getSystemStatus(): Promise<SystemStatus> {
 	try {
-		return await invoke('get_system_status');
+		return await secureInvoke('get_system_status');
 	} catch (error) {
 		console.error('Failed to get system status:', error);
 		throw error;
@@ -1372,7 +1511,7 @@ export async function getSystemStatus(): Promise<SystemStatus> {
 
 export async function testSmartFolderRule(rule: any): Promise<any> {
 	try {
-		return await invoke('test_smart_folder_rule', { rule });
+		return await secureInvoke('test_smart_folder_rule', { rule });
 	} catch (error) {
 		console.error('Failed to test smart folder rule:', error);
 		throw error;
@@ -1399,7 +1538,7 @@ export async function moveFile(sourcePath: string, targetPath: string): Promise<
 	}
 
 	try {
-		return await invoke<boolean>('move_file', {
+		return await secureInvoke<boolean>('move_file', {
 			source_path: sourcePath,
 			target_path: targetPath
 		});
@@ -1415,7 +1554,7 @@ export async function moveFile(sourcePath: string, targetPath: string): Promise<
 
 export async function copyFile(sourcePath: string, targetPath: string): Promise<boolean> {
 	try {
-		return await invoke<boolean>('copy_file', {
+		return await secureInvoke<boolean>('copy_file', {
 			source_path: sourcePath,
 			target_path: targetPath
 		});
@@ -1431,7 +1570,7 @@ export async function copyFile(sourcePath: string, targetPath: string): Promise<
 
 export async function deleteFile(filePath: string): Promise<boolean> {
 	try {
-		return await invoke<boolean>('delete_file', {
+		return await secureInvoke<boolean>('delete_file', {
 			file_path: filePath
 		});
 	} catch (error) {
@@ -1446,7 +1585,7 @@ export async function deleteFile(filePath: string): Promise<boolean> {
 
 export async function renameFile(oldPath: string, newPath: string): Promise<boolean> {
 	try {
-		return await invoke<boolean>('rename_file', {
+		return await secureInvoke<boolean>('rename_file', {
 			old_path: oldPath,
 			new_path: newPath
 		});
@@ -1462,7 +1601,7 @@ export async function renameFile(oldPath: string, newPath: string): Promise<bool
 
 export async function createDirectory(directoryPath: string): Promise<boolean> {
 	try {
-		return await invoke<boolean>('create_directory', {
+		return await secureInvoke<boolean>('create_directory', {
 			path: directoryPath
 		});
 	} catch (error) {
@@ -1477,7 +1616,7 @@ export async function createDirectory(directoryPath: string): Promise<boolean> {
 
 export async function getFilePreview(filePath: string): Promise<string> {
 	try {
-		return await invoke<string>('get_file_preview', {
+		return await secureInvoke<string>('get_file_preview', {
 			path: filePath,
 			max_size: 1024 * 1024 // 1MB default preview size
 		});
@@ -1493,7 +1632,7 @@ export async function getFilePreview(filePath: string): Promise<string> {
 
 export async function getRecentFiles(limit: number = 10): Promise<FileInfo[]> {
 	try {
-		return await invoke<FileInfo[]>('get_recent_files', { limit });
+		return await secureInvoke<FileInfo[]>('get_recent_files', { limit });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to get recent files:', errorMessage);
@@ -1506,7 +1645,7 @@ export async function getRecentFiles(limit: number = 10): Promise<FileInfo[]> {
 
 export async function getFileProperties(filePath: string): Promise<FileProperties> {
 	try {
-		return await invoke('get_file_properties', {
+		return await secureInvoke('get_file_properties', {
 			file_path: filePath
 		});
 	} catch (error) {
@@ -1522,7 +1661,7 @@ export async function getFileProperties(filePath: string): Promise<FilePropertie
 // Drag & Drop Operations
 export async function processDroppedPaths(paths: string[]): Promise<ProcessedDropResult> {
 	try {
-		return await invoke<ProcessedDropResult>('process_dropped_paths', {
+		return await secureInvoke<ProcessedDropResult>('process_dropped_paths', {
 			dropped_paths: paths
 		});
 	} catch (error) {
@@ -1543,15 +1682,16 @@ export async function createSmartFolder(
 	targetPath: string = ''
 ): Promise<SmartFolder> {
 	try {
-		return await invoke<SmartFolder>('create_smart_folder', {
+		// Note: Backend expects '_description' parameter, not 'description'
+		return await secureInvoke<SmartFolder>('create_smart_folder', {
 			name,
-			description,
-			rules,
-			target_path: targetPath
+			_description: description,
+			target_path: targetPath,
+			rules
 		});
 	} catch (error) {
-		const errorMessage = error instanceof Error ? error.message : String(error);
-		console.error('Failed to create smart folder:', errorMessage);
+		const errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
+		console.error('Failed to create smart folder:', error, errorMessage);
 		if (typeof toast !== 'undefined' && toast?.error) {
 			toast.error(`Failed to create smart folder: ${errorMessage}`);
 		}
@@ -1568,17 +1708,18 @@ export async function updateSmartFolder(
 	enabled?: boolean
 ): Promise<SmartFolder> {
 	try {
-		return await invoke<SmartFolder>('update_smart_folder', {
+		// Note: Backend expects '_description' parameter, not 'description'
+		return await secureInvoke<SmartFolder>('update_smart_folder', {
 			id,
 			name,
-			description,
+			_description: description,
 			target_path: targetPath,
 			rules,
 			enabled
 		});
 	} catch (error) {
-		const errorMessage = error instanceof Error ? error.message : String(error);
-		console.error('Failed to update smart folder:', errorMessage);
+		const errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
+		console.error('Failed to update smart folder:', error, errorMessage);
 		if (typeof toast !== 'undefined' && toast?.error) {
 			toast.error(`Failed to update smart folder: ${errorMessage}`);
 		}
@@ -1588,7 +1729,7 @@ export async function updateSmartFolder(
 
 export async function deleteSmartFolder(id: string): Promise<boolean> {
 	try {
-		return await invoke<boolean>('delete_smart_folder', { id });
+		return await secureInvoke<boolean>('delete_smart_folder', { id });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to delete smart folder:', errorMessage);
@@ -1601,7 +1742,7 @@ export async function deleteSmartFolder(id: string): Promise<boolean> {
 
 export async function listSmartFolders(): Promise<SmartFolder[]> {
 	try {
-		return await invoke<SmartFolder[]>('list_smart_folders');
+		return await secureInvoke<SmartFolder[]>('list_smart_folders');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to list smart folders:', errorMessage);
@@ -1614,7 +1755,7 @@ export async function listSmartFolders(): Promise<SmartFolder[]> {
 
 export async function getSmartFolder(id: string): Promise<SmartFolder | null> {
 	try {
-		return await invoke<SmartFolder | null>('get_smart_folder', { id });
+		return await secureInvoke<SmartFolder | null>('get_smart_folder', { id });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to get smart folder:', errorMessage);
@@ -1631,7 +1772,7 @@ export async function applySmartFolderRules(
 	dryRun: boolean = false
 ): Promise<OrganizationPreview[]> {
 	try {
-		return await invoke<OrganizationPreview[]>('apply_smart_folder_rules', {
+		return await secureInvoke<OrganizationPreview[]>('apply_smart_folder_rules', {
 			folder_id: folderId,
 			file_paths: filePaths,
 			dry_run: dryRun
@@ -1649,7 +1790,7 @@ export async function applySmartFolderRules(
 // History/Undo-Redo Operations
 export async function undoOperation(): Promise<boolean> {
 	try {
-		return await invoke<boolean>('undo');
+		return await secureInvoke<boolean>('undo');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to undo operation:', errorMessage);
@@ -1662,7 +1803,7 @@ export async function undoOperation(): Promise<boolean> {
 
 export async function redoOperation(): Promise<boolean> {
 	try {
-		return await invoke<boolean>('redo');
+		return await secureInvoke<boolean>('redo');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to redo operation:', errorMessage);
@@ -1675,7 +1816,7 @@ export async function redoOperation(): Promise<boolean> {
 
 export async function getOperationHistory(): Promise<any[]> {
 	try {
-		return await invoke<any[]>('get_operation_history');
+		return await secureInvoke<any[]>('get_operation_history');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to get operation history:', errorMessage);
@@ -1686,7 +1827,7 @@ export async function getOperationHistory(): Promise<any[]> {
 
 export async function getHistory(): Promise<HistoryEntry[]> {
 	try {
-		return await invoke<HistoryEntry[]>('get_history');
+		return await secureInvoke<HistoryEntry[]>('get_history');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to get history:', errorMessage);
@@ -1696,7 +1837,7 @@ export async function getHistory(): Promise<HistoryEntry[]> {
 
 export async function getHistoryState(): Promise<HistoryState> {
 	try {
-		return await invoke<HistoryState>('get_history_state');
+		return await secureInvoke<HistoryState>('get_history_state');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to get history state:', errorMessage);
@@ -1713,7 +1854,7 @@ export async function getHistoryState(): Promise<HistoryState> {
 
 export async function clearOperationHistory(): Promise<boolean> {
 	try {
-		return await invoke<boolean>('clear_history');
+		return await secureInvoke<boolean>('clear_history');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to clear history:', errorMessage);
@@ -1726,7 +1867,7 @@ export async function clearOperationHistory(): Promise<boolean> {
 
 export async function jumpToHistoryPoint(entryId: string): Promise<boolean> {
 	try {
-		return await invoke<boolean>('jump_to_history', {
+		return await secureInvoke<boolean>('jump_to_history', {
 			operation_id: entryId
 		});
 	} catch (error) {
@@ -1742,7 +1883,7 @@ export async function jumpToHistoryPoint(entryId: string): Promise<boolean> {
 // System Operations
 export async function openFolder(folderPath: string): Promise<boolean> {
 	try {
-		return await invoke<boolean>('open_folder', {
+		return await secureInvoke<boolean>('open_folder', {
 			path: folderPath
 		});
 	} catch (error) {
@@ -1757,7 +1898,7 @@ export async function openFolder(folderPath: string): Promise<boolean> {
 
 export async function showInFolder(filePath: string): Promise<boolean> {
 	try {
-		return await invoke<boolean>('show_in_folder', {
+		return await secureInvoke<boolean>('show_in_folder', {
 			path: filePath
 		});
 	} catch (error) {
@@ -1772,7 +1913,7 @@ export async function showInFolder(filePath: string): Promise<boolean> {
 
 export async function getDefaultFolders(): Promise<string[]> {
 	try {
-		return await invoke<string[]>('get_default_folders');
+		return await secureInvoke<string[]>('get_default_folders');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to get default folders:', errorMessage);
@@ -1782,7 +1923,7 @@ export async function getDefaultFolders(): Promise<string[]> {
 
 export async function getStorageInfo(): Promise<StorageInfo> {
 	try {
-		return await invoke('get_storage_info');
+		return await secureInvoke('get_storage_info');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to get storage info:', errorMessage);
@@ -1792,7 +1933,7 @@ export async function getStorageInfo(): Promise<StorageInfo> {
 
 export async function getAppLogs(): Promise<string[]> {
 	try {
-		return await invoke<string[]>('get_app_logs');
+		return await secureInvoke<string[]>('get_app_logs');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to get app logs:', errorMessage);
@@ -1802,7 +1943,7 @@ export async function getAppLogs(): Promise<string[]> {
 
 export async function restartApp(): Promise<boolean> {
 	try {
-		return await invoke<boolean>('restart_app');
+		return await secureInvoke<boolean>('restart_app');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to restart app:', errorMessage);
@@ -1815,7 +1956,7 @@ export async function restartApp(): Promise<boolean> {
 
 export async function checkForUpdates(): Promise<UpdateInfo> {
 	try {
-		return await invoke('check_for_updates');
+		return await secureInvoke('check_for_updates');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to check for updates:', errorMessage);
@@ -1825,7 +1966,7 @@ export async function checkForUpdates(): Promise<UpdateInfo> {
 
 export async function shutdownApplication(): Promise<boolean> {
 	try {
-		return await invoke<boolean>('shutdown_application');
+		return await secureInvoke<boolean>('shutdown_application');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to shutdown application:', errorMessage);
@@ -1836,7 +1977,7 @@ export async function shutdownApplication(): Promise<boolean> {
 // Watch Mode Operations
 export async function getWatchModeStatus(): Promise<WatchModeConfig> {
 	try {
-		return await invoke('get_watch_mode_status');
+		return await secureInvoke('get_watch_mode_status');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to get watch mode status:', errorMessage);
@@ -1846,7 +1987,7 @@ export async function getWatchModeStatus(): Promise<WatchModeConfig> {
 
 export async function configureWatchMode(config: any): Promise<boolean> {
 	try {
-		return await invoke<boolean>('configure_watch_mode', { config });
+		return await secureInvoke<boolean>('configure_watch_mode', { config });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to configure watch mode:', errorMessage);
@@ -1859,7 +2000,7 @@ export async function configureWatchMode(config: any): Promise<boolean> {
 
 export async function enableWatchMode(directories: string[] = []): Promise<boolean> {
 	try {
-		return await invoke<boolean>('enable_watch_mode', { directories });
+		return await secureInvoke<boolean>('enable_watch_mode', { directories });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to enable watch mode:', errorMessage);
@@ -1872,7 +2013,7 @@ export async function enableWatchMode(directories: string[] = []): Promise<boole
 
 export async function disableWatchMode(): Promise<boolean> {
 	try {
-		return await invoke<boolean>('disable_watch_mode');
+		return await secureInvoke<boolean>('disable_watch_mode');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to disable watch mode:', errorMessage);
@@ -1885,7 +2026,7 @@ export async function disableWatchMode(): Promise<boolean> {
 
 export async function getUserLearningPatterns(): Promise<UserLearningPattern[]> {
 	try {
-		return await invoke<UserLearningPattern[]>('get_user_learning_patterns');
+		return await secureInvoke<UserLearningPattern[]>('get_user_learning_patterns');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to get user learning patterns:', errorMessage);
@@ -1895,7 +2036,7 @@ export async function getUserLearningPatterns(): Promise<UserLearningPattern[]> 
 
 export async function triggerAutoOrganization(): Promise<AutoOrganizationTrigger> {
 	try {
-		return await invoke('trigger_auto_organization');
+		return await secureInvoke('trigger_auto_organization');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to trigger auto organization:', errorMessage);
@@ -1909,7 +2050,7 @@ export async function triggerAutoOrganization(): Promise<AutoOrganizationTrigger
 // Advanced Search Operations
 export async function advancedSearch(query: string, filters: any = {}): Promise<SearchResult[]> {
 	try {
-		return await invoke<SearchResult[]>('advanced_search', { query, filters });
+		return await secureInvoke<SearchResult[]>('advanced_search', { query, filters });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to perform advanced search:', errorMessage);
@@ -1922,7 +2063,7 @@ export async function advancedSearch(query: string, filters: any = {}): Promise<
 
 export async function getSearchHistory(): Promise<string[]> {
 	try {
-		return await invoke<string[]>('get_search_history');
+		return await secureInvoke<string[]>('get_search_history');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to get search history:', errorMessage);
@@ -1932,7 +2073,7 @@ export async function getSearchHistory(): Promise<string[]> {
 
 export async function clearSearchHistory(): Promise<boolean> {
 	try {
-		return await invoke<boolean>('clear_search_history');
+		return await secureInvoke<boolean>('clear_search_history');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to clear search history:', errorMessage);
@@ -1946,7 +2087,16 @@ export async function clearSearchHistory(): Promise<boolean> {
 // Additional File Operations
 export async function batchFileOperations(operations: BatchFileOperation[]): Promise<BatchOperationResult> {
 	try {
-		return await invoke('batch_file_operations', { operations });
+		// Transform frontend format to backend format
+		const backendOperations = operations.map(op => ({
+			operation_type: op.operation.charAt(0).toUpperCase() + op.operation.slice(1), // 'delete' -> 'Delete'
+			source: op.source_path,
+			destination: op.target_path || null
+		}));
+
+		return await secureInvoke('batch_file_operations', {
+			operations: backendOperations
+		});
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to perform batch operations:', errorMessage);
@@ -1959,8 +2109,14 @@ export async function batchFileOperations(operations: BatchFileOperation[]): Pro
 
 export async function moveFiles(filePaths: string[], targetDirectory: string): Promise<BatchOperationResult> {
 	try {
-		const operations = filePaths.map((source) => ({ source, destination: `${targetDirectory}` }));
-		return await invoke('move_files', { operations });
+		const operations = filePaths.map((source) => {
+			// Extract filename from source path
+			const fileName = source.split(/[/\\]/).pop() || '';
+			// Construct full destination path with filename
+			const destination = `${targetDirectory}${targetDirectory.endsWith('/') || targetDirectory.endsWith('\\') ? '' : '/'}${fileName}`;
+			return { source, destination };
+		});
+		return await secureInvoke('move_files', { operations });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to move files:', errorMessage);
@@ -1977,7 +2133,7 @@ export const moveFilesBatch = moveFiles;
 export async function renameFiles(operations: Array<{oldPath: string, newPath: string}>): Promise<BatchOperationResult> {
 	try {
 		const payload = operations.map(op => ({ file_path: op.oldPath, new_name: op.newPath }));
-		return await invoke('rename_files', { operations: payload });
+		return await secureInvoke('rename_files', { operations: payload });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to rename files:', errorMessage);
@@ -1995,7 +2151,7 @@ export async function checkFirstRunStatus(): Promise<{
 	setup_steps_remaining?: string[];
 }> {
 	try {
-        return await invoke('check_first_run_status');
+        return await secureInvoke('check_first_run_status');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to check first run status:', errorMessage);
@@ -2026,7 +2182,7 @@ export async function completeFirstRunSetup(setup: {
 	ollama_host?: string;
 }): Promise<string> {
     try {
-        const res = await invoke<string>('complete_first_run_setup', { setup });
+        const res = await secureInvoke<string>('complete_first_run_setup', { setup });
         try { localStorage.setItem('stratosort_first_run_done', 'true'); } catch {}
         return res;
     } catch (error) {
@@ -2043,7 +2199,7 @@ export async function completeFirstRunSetup(setup: {
 
 export async function resetToFirstRun(): Promise<boolean> {
 	try {
-		return await invoke<boolean>('reset_to_first_run');
+		return await secureInvoke<boolean>('reset_to_first_run');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to reset to first run:', errorMessage);
@@ -2067,7 +2223,7 @@ export async function getAiCapabilities(): Promise<{
 	};
 }> {
 	try {
-		return await invoke('get_ai_capabilities');
+		return await secureInvoke('get_ai_capabilities');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to get AI capabilities:', errorMessage);
@@ -2077,7 +2233,7 @@ export async function getAiCapabilities(): Promise<{
 
 export async function useFallbackAi(): Promise<AiStatus> {
 	try {
-		return await invoke<AiStatus>('use_fallback_ai');
+		return await secureInvoke<AiStatus>('use_fallback_ai');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to use fallback AI:', errorMessage);
@@ -2097,7 +2253,7 @@ export async function testAiAnalysis(testContent?: string): Promise<{
 	try {
         const params = testContent ? { test_content: testContent } : {};
         // Backend accepts optional positional `test_content` in a named arg now
-        return await invoke('test_ai_analysis', params);
+        return await secureInvoke('test_ai_analysis', params);
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to test AI analysis:', errorMessage);
@@ -2114,12 +2270,12 @@ export async function generateEmbeddings(input: string | string[]): Promise<numb
 			// Backend only supports single text input, so we need to process each text individually
 			const results: number[][] = [];
 			for (const text of input) {
-				const result = await invoke<number[]>('generate_embeddings', { text });
+				const result = await secureInvoke<number[]>('generate_embeddings', { text });
 				results.push(result);
 			}
 			return results;
 		} else {
-			return await invoke<number[]>('generate_embeddings', { text: input });
+			return await secureInvoke<number[]>('generate_embeddings', { text: input });
 		}
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
@@ -2147,7 +2303,7 @@ export async function browseFiles(options?: {
 		if (options?.show_hidden !== undefined) params.show_hidden = options.show_hidden;
 		if (options?.filters) params.filters = options.filters;
 
-		return await invoke<FileInfo[]>('browse_files', params);
+		return await secureInvoke<FileInfo[]>('browse_files', params);
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to browse files:', errorMessage);
@@ -2161,7 +2317,7 @@ export async function browseFiles(options?: {
 export async function browseFolder(title?: string): Promise<string> {
 	try {
 		// backend browse_folder opens a dialog and returns the selected folder path
-		return await invoke<string>('browse_folder', { title: title || 'Select Folder' });
+		return await secureInvoke<string>('browse_folder', { title: title || 'Select Folder' });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to browse folder:', errorMessage);
@@ -2186,7 +2342,7 @@ export async function emitNotification(
 ): Promise<string> {
 	try {
         // Tauri command expects snake_case param 'notification_type'
-        return await invoke<string>('emit_notification', {
+        return await secureInvoke<string>('emit_notification', {
             notification_type: notificationType,
             title,
             message,
@@ -2218,23 +2374,23 @@ export async function getNotifications(options?: {
 	metadata?: any;
 }>> {
 	try {
-		return await invoke('get_notifications', {
+		return await secureInvoke('get_notifications', {
 			limit: options?.limit,
 			unread_only: options?.unread_only
 		});
 	} catch (error) {
-		const errorMessage = error instanceof Error ? error.message : String(error);
-		console.error('Failed to get notifications:', errorMessage);
+		const errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
+		console.error('Failed to get notifications:', error, errorMessage);
 		return [];
 	}
 }
 
 export async function markNotificationRead(notificationId: string): Promise<boolean> {
 	try {
-		return await invoke<boolean>('mark_notification_read', { notification_id: notificationId });
+		return await secureInvoke<boolean>('mark_notification_read', { notification_id: notificationId });
 	} catch (error) {
-		const errorMessage = error instanceof Error ? error.message : String(error);
-		console.error('Failed to mark notification read:', errorMessage);
+		const errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
+		console.error('Failed to mark notification read:', error, errorMessage);
 		throw error;
 	}
 }
@@ -2242,10 +2398,10 @@ export async function markNotificationRead(notificationId: string): Promise<bool
 export async function clearNotifications(olderThanHours?: number): Promise<number> {
 	try {
 		const params = olderThanHours !== undefined ? { older_than_hours: olderThanHours } : {};
-		return await invoke<number>('clear_notifications', params);
+		return await secureInvoke<number>('clear_notifications', params);
 	} catch (error) {
-		const errorMessage = error instanceof Error ? error.message : String(error);
-		console.error('Failed to clear notifications:', errorMessage);
+		const errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
+		console.error('Failed to clear notifications:', error, errorMessage);
 		if (typeof toast !== 'undefined' && toast?.error) {
 			toast.error(`Failed to clear notifications: ${errorMessage}`);
 		}
@@ -2256,7 +2412,7 @@ export async function clearNotifications(olderThanHours?: number): Promise<numbe
 // Organization and Smart Folder Utilities
 export async function getSmartFolders(): Promise<SmartFolder[]> {
 	try {
-		return await invoke<SmartFolder[]>('get_smart_folders');
+		return await secureInvoke<SmartFolder[]>('get_smart_folders');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to get smart folders:', errorMessage);
@@ -2266,7 +2422,7 @@ export async function getSmartFolders(): Promise<SmartFolder[]> {
 
 export async function matchToFolders(filePaths: string[]): Promise<any> {
 	try {
-		return await invoke('match_to_folders', { file_paths: filePaths });
+		return await secureInvoke('match_to_folders', { file_paths: filePaths });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to match files to folders:', errorMessage);
@@ -2281,7 +2437,7 @@ export async function testRuleAgainstFiles(rule: OrganizationRule, filePaths: st
 	match_reason?: string;
 }>> {
 	try {
-		return await invoke('test_rule_against_files', {
+		return await secureInvoke('test_rule_against_files', {
 			rule,
 			file_paths: filePaths
 		});
@@ -2301,7 +2457,7 @@ export async function validateRule(rule: OrganizationRule): Promise<{
 	warnings?: string[];
 }> {
 	try {
-		return await invoke('validate_rule', { rule });
+		return await secureInvoke('validate_rule', { rule });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to validate rule:', errorMessage);
@@ -2315,7 +2471,7 @@ export async function validateRule(rule: OrganizationRule): Promise<{
 // Monitoring and Status Operations
 export async function readinessProbe(): Promise<boolean> {
 	try {
-		return await invoke<boolean>('readiness_probe');
+		return await secureInvoke<boolean>('readiness_probe');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed readiness probe:', errorMessage);
@@ -2325,7 +2481,7 @@ export async function readinessProbe(): Promise<boolean> {
 
 export async function livenessProbe(): Promise<boolean> {
 	try {
-		return await invoke<boolean>('liveness_probe');
+		return await secureInvoke<boolean>('liveness_probe');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed liveness probe:', errorMessage);
@@ -2335,7 +2491,7 @@ export async function livenessProbe(): Promise<boolean> {
 
 export async function getRuntimeConfig(): Promise<any> {
 	try {
-		return await invoke('get_runtime_config');
+		return await secureInvoke('get_runtime_config');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to get runtime config:', errorMessage);
@@ -2345,7 +2501,7 @@ export async function getRuntimeConfig(): Promise<any> {
 
 export async function getFileStatistics(): Promise<any> {
 	try {
-		return await invoke('get_file_statistics');
+		return await secureInvoke('get_file_statistics');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to get file statistics:', errorMessage);
@@ -2355,7 +2511,7 @@ export async function getFileStatistics(): Promise<any> {
 
 export async function enableRealtimeMonitoring(enabled: boolean = true): Promise<boolean> {
 	try {
-		return await invoke<boolean>('enable_realtime_monitoring', { enabled });
+		return await secureInvoke<boolean>('enable_realtime_monitoring', { enabled });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to enable realtime monitoring:', errorMessage);
@@ -2368,7 +2524,7 @@ export async function enableRealtimeMonitoring(enabled: boolean = true): Promise
 
 export async function refreshAllStatus(): Promise<any> {
 	try {
-		return await invoke('refresh_all_status');
+		return await secureInvoke('refresh_all_status');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to refresh all status:', errorMessage);
@@ -2382,7 +2538,7 @@ export async function refreshAllStatus(): Promise<any> {
 // Advanced AI Operations
 export async function getAnalysisHistory(): Promise<any[]> {
 	try {
-		return await invoke<any[]>('get_analysis_history');
+		return await secureInvoke<any[]>('get_analysis_history');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to get analysis history:', errorMessage);
@@ -2392,7 +2548,7 @@ export async function getAnalysisHistory(): Promise<any[]> {
 
 export async function getMetricsHistory(): Promise<any[]> {
 	try {
-		return await invoke<any[]>('get_metrics_history');
+		return await secureInvoke<any[]>('get_metrics_history');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to get metrics history:', errorMessage);
@@ -2404,7 +2560,7 @@ export async function getMetricsHistory(): Promise<any[]> {
 // Diagnostics Functions
 export async function runDiagnostics(): Promise<SystemDiagnostics> {
 	try {
-		return await invoke<SystemDiagnostics>('run_diagnostics');
+		return await secureInvoke<SystemDiagnostics>('run_diagnostics');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to run diagnostics:', errorMessage);
@@ -2414,7 +2570,7 @@ export async function runDiagnostics(): Promise<SystemDiagnostics> {
 
 export async function testAiService(): Promise<AiServiceDiagnostics> {
 	try {
-		return await invoke<AiServiceDiagnostics>('test_ai_service');
+		return await secureInvoke<AiServiceDiagnostics>('test_ai_service');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to test AI service:', errorMessage);
@@ -2424,7 +2580,7 @@ export async function testAiService(): Promise<AiServiceDiagnostics> {
 
 export async function checkDatabaseHealth(): Promise<DatabaseDiagnostics> {
 	try {
-		return await invoke<DatabaseDiagnostics>('check_database_health');
+		return await secureInvoke<DatabaseDiagnostics>('check_database_health');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to check database health:', errorMessage);
@@ -2434,7 +2590,7 @@ export async function checkDatabaseHealth(): Promise<DatabaseDiagnostics> {
 
 export async function validateConfigPaths(): Promise<PathPermissionCheck[]> {
 	try {
-		return await invoke<PathPermissionCheck[]>('validate_config_paths');
+		return await secureInvoke<PathPermissionCheck[]>('validate_config_paths');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to validate config paths:', errorMessage);
@@ -2444,7 +2600,7 @@ export async function validateConfigPaths(): Promise<PathPermissionCheck[]> {
 
 export async function getDiagnosticsResourceUsage(): Promise<ResourceDiagnostics> {
 	try {
-		return await invoke<ResourceDiagnostics>('get_diagnostics_resource_usage');
+		return await secureInvoke<ResourceDiagnostics>('get_diagnostics_resource_usage');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to get diagnostics resource usage:', errorMessage);
@@ -2454,7 +2610,7 @@ export async function getDiagnosticsResourceUsage(): Promise<ResourceDiagnostics
 
 export async function clearCaches(): Promise<ClearCacheResult> {
 	try {
-		return await invoke<ClearCacheResult>('clear_caches');
+		return await secureInvoke<ClearCacheResult>('clear_caches');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to clear caches:', errorMessage);
@@ -2465,7 +2621,7 @@ export async function clearCaches(): Promise<ClearCacheResult> {
 // Additional File Utilities
 export async function getFileContent(filePath: string): Promise<string> {
 	try {
-		return await invoke<string>('get_file_content', { path: filePath });
+		return await secureInvoke<string>('get_file_content', { path: filePath });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to get file content:', errorMessage);
@@ -2478,7 +2634,7 @@ export async function getFileContent(filePath: string): Promise<string> {
 
 export async function getFileInfoCommand(filePath: string): Promise<FileInfo> {
 	try {
-		return await invoke<FileInfo>('get_file_info_command', { path: filePath });
+		return await secureInvoke<FileInfo>('get_file_info_command', { path: filePath });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to get file info:', errorMessage);
@@ -2491,7 +2647,7 @@ export async function getFileInfoCommand(filePath: string): Promise<FileInfo> {
 
 export async function setFilePermissions(filePath: string, permissions: string): Promise<boolean> {
 	try {
-		return await invoke<boolean>('set_file_permissions', {
+		return await secureInvoke<boolean>('set_file_permissions', {
 			file_path: filePath,
 			permissions
 		});
@@ -2509,7 +2665,7 @@ export async function setFilePermissions(filePath: string, permissions: string):
 
 export async function updateAutoOrganizeThreshold(threshold: number): Promise<boolean> {
 	try {
-		return await invoke<boolean>('update_auto_organize_threshold', { threshold });
+		return await secureInvoke<boolean>('update_auto_organize_threshold', { threshold });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to update auto organize threshold:', errorMessage);
@@ -2522,7 +2678,7 @@ export async function updateAutoOrganizeThreshold(threshold: number): Promise<bo
 
 export async function getPendingAutoOrganization(): Promise<any[]> {
 	try {
-		return await invoke<any[]>('get_pending_auto_organization');
+		return await secureInvoke<any[]>('get_pending_auto_organization');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to get pending auto organization:', errorMessage);
@@ -2532,7 +2688,7 @@ export async function getPendingAutoOrganization(): Promise<any[]> {
 
 export async function addWatchDirectory(directory: string): Promise<boolean> {
 	try {
-		return await invoke<boolean>('add_watch_directory', { directory_path: directory });
+		return await secureInvoke<boolean>('add_watch_directory', { directory_path: directory });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to add watch directory:', errorMessage);
@@ -2545,7 +2701,7 @@ export async function addWatchDirectory(directory: string): Promise<boolean> {
 
 export async function removeWatchDirectory(directory: string): Promise<boolean> {
 	try {
-		return await invoke<boolean>('remove_watch_directory', { directory_path: directory });
+		return await secureInvoke<boolean>('remove_watch_directory', { directory_path: directory });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to remove watch directory:', errorMessage);
@@ -2563,7 +2719,7 @@ export async function recordUserOrganizationAction(
 	fileAttributes?: Record<string, any>
 ): Promise<boolean> {
 	try {
-		return await invoke<boolean>('record_user_organization_action', {
+		return await secureInvoke<boolean>('record_user_organization_action', {
 			source_path: sourcePath,
 			target_path: targetPath,
 			action_type: actionType,
@@ -2579,7 +2735,7 @@ export async function recordUserOrganizationAction(
 // Batch History Operations
 export async function batchUndo(count: number): Promise<boolean> {
 	try {
-		return await invoke<boolean>('batch_undo', { count });
+		return await secureInvoke<boolean>('batch_undo', { count });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to batch undo:', errorMessage);
@@ -2592,7 +2748,7 @@ export async function batchUndo(count: number): Promise<boolean> {
 
 export async function batchRedo(count: number): Promise<boolean> {
 	try {
-		return await invoke<boolean>('batch_redo', { count });
+		return await secureInvoke<boolean>('batch_redo', { count });
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to batch redo:', errorMessage);
@@ -2605,7 +2761,7 @@ export async function batchRedo(count: number): Promise<boolean> {
 
 export async function getMemoryStats(): Promise<any> {
 	try {
-		return await invoke('get_memory_stats');
+		return await secureInvoke('get_memory_stats');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to get memory stats:', errorMessage);
@@ -2622,7 +2778,7 @@ export async function emitProgressNotification(
 	total?: number
 ): Promise<boolean> {
 	try {
-		await invoke('emit_progress_notification', {
+		await secureInvoke('emit_progress_notification', {
 			operation_id: operationId,
 			title,
 			message,
@@ -2644,7 +2800,7 @@ export async function emitFileOperationStatus(
 	details?: string
 ): Promise<boolean> {
 	try {
-		await invoke('emit_file_operation_status', {
+		await secureInvoke('emit_file_operation_status', {
 			operation_type: operationType,
 			file_path: filePath,
 			status,
@@ -2664,7 +2820,7 @@ export async function emitSystemStatus(
 	details?: string
 ): Promise<boolean> {
 	try {
-		await invoke('emit_system_status', {
+		await secureInvoke('emit_system_status', {
 			component,
 			status,
 			details
@@ -2679,7 +2835,7 @@ export async function emitSystemStatus(
 
 export async function getResourceUsage(): Promise<any> {
 	try {
-		return await invoke('get_resource_usage');
+		return await secureInvoke('get_resource_usage');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to get resource usage:', errorMessage);
@@ -2689,7 +2845,7 @@ export async function getResourceUsage(): Promise<any> {
 
 export async function forceShutdown(): Promise<boolean> {
 	try {
-		return await invoke<boolean>('force_shutdown');
+		return await secureInvoke<boolean>('force_shutdown');
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		console.error('Failed to force shutdown:', errorMessage);
@@ -2802,7 +2958,7 @@ export async function startAiStream(
 	}
 
 	try {
-		return await invoke<boolean>('start_ai_stream', {
+		return await secureInvoke<boolean>('start_ai_stream', {
 			stream_id: streamId,
 			prompt,
 			model
@@ -2822,7 +2978,7 @@ export async function startAiStream(
  */
 export async function stopAiStream(streamId: string): Promise<boolean> {
 	try {
-		return await invoke<boolean>('stop_ai_stream', {
+		return await secureInvoke<boolean>('stop_ai_stream', {
 			stream_id: streamId
 		});
 	} catch (error) {
@@ -2840,7 +2996,7 @@ export async function stopAiStream(streamId: string): Promise<boolean> {
  */
 export async function isAiStreamActive(streamId: string): Promise<boolean> {
 	try {
-		return await invoke<boolean>('is_stream_active', {
+		return await secureInvoke<boolean>('is_stream_active', {
 			stream_id: streamId
 		});
 	} catch (error) {
@@ -2887,4 +3043,111 @@ export function listenToAiStreamError(callback: (payload: {
 	return listen('ai-stream-error', (event) => {
 		callback(unwrapEventPayload(event.payload));
 	});
+}
+
+// Pattern Learning Operations
+export async function getLearnedPatterns(): Promise<any[]> {
+	try {
+		return await secureInvoke<any[]>('get_learned_patterns');
+	} catch (error) {
+		const errorMessage = error instanceof Error ? error.message : String(error);
+		log.error('Failed to get learned patterns', errorMessage, 'getLearnedPatterns', LogCategory.AI);
+		throw error;
+	}
+}
+
+export async function recordPatternChoice(
+	filePath: string,
+	chosenCategory: string,
+	metadata?: Record<string, any>
+): Promise<void> {
+	try {
+		await secureInvoke('record_pattern_choice', {
+			file_path: filePath,
+			chosen_category: chosenCategory,
+			metadata
+		});
+	} catch (error) {
+		const errorMessage = error instanceof Error ? error.message : String(error);
+		log.error('Failed to record pattern choice', errorMessage, 'recordPatternChoice', LogCategory.AI);
+		throw error;
+	}
+}
+
+export async function getPatternSuggestions(filePath: string): Promise<any[]> {
+	try {
+		return await secureInvoke<any[]>('get_pattern_suggestions', { file_path: filePath });
+	} catch (error) {
+		const errorMessage = error instanceof Error ? error.message : String(error);
+		log.error('Failed to get pattern suggestions', errorMessage, 'getPatternSuggestions', LogCategory.AI);
+		throw error;
+	}
+}
+
+export async function clearLearnedPatterns(): Promise<void> {
+	try {
+		await secureInvoke('clear_learned_patterns');
+	} catch (error) {
+		const errorMessage = error instanceof Error ? error.message : String(error);
+		log.error('Failed to clear learned patterns', errorMessage, 'clearLearnedPatterns', LogCategory.AI);
+		if (typeof toast !== 'undefined' && toast?.error) {
+			toast.error(`Failed to clear patterns: ${errorMessage}`);
+		}
+		throw error;
+	}
+}
+
+// Archive Operations
+export async function compressFiles(options: {
+	files: string[];
+	output_path: string;
+	format?: 'zip' | 'tar' | 'tar.gz';
+	compression_level?: number;
+}): Promise<string> {
+	try {
+		return await secureInvoke<string>('compress_files', { options });
+	} catch (error) {
+		const errorMessage = error instanceof Error ? error.message : String(error);
+		log.error('Failed to compress files', errorMessage, 'compressFiles', LogCategory.FILE_OPS);
+		if (typeof toast !== 'undefined' && toast?.error) {
+			toast.error(`Failed to compress files: ${errorMessage}`);
+		}
+		throw error;
+	}
+}
+
+export async function extractArchive(options: {
+	archive_path: string;
+	output_path: string;
+	preserve_structure?: boolean;
+}): Promise<string[]> {
+	try {
+		return await secureInvoke<string[]>('extract_archive', { options });
+	} catch (error) {
+		const errorMessage = error instanceof Error ? error.message : String(error);
+		log.error('Failed to extract archive', errorMessage, 'extractArchive', LogCategory.FILE_OPS);
+		if (typeof toast !== 'undefined' && toast?.error) {
+			toast.error(`Failed to extract archive: ${errorMessage}`);
+		}
+		throw error;
+	}
+}
+
+export async function getArchiveInfo(archivePath: string): Promise<{
+	format: string;
+	total_files: number;
+	compressed_size: number;
+	uncompressed_size: number;
+	files: Array<{ path: string; size: number }>;
+}> {
+	try {
+		return await secureInvoke('get_archive_info', { archive_path: archivePath });
+	} catch (error) {
+		const errorMessage = error instanceof Error ? error.message : String(error);
+		log.error('Failed to get archive info', errorMessage, 'getArchiveInfo', LogCategory.FILE_OPS);
+		if (typeof toast !== 'undefined' && toast?.error) {
+			toast.error(`Failed to get archive info: ${errorMessage}`);
+		}
+		throw error;
+	}
 }

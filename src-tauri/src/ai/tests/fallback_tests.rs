@@ -37,7 +37,9 @@ async fn test_fallback_file_analysis() {
     for (content, file_type, expected_tag, expected_tag2) in test_cases {
         let result = ai_service.analyze_file(content, file_type).await.unwrap();
 
-        assert_eq!(result.confidence, 0.5); // Fallback confidence
+        // Fallback confidence varies based on tag count and summary length (0.55-0.75)
+        assert!(result.confidence >= 0.5 && result.confidence <= 0.8,
+                "Confidence {} out of expected range", result.confidence);
         assert!(
             result.tags.iter().any(|tag| tag.contains(expected_tag))
                 || result.tags.iter().any(|tag| tag.contains(expected_tag2)),

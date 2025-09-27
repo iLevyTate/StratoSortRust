@@ -196,6 +196,14 @@ impl StreamingHandler {
                     let text = String::from_utf8_lossy(&chunk);
                     buffer.push_str(&text);
 
+                    // FIX: Limit buffer size to prevent memory exhaustion from malformed streams
+                    const MAX_BUFFER_SIZE: usize = 1024 * 1024; // 1MB max buffer
+                    if buffer.len() > MAX_BUFFER_SIZE {
+                        error!("Stream buffer exceeded maximum size, clearing buffer");
+                        buffer.clear();
+                        continue;
+                    }
+
                     // Process complete lines
                     while let Some(newline_pos) = buffer.find('\n') {
                         let line = buffer.drain(..=newline_pos).collect::<String>();
@@ -245,6 +253,8 @@ impl StreamingHandler {
                         done: true,
                         error: Some(e.to_string()),
                     });
+                    // FIX: Clear buffer on error to prevent memory leak
+                    buffer.clear();
                     return Err(AppError::NetworkError {
                         message: format!("Stream error: {}", e),
                     });
@@ -266,14 +276,20 @@ impl StreamingHandler {
     /// Stop an active stream
     pub async fn stop_stream(&self, stream_id: &str) -> Result<()> {
         let mut streams = self.active_streams.write().await;
-        streams.retain(|s| s.id != stream_id);
 
-        self.emit_stream_event(StreamEvent {
-            stream_id: stream_id.to_string(),
-            event_type: StreamEventType::End,
-            content: None,
-            error: Some("Stream stopped by user".to_string()),
-        });
+        // FIX: Find and properly close the stream's sender to release resources
+        if let Some(index) = streams.iter().position(|s| s.id == stream_id) {
+            let stream = streams.remove(index);
+            // Dropping the stream will close the sender channel
+            drop(stream);
+
+            self.emit_stream_event(StreamEvent {
+                stream_id: stream_id.to_string(),
+                event_type: StreamEventType::End,
+                content: None,
+                error: Some("Stream stopped by user".to_string()),
+            });
+        }
 
         Ok(())
     }

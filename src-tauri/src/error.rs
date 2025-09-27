@@ -1,4 +1,6 @@
 use serde::Serialize;
+use once_cell::sync::Lazy;
+use regex::Regex;
 
 pub mod error_handler;
 
@@ -80,8 +82,20 @@ pub enum AppError {
     #[error("Operation timed out: {message}")]
     Timeout { message: String },
 
-    #[error("Validation error for {field}: {message}")]
-    ValidationError { field: String, message: String },
+    #[error("Validation error: {message}")]
+    ValidationError { message: String },
+
+    #[error("Assertion failed: {message}")]
+    AssertionError { message: String },
+
+    #[error("Serialization error: {message}")]
+    SerializationError { message: String },
+
+    #[error("IO error: {message}")]
+    IoError { message: String },
+
+    #[error("External service error - {service}: {message}")]
+    ExternalServiceError { service: String, message: String },
 
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -112,7 +126,7 @@ impl Serialize for AppError {
     {
         // Create a sanitized error response
         let error_response = ErrorResponse {
-            error_type: self.error_type(),
+            error_type: self.error_type_name().to_string(),
             message: self.user_message(),
             recoverable: self.is_recoverable(),
         };
@@ -166,7 +180,7 @@ impl AppError {
             Self::Other(_) => "An unexpected error occurred. Please try again or restart the application.".to_string(),
             Self::ResourceLimitExceeded { message } => Self::sanitize_message(message),
             Self::Timeout { .. } => "Operation timed out. Please try again with a smaller selection.".to_string(),
-            Self::ValidationError { field: _, message } => Self::sanitize_message(message),
+            Self::ValidationError { message } => Self::sanitize_message(message),
             Self::OperationError { message } => Self::sanitize_message(message),
             Self::InvalidOperation { message } => Self::sanitize_message(message),
             Self::RateLimitExceeded { endpoint, .. } => {
@@ -176,33 +190,106 @@ impl AppError {
                 format!("File {} is too large: {} bytes (max: {} bytes)",
                     Self::sanitize_message(path), size, max_size)
             }
+            Self::AssertionError { message } => Self::sanitize_message(message),
+            Self::SerializationError { message } => Self::sanitize_message(message),
+            Self::IoError { message } => Self::sanitize_message(message),
+            Self::ConfigError { message } => Self::sanitize_message(message),
+            Self::ExternalServiceError { service, message } => {
+                format!("{} service error: {}", service, Self::sanitize_message(message))
+            }
+        }
+    }
+
+    // Get error type name for tracing
+    pub fn error_type_name(&self) -> &'static str {
+        match self {
+            Self::FileNotFound { .. } => "FileNotFound",
+            Self::NotFound { .. } => "NotFound",
+            Self::AccessDenied { .. } => "AccessDenied",
+            Self::InvalidPath { .. } => "InvalidPath",
+            Self::AiError { .. } => "AiError",
+            Self::DatabaseError { .. } => "DatabaseError",
+            Self::ConfigError { .. } => "ConfigError",
+            Self::NetworkError { .. } => "NetworkError",
+            Self::ParseError { .. } => "ParseError",
+            Self::ProcessingError { .. } => "ProcessingError",
+            Self::Cancelled => "Cancelled",
+            Self::ResourceNotAvailable { .. } => "ResourceNotAvailable",
+            Self::InvalidInput { .. } => "InvalidInput",
+            Self::SecurityError { .. } => "SecurityError",
+            Self::SystemError { .. } => "SystemError",
+            Self::StorageFull => "StorageFull",
+            Self::ModelNotFound { .. } => "ModelNotFound",
+            Self::Io(_) => "IoError",
+            Self::Tauri(_) => "TauriError",
+            Self::SqlxError(_) => "SqlxError",
+            Self::SerdeJson(_) => "SerdeJsonError",
+            Self::NotifyError(_) => "NotifyError",
+            Self::ReqwestError(_) => "ReqwestError",
+            Self::Other(_) => "Other",
+            Self::ResourceLimitExceeded { .. } => "ResourceLimitExceeded",
+            Self::Timeout { .. } => "Timeout",
+            Self::ValidationError { .. } => "ValidationError",
+            Self::OperationError { .. } => "OperationError",
+            Self::InvalidOperation { .. } => "InvalidOperation",
+            Self::RateLimitExceeded { .. } => "RateLimitExceeded",
+            Self::FileTooLarge { .. } => "FileTooLarge",
+            Self::AssertionError { .. } => "AssertionError",
+            Self::SerializationError { .. } => "SerializationError",
+            Self::IoError { .. } => "IoError",
+            Self::ConfigError { .. } => "ConfigurationError",
+            Self::ExternalServiceError { .. } => "ExternalServiceError",
         }
     }
 
     /// Sanitize error messages to remove sensitive information
     fn sanitize_message(message: &str) -> String {
+        // Compile regex patterns once using lazy static initialization
+        // These patterns are known to be valid, but we handle errors gracefully
+        static WIN_PATH_REGEX: Lazy<Option<Regex>> = Lazy::new(|| {
+            Regex::new(r#"[A-Z]:[\\\/][^\s"']+"#).ok()
+        });
+
+        static UNIX_PATH_REGEX: Lazy<Option<Regex>> = Lazy::new(|| {
+            Regex::new(r#"\/[^\s"']+"#).ok()
+        });
+
+        static URL_REGEX: Lazy<Option<Regex>> = Lazy::new(|| {
+            Regex::new(r"https?://[^@\s]+@[^\s]+").ok()
+        });
+
+        static IP_REGEX: Lazy<Option<Regex>> = Lazy::new(|| {
+            Regex::new(r"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b").ok()
+        });
+
+        static PORT_REGEX: Lazy<Option<Regex>> = Lazy::new(|| {
+            Regex::new(r":[0-9]{2,5}\b").ok()
+        });
+
         // Remove absolute paths (Windows and Unix)
         let mut sanitized = message.to_string();
 
-        // Remove Windows absolute paths
-        let win_path_regex = regex::Regex::new(r#"[A-Z]:[\\\/][^\s"']+"#).unwrap();
-        sanitized = win_path_regex.replace_all(&sanitized, "[path]").to_string();
+        // Apply sanitization using the pre-compiled regex patterns
+        // If any regex failed to compile (highly unlikely), skip that sanitization step
+        if let Some(ref regex) = *WIN_PATH_REGEX {
+            sanitized = regex.replace_all(&sanitized, "[path]").to_string();
+        }
 
-        // Remove Unix absolute paths
-        let unix_path_regex = regex::Regex::new(r#"\/[^\s"']+"#).unwrap();
-        sanitized = unix_path_regex.replace_all(&sanitized, "[path]").to_string();
+        if let Some(ref regex) = *UNIX_PATH_REGEX {
+            sanitized = regex.replace_all(&sanitized, "[path]").to_string();
+        }
 
-        // Remove potential URLs with credentials
-        let url_regex = regex::Regex::new(r"https?://[^@\s]+@[^\s]+").unwrap();
-        sanitized = url_regex.replace_all(&sanitized, "[url]").to_string();
+        if let Some(ref regex) = *URL_REGEX {
+            sanitized = regex.replace_all(&sanitized, "[url]").to_string();
+        }
 
-        // Remove IP addresses
-        let ip_regex = regex::Regex::new(r"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b").unwrap();
-        sanitized = ip_regex.replace_all(&sanitized, "[ip]").to_string();
+        if let Some(ref regex) = *IP_REGEX {
+            sanitized = regex.replace_all(&sanitized, "[ip]").to_string();
+        }
 
-        // Remove port numbers
-        let port_regex = regex::Regex::new(r":[0-9]{2,5}\b").unwrap();
-        sanitized = port_regex.replace_all(&sanitized, ":[port]").to_string();
+        if let Some(ref regex) = *PORT_REGEX {
+            sanitized = regex.replace_all(&sanitized, ":[port]").to_string();
+        }
 
         // Limit message length to prevent verbose error dumps
         if sanitized.len() > 200 {
@@ -267,6 +354,11 @@ impl AppError {
             Self::InvalidOperation { .. } => "INVALID_OPERATION",
             Self::RateLimitExceeded { .. } => "RATE_LIMIT_EXCEEDED",
             Self::FileTooLarge { .. } => "FILE_TOO_LARGE",
+            Self::AssertionError { .. } => "ASSERTION_ERROR",
+            Self::SerializationError { .. } => "SERIALIZATION_ERROR",
+            Self::IoError { .. } => "IO_ERROR",
+            Self::ConfigError { .. } => "CONFIGURATION_ERROR",
+            Self::ExternalServiceError { .. } => "EXTERNAL_SERVICE_ERROR",
         }
         .to_string()
     }

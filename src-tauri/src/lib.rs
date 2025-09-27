@@ -1,16 +1,26 @@
 pub mod ai;
+pub mod api;
+pub mod cache;
 pub mod commands;
 pub mod config;
 pub mod core;
 pub mod error;
 pub mod events;
+pub mod features;
 pub mod middleware;
+pub mod models;
+pub mod monitoring;
+pub mod observability;
 pub mod services;
 pub mod shutdown;
 pub mod state;
 pub mod storage;
 pub mod system_tray;
+pub mod testing;
 pub mod utils;
+
+#[cfg(test)]
+mod lib_test;
 
 use crate::storage::CURRENT_SCHEMA_VERSION;
 use crate::utils::{diagnostics::HealthChecker, memory::MemoryMonitor};
@@ -336,9 +346,15 @@ pub fn run() -> crate::error::Result<()> {
 
                     info!("Attempting to connect to Ollama at: {}", host);
 
-                    // Try to reconnect with this host
-                    match state_for_ollama.ai_service.reconnect_ollama(&host).await {
-                        Ok(status) => {
+                    // CRITICAL FIX: Add timeout to prevent indefinite blocking
+                    // Try to reconnect with this host with a 5-second timeout
+                    let connection_result = tokio::time::timeout(
+                        tokio::time::Duration::from_secs(5),
+                        state_for_ollama.ai_service.reconnect_ollama(&host)
+                    ).await;
+
+                    match connection_result {
+                        Ok(Ok(status)) => {
                             info!("Ollama connected successfully to {} - Status: {:?}", host, status);
                             connection_successful = true;
 
@@ -353,8 +369,11 @@ pub fn run() -> crate::error::Result<()> {
                             );
                             break;
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             warn!("Failed to connect to Ollama at {}: {}", host, e);
+                        }
+                        Err(_) => {
+                            warn!("Connection to Ollama at {} timed out after 5 seconds", host);
                         }
                     }
 
@@ -572,6 +591,11 @@ pub fn run() -> crate::error::Result<()> {
             commands::diagnostics::validate_config_paths,
             commands::diagnostics::get_diagnostics_resource_usage,
             commands::diagnostics::clear_caches,
+
+            // Archive commands
+            commands::archive::compress_files,
+            commands::archive::extract_archive,
+            commands::archive::get_archive_info,
         ])
         .on_window_event(|_window, event| if let tauri::WindowEvent::CloseRequested { api, .. } = event {
             #[cfg(not(target_os = "macos"))]

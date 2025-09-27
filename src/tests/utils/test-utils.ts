@@ -1,15 +1,9 @@
-import { render as svelteRender, type RenderResult } from '@testing-library/svelte';
-import { writable, type Writable } from 'svelte/store';
+import { render as svelteRender } from '@testing-library/svelte';
+import { writable } from 'svelte/store';
 import type { ComponentType, SvelteComponent } from 'svelte';
 import { vi } from 'vitest';
 
 // Define types for context stores
-interface TestContext {
-	theme: Writable<string>;
-	user: Writable<unknown>;
-	settings: Writable<Record<string, unknown>>;
-	[key: string]: unknown;
-}
 
 // Custom render function that provides common context and utilities
 export function render<T extends Record<string, unknown> = Record<string, unknown>>(
@@ -214,7 +208,7 @@ export async function testA11y(container: HTMLElement): Promise<void> {
 	const headings = Array.from(container.querySelectorAll('h1, h2, h3, h4, h5, h6'));
 	let lastLevel = 0;
 	headings.forEach(heading => {
-		const level = parseInt(heading.tagName[1]);
+		const level = parseInt(heading.tagName[1] ?? '0');
 		if (level - lastLevel > 1) {
 			errors.push(`Heading level skipped: ${heading.tagName} after H${lastLevel}`);
 		}
@@ -222,7 +216,8 @@ export async function testA11y(container: HTMLElement): Promise<void> {
 	});
 
 	if (errors.length > 0) {
-		throw new Error(`Accessibility issues found:\n${errors.join('\n')}`);
+		const errorList = errors.join('\n');
+		throw new Error(`Accessibility issues found:\n${errorList}`);
 	}
 }
 

@@ -36,6 +36,7 @@ pub enum OperationStatus {
 #[derive(Debug, Clone)]
 struct TrackedOperation {
     progress: OperationProgress,
+    #[allow(dead_code)]
     start_time: Instant,
     last_update: Instant,
     update_count: u32,

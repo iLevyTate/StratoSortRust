@@ -4,7 +4,7 @@ use stratosort::commands::files::*;
 use stratosort::error::AppError;
 use stratosort::config::Config;
 use stratosort::state::AppState;
-use stratosort::utils::security::validate_path_legacy;
+use stratosort::utils::security::validate_and_sanitize_path_legacy;
 use tauri::test::mock_app;
 use tempfile::tempdir;
 use tokio::fs;
@@ -74,7 +74,7 @@ async fn test_scan_directory_path_traversal_prevention() {
         // Pass state directly for command invocation
         // Can't directly test commands with State in unit tests
         // Just test path validation logic
-        let result = validate_path_legacy(&attack_path, app.handle());
+        let result = validate_and_sanitize_path_legacy(&attack_path, app.handle());
         let result = result.map(|_| vec![]).map_err(|e| AppError::from(e));
 
         match result {
@@ -208,7 +208,7 @@ async fn test_get_file_content_security_bypass_attempts() {
         // Pass state directly for command invocation
         // Can't directly test commands with State in unit tests
         // Just test path validation logic
-        let result = validate_path_legacy(&attack_path, app.handle());
+        let result = validate_and_sanitize_path_legacy(&attack_path, app.handle());
         let result = result.map(|_| "content".to_string()).map_err(|e| AppError::from(e));
 
         match result {

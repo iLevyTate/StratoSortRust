@@ -6,7 +6,7 @@ use tokio::time::timeout;
 use stratosort::storage::Database;
 use stratosort::error::{AppError, Result};
 use stratosort::ai::FileAnalysis;
-use stratosort::commands::organization::SmartFolder;
+use stratosort::core::smart_folders::SmartFolder;
 
 #[tokio::test]
 async fn test_transaction_rollback_on_error() {

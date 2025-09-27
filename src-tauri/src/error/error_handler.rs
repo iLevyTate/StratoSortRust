@@ -254,7 +254,9 @@ impl ErrorHandler {
 
     /// Get error statistics for monitoring
     pub fn get_error_statistics(&self) -> HashMap<String, u32> {
-        self.error_counts.lock().unwrap().clone()
+        self.error_counts.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Reset error counts (useful for testing or after resolving systemic issues)

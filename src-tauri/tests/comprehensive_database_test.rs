@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use stratosort::ai::{embeddings::generate_simple_embeddings, FileAnalysis};
-use stratosort::commands::organization::SmartFolder;
+use stratosort::core::smart_folders::SmartFolder;
 use stratosort::error::Result;
 /// Comprehensive Database Testing Suite
 /// Tests all aspects of database functionality including embeddings, vector search, and sqlite-vec extension

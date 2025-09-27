@@ -7,7 +7,7 @@ use tokio::runtime::Runtime;
 use stratosort::state::{AppState, FileCache, CachedFile, OperationType};
 use stratosort::storage::Database;
 use stratosort::ai::FileAnalysis;
-use stratosort::commands::organization::SmartFolder;
+use stratosort::core::smart_folders::SmartFolder;
 use stratosort::error::Result;
 
 #[test]

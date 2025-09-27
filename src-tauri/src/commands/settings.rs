@@ -11,9 +11,20 @@ pub async fn get_settings(state: State<'_, std::sync::Arc<AppState>>) -> Result<
 #[tauri::command]
 pub async fn update_settings(
     settings: Config,
+    __csrf_token: Option<String>,
     state: State<'_, std::sync::Arc<AppState>>,
     app: AppHandle,
 ) -> Result<()> {
+    // CRITICAL: Validate CSRF token for security
+    if let Some(token) = __csrf_token {
+        if !state.csrf_store.validate_token(&token) {
+            return Err(crate::error::AppError::SecurityError {
+                message: "Invalid or expired CSRF token".to_string(),
+            });
+        }
+    }
+    // TODO: Once migration is complete, make CSRF token required (remove Option)
+
     // Validate settings
     settings.validate()?;
 

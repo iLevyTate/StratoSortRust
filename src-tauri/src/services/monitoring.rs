@@ -575,8 +575,10 @@ impl MonitoringService {
     fn get_cpu_usage() -> f64 {
         use sysinfo::System;
         let mut sys = System::new();
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        // SAFETY: Avoid blocking thread with sleep - use cached value instead
+        // Sleep blocks the async runtime and can cause deadlocks
         sys.refresh_cpu_all();
+        // Note: First call may return 0 - that's expected
         sys.global_cpu_usage() as f64
     }
 
@@ -620,36 +622,58 @@ impl MonitoringService {
         self.start_time
     }
 
-    /// Start periodic metrics collection
-    pub fn start_periodic_collection(&self, app_state: std::sync::Arc<crate::state::AppState>) {
+    /// Start periodic metrics collection with proper cancellation
+    pub fn start_periodic_collection(&self, app_state: std::sync::Arc<crate::state::AppState>) -> tokio::task::JoinHandle<()> {
         let monitoring = std::sync::Arc::new(self.clone());
         let state = app_state;
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60)); // Collect every minute
+            let mut collection_count = 0u64;
 
             loop {
-                interval.tick().await;
+                tokio::select! {
+                    _ = interval.tick() => {
+                        collection_count += 1;
 
-                // Collect performance metrics
-                if let Ok(metrics) = monitoring.get_performance_metrics(&state).await {
-                    // Metrics are automatically stored in history by get_performance_metrics
-                    tracing::debug!(
-                        "Collected metrics: CPU {:.1}%, Memory {:.1}%, Active Ops: {}",
-                        metrics.cpu_usage_percentage,
-                        metrics.memory_usage_percentage,
-                        metrics.active_operations
-                    );
+                        // Collect performance metrics with timeout to prevent hanging
+                        match tokio::time::timeout(
+                            tokio::time::Duration::from_secs(10),
+                            monitoring.get_performance_metrics(&state)
+                        ).await {
+                            Ok(Ok(metrics)) => {
+                                // Metrics are automatically stored in history by get_performance_metrics
+                                tracing::debug!(
+                                    "Collected metrics #{}: CPU {:.1}%, Memory {:.1}%, Active Ops: {}",
+                                    collection_count,
+                                    metrics.cpu_usage_percentage,
+                                    metrics.memory_usage_percentage,
+                                    metrics.active_operations
+                                );
 
-                    // Emit metrics to frontend if configured
-                    // Use Emitter trait explicitly
-                    use tauri::Emitter;
-                    let _ = state.handle.emit("metrics-collected", &metrics);
-                } else {
-                    tracing::warn!("Failed to collect periodic metrics");
+                                // Emit metrics to frontend if configured
+                                // Use Emitter trait explicitly
+                                use tauri::Emitter;
+                                let _ = state.handle.emit("metrics-collected", &metrics);
+                            }
+                            Ok(Err(e)) => {
+                                tracing::warn!("Failed to collect periodic metrics: {}", e);
+                            }
+                            Err(_) => {
+                                tracing::warn!("Metrics collection timed out after 10 seconds");
+                            }
+                        }
+                    }
+                    _ = tokio::task::yield_now() => {
+                        // Allow graceful shutdown
+                        tracing::info!("Metrics collection task yielded for shutdown");
+                        break;
+                    }
                 }
             }
-        });
+
+            tracing::info!("Metrics collection task terminated after {} collections", collection_count);
+        })
     }
 
     /// Enable/disable metrics collection

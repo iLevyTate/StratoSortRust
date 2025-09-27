@@ -16,6 +16,10 @@ pub struct Database {
     vector_ext: Arc<VectorExtension>,
 }
 
+/// Retry configuration for database operations
+const DB_RETRY_ATTEMPTS: u32 = 3;
+const DB_RETRY_DELAY_MS: u64 = 100;
+
 /// Validates SQL identifiers to prevent injection attacks
 /// Only allows alphanumeric characters, underscores, and limits length
 pub fn is_valid_sql_identifier(identifier: &str) -> bool {
@@ -40,6 +44,31 @@ pub fn is_valid_sql_identifier(identifier: &str) -> bool {
         .all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// Validate a SQL table name (wrapper for consistency)
+pub fn validate_table_name(name: &str) -> Result<()> {
+    if !is_valid_sql_identifier(name) {
+        return Err(AppError::SecurityError {
+            message: format!("Invalid table name: {}", name),
+        });
+    }
+    Ok(())
+}
+
+/// Validate a SQL column name (wrapper for consistency)
+pub fn validate_column_name(name: &str) -> Result<()> {
+    if !is_valid_sql_identifier(name) {
+        return Err(AppError::SecurityError {
+            message: format!("Invalid column name: {}", name),
+        });
+    }
+    Ok(())
+}
+
+/// Escape single quotes for SQL string literals
+pub fn escape_sql_string(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
 // Helper function to escape LIKE special characters to prevent SQL injection
 #[allow(dead_code)]
 fn escape_like_pattern(input: &str) -> String {
@@ -52,6 +81,33 @@ fn escape_like_pattern(input: &str) -> String {
 }
 
 impl Database {
+    /// Helper function to retry database operations with exponential backoff
+    async fn retry_operation<F, Fut, T>(operation: F) -> Result<T>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
+    {
+        let mut attempts = 0;
+        let mut delay_ms = DB_RETRY_DELAY_MS;
+
+        loop {
+            attempts += 1;
+
+            match operation().await {
+                Ok(result) => return Ok(result),
+                Err(e) if attempts >= DB_RETRY_ATTEMPTS => {
+                    warn!("Database operation failed after {} attempts: {}", DB_RETRY_ATTEMPTS, e);
+                    return Err(e);
+                }
+                Err(e) => {
+                    warn!("Database operation failed (attempt {}/{}): {}", attempts, DB_RETRY_ATTEMPTS, e);
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    delay_ms *= 2; // Exponential backoff
+                }
+            }
+        }
+    }
+
     pub async fn new<R: Runtime>(handle: &AppHandle<R>) -> Result<Self> {
         let db_path = Self::database_path_with_fallbacks(handle).await?;
 
@@ -129,12 +185,28 @@ impl Database {
             .busy_timeout(Duration::from_secs(30))
             .pragma("foreign_keys", "ON");
 
+        // CRITICAL FIX: Enhanced pool configuration to prevent exhaustion under load
         let pool = SqlitePoolOptions::new()
-            .max_connections(20) // Increased for concurrent ops
-            .min_connections(5)   // Minimum connections to maintain
-            .acquire_timeout(Duration::from_secs(3))
-            .idle_timeout(Some(Duration::from_secs(10)))
-            .max_lifetime(Some(Duration::from_secs(3600)))
+            .max_connections(10) // Increased for better concurrency while respecting SQLite's single-writer nature
+            .min_connections(2)   // Keep some connections warm to reduce latency
+            .acquire_timeout(Duration::from_secs(30)) // Increased timeout for heavy load periods
+            .idle_timeout(Some(Duration::from_secs(300))) // 5 minutes - balance between resource usage and connection reuse
+            .max_lifetime(Some(Duration::from_secs(1800))) // 30 minutes - prevent long-lived connections from degrading
+            .after_connect(|conn, _meta| {
+                // CRITICAL FIX: Set connection-level pragmas for each new connection
+                Box::pin(async move {
+                    sqlx::query("PRAGMA busy_timeout = 30000")
+                        .execute(&mut *conn)
+                        .await?;
+                    sqlx::query("PRAGMA journal_mode = WAL")
+                        .execute(&mut *conn)
+                        .await?;
+                    sqlx::query("PRAGMA synchronous = NORMAL")
+                        .execute(&mut *conn)
+                        .await?;
+                    Ok(())
+                })
+            })
             .connect_with(options).await?;
 
         // Initialize vector extension
@@ -276,7 +348,7 @@ impl Database {
             });
         }
 
-        // Additional validation as defense in depth
+        // SECURITY: Additional validation as defense in depth - SQL injection prevention
         if !is_valid_sql_identifier(index_name)
             || !is_valid_sql_identifier(table_name)
             || !is_valid_sql_identifier(column_name)
@@ -286,7 +358,8 @@ impl Database {
             });
         }
 
-        // Safe to use format! after whitelist + validation
+        // SECURITY: Safe to use format! only after whitelist + validation checks above
+        // This prevents SQL injection attacks through dynamic index creation
         let query = format!(
             "CREATE INDEX IF NOT EXISTS {} ON {}({})",
             index_name, table_name, column_name
@@ -1021,13 +1094,24 @@ impl Database {
                 .pragma("mmap_size", "268435456")
                 .pragma("journal_size_limit", "67108864"); // 64MB journal limit
 
-            // Create pool with optimized settings
+            // CRITICAL FIX: Optimized pool settings with proper resource management
             let pool_options = sqlx::sqlite::SqlitePoolOptions::new()
-                .max_connections(10) // Reasonable max for SQLite
-                .min_connections(2)  // Keep at least 2 connections ready
+                .max_connections(4) // Minimal connections - SQLite handles single writer, multiple readers
+                .min_connections(1)  // Keep minimal idle connections
                 .acquire_timeout(Duration::from_secs(timeout_seconds))
-                .idle_timeout(Duration::from_secs(300)) // Close idle connections after 5 minutes
-                .max_lifetime(Duration::from_secs(1800)); // Recycle connections after 30 minutes
+                .idle_timeout(Duration::from_secs(30)) // Close idle connections quickly to free resources
+                .max_lifetime(Duration::from_secs(300)) // Recycle connections after 5 minutes to prevent stale state
+                .test_before_acquire(true) // Test connection health before use
+                .after_connect(|conn, _meta| {
+                    // Ensure each connection has proper settings
+                    Box::pin(async move {
+                        sqlx::query("PRAGMA busy_timeout = 30000").execute(&mut *conn).await?;
+                        sqlx::query("PRAGMA journal_mode = WAL").execute(&mut *conn).await?;
+                        sqlx::query("PRAGMA synchronous = NORMAL").execute(&mut *conn).await?;
+                        sqlx::query("PRAGMA foreign_keys = ON").execute(&mut *conn).await?;
+                        Ok(())
+                    })
+                });
 
             match pool_options.connect_with(connection_options).await {
                 Ok(pool) => {
@@ -1623,7 +1707,7 @@ impl Database {
         ];
 
         for (index_name, table_name, column_name) in &indexes {
-            // Validate SQL identifiers before using format!
+            // SECURITY: SQL injection prevention - validate all identifiers before dynamic query construction
             if !is_valid_sql_identifier(index_name)
                 || !is_valid_sql_identifier(table_name)
                 || !is_valid_sql_identifier(column_name)
@@ -1635,7 +1719,7 @@ impl Database {
                 continue;
             }
 
-            // Now safe to use format! after validation
+            // SECURITY: Now safe to use format! after validation - prevents SQL injection
             if let Err(e) = sqlx::query(&format!(
                 "CREATE INDEX IF NOT EXISTS {} ON {}({})",
                 index_name, table_name, column_name
@@ -2170,7 +2254,29 @@ impl Database {
                 message: "Invalid backup path".to_string()
             })?;
 
-        sqlx::query(&format!("VACUUM INTO '{}'", backup_path_str))
+        // SECURITY: Validate backup path to prevent directory traversal and injection
+        // Ensure the path only contains safe characters and no special SQL chars
+        if backup_path_str.contains(";") || backup_path_str.contains("--") ||
+           backup_path_str.contains("/*") || backup_path_str.contains("*/") ||
+           backup_path_str.contains("\\") || backup_path_str.contains("..") {
+            return Err(AppError::SecurityError {
+                message: "Invalid characters in backup path".to_string()
+            });
+        }
+
+        // Additional validation: ensure path is within expected directory
+        if !backup_path.starts_with(&backup_dir) {
+            return Err(AppError::SecurityError {
+                message: "Backup path outside allowed directory".to_string()
+            });
+        }
+
+        // SECURITY: VACUUM INTO requires a literal path and cannot use parameters
+        // We've already validated the path above to prevent injection
+        // Escape single quotes in the path for SQL string literal safety
+        let escaped_path = escape_sql_string(backup_path_str);
+        let query = format!("VACUUM INTO '{}'", escaped_path);
+        sqlx::query(&query)
             .execute(&self.pool).await?;
 
         // Verify backup
@@ -2214,6 +2320,102 @@ impl Database {
         }
 
         Ok(())
+    }
+
+    /// Ping the database to check if it's responsive
+    pub async fn ping(&self) -> Result<()> {
+        sqlx::query("SELECT 1")
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| AppError::DatabaseError {
+                message: format!("Database ping failed: {}", e)
+            })?;
+        Ok(())
+    }
+
+    /// Create a new database instance with a specific path (for testing)
+    pub async fn new_with_path(path: &str) -> Result<Self> {
+        let pool = SqlitePool::connect(&format!("sqlite:{}", path)).await?;
+
+        // Initialize vector extension
+        // Note: VectorExtension doesn't have new(), use initialize()
+        let vector_ext = Arc::new(VectorExtension::initialize(&pool).await);
+
+        let db = Self { pool, vector_ext };
+        db.initialize_schema().await?;
+        Ok(db)
+    }
+
+    /// Query raw SQL (for testing assertions)
+    pub async fn query_raw(&self, query: &str) -> Result<Vec<sqlx::sqlite::SqliteRow>> {
+        let rows = sqlx::query(query)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows)
+    }
+
+    /// Insert a file record
+    pub async fn insert_file(&self, file: crate::models::File) -> Result<i64> {
+        let result = sqlx::query(
+            "INSERT INTO files (path, name, extension, size, mime_type, checksum, metadata, tags, smart_folder_id, created_at, updated_at, last_accessed, is_favorite, is_archived)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(&file.path)
+        .bind(&file.name)
+        .bind(&file.extension)
+        .bind(file.size)
+        .bind(&file.mime_type)
+        .bind(&file.checksum)
+        .bind(&file.metadata)
+        .bind(file.tags.map(|t| t.join(",")))
+        .bind(file.smart_folder_id)
+        .bind(file.created_at)
+        .bind(file.updated_at)
+        .bind(file.last_accessed)
+        .bind(file.is_favorite)
+        .bind(file.is_archived)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.last_insert_rowid())
+    }
+
+    /// Create a tag
+    pub async fn create_tag(&self, tag: crate::models::Tag) -> Result<i64> {
+        let result = sqlx::query(
+            "INSERT INTO tags (name, color, created_at, updated_at)
+             VALUES (?, ?, ?, ?)"
+        )
+        .bind(&tag.name)
+        .bind(&tag.color)
+        .bind(tag.created_at)
+        .bind(tag.updated_at)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.last_insert_rowid())
+    }
+
+    /// Create a smart folder
+    pub async fn create_smart_folder(&self, folder: crate::models::SmartFolder) -> Result<i64> {
+        let result = sqlx::query(
+            "INSERT INTO smart_folders (name, description, rules, color, icon, sort_order, parent_id, is_active, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(&folder.name)
+        .bind(&folder.description)
+        .bind(&folder.rules)
+        .bind(&folder.color)
+        .bind(&folder.icon)
+        .bind(folder.sort_order)
+        .bind(folder.parent_id)
+        .bind(folder.is_active)
+        .bind(folder.created_at)
+        .bind(folder.updated_at)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.last_insert_rowid())
     }
 }
 

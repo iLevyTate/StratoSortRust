@@ -75,6 +75,7 @@ struct MemoryGuard {
 }
 
 // RAII guard for operation tracking to prevent resource leaks
+#[allow(dead_code)]
 struct OperationGuard {
     operation_id: uuid::Uuid,
     state: std::sync::Arc<AppState>,
@@ -82,6 +83,7 @@ struct OperationGuard {
 }
 
 impl OperationGuard {
+    #[allow(dead_code)]
     fn new(
         state: std::sync::Arc<AppState>,
         operation_type: crate::state::OperationType,
@@ -95,6 +97,7 @@ impl OperationGuard {
         }
     }
 
+    #[allow(dead_code)]
     fn complete(&mut self) {
         if !self.completed {
             self.state.complete_operation(self.operation_id);
@@ -102,6 +105,7 @@ impl OperationGuard {
         }
     }
 
+    #[allow(dead_code)]
     fn id(&self) -> uuid::Uuid {
         self.operation_id
     }
@@ -778,9 +782,20 @@ pub async fn get_file_content<R: Runtime>(
 #[tauri::command]
 pub async fn move_files(
     operations: Vec<MoveOperation>,
+    __csrf_token: Option<String>,
     state: State<'_, std::sync::Arc<AppState>>,
     app: AppHandle,
 ) -> Result<Vec<MoveResult>> {
+    // CRITICAL: Validate CSRF token for security
+    if let Some(token) = __csrf_token {
+        if !state.csrf_store.validate_token(&token) {
+            return Err(crate::error::AppError::SecurityError {
+                message: "Invalid or expired CSRF token".to_string(),
+            });
+        }
+    }
+    // TODO: Once migration is complete, make CSRF token required (remove Option)
+
     // Validate input parameters
     if operations.is_empty() {
         return Err(crate::error::AppError::InvalidPath {
@@ -1180,9 +1195,20 @@ pub async fn copy_file(
 pub async fn delete_file(
     path: String,
     permanent: bool,
+    __csrf_token: Option<String>,
     state: State<'_, std::sync::Arc<AppState>>,
     app: AppHandle,
 ) -> Result<bool> {
+    // CRITICAL: Validate CSRF token for security
+    if let Some(token) = __csrf_token {
+        if !state.csrf_store.validate_token(&token) {
+            return Err(crate::error::AppError::SecurityError {
+                message: "Invalid or expired CSRF token".to_string(),
+            });
+        }
+    }
+    // TODO: Once migration is complete, make CSRF token required (remove Option)
+
     let sanitized_path = validate_path(&path, &app)?.into_path_buf();
 
     if !sanitized_path.exists() {
@@ -1272,9 +1298,20 @@ pub async fn set_file_permissions(path: String, permissions: u32, app: AppHandle
 pub async fn batch_file_operations(
     operations: Vec<BatchOperation>,
     rollback_on_failure: Option<bool>,
+    __csrf_token: Option<String>,
     state: State<'_, std::sync::Arc<AppState>>,
     app: AppHandle,
 ) -> Result<BatchOperationResult> {
+    // CRITICAL: Validate CSRF token for security
+    if let Some(token) = __csrf_token {
+        if !state.csrf_store.validate_token(&token) {
+            return Err(crate::error::AppError::SecurityError {
+                message: "Invalid or expired CSRF token".to_string(),
+            });
+        }
+    }
+    // TODO: Once migration is complete, make CSRF token required (remove Option)
+
     if operations.len() > 1000 {
         return Err(crate::error::AppError::SecurityError {
             message: "Too many batch operations (max 1000)".to_string(),
@@ -1369,7 +1406,7 @@ pub async fn batch_file_operations(
             BatchOperationType::Delete => {
                 // For deletes, we can't easily rollback unless we have backup/trash support
                 // For now, we mark them as non-rollbackable
-                match delete_file(op.source.clone(), false, state.clone(), app.clone()).await {
+                match delete_file(op.source.clone(), false, None, state.clone(), app.clone()).await {
                     Ok(_) => {
                         // Store rollback info - but deletion can't be easily rolled back
                         rollback_info.push(RollbackInfo {
@@ -1530,6 +1567,7 @@ async fn perform_rollback(
                 match delete_file(
                     info.original_path.clone(),
                     false,
+                    None,
                     state.clone(),
                     app.clone(),
                 ).await {
@@ -1606,9 +1644,20 @@ pub async fn move_file(
 #[tauri::command]
 pub async fn rename_files(
     operations: Vec<RenameOperation>,
+    __csrf_token: Option<String>,
     state: State<'_, std::sync::Arc<AppState>>,
     app: AppHandle,
 ) -> Result<Vec<RenameResult>> {
+    // CRITICAL: Validate CSRF token for security
+    if let Some(token) = __csrf_token {
+        if !state.csrf_store.validate_token(&token) {
+            return Err(crate::error::AppError::SecurityError {
+                message: "Invalid or expired CSRF token".to_string(),
+            });
+        }
+    }
+    // TODO: Once migration is complete, make CSRF token required (remove Option)
+
     if operations.is_empty() {
         return Err(crate::error::AppError::InvalidPath {
             message: "No rename operations provided".to_string(),

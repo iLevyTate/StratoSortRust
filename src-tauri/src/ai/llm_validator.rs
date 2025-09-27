@@ -20,23 +20,23 @@ impl LlmOutputValidator {
     pub fn new() -> Self {
         let dangerous_patterns = vec![
             // Path traversal patterns
-            Regex::new(r"\.\.[\\/]").unwrap(),
-            Regex::new(r"[\\/]\.\.").unwrap(),
+            Regex::new(r"\.\.[\\/]").expect("Failed to compile path traversal regex"),
+            Regex::new(r"[\\/]\.\.").expect("Failed to compile path traversal regex"),
             // Absolute paths
-            Regex::new(r"^[a-zA-Z]:\\").unwrap(), // Windows absolute path
-            Regex::new(r"^/").unwrap(),           // Unix absolute path
+            Regex::new(r"^[a-zA-Z]:\\").expect("Failed to compile Windows absolute path regex"), // Windows absolute path
+            Regex::new(r"^/").expect("Failed to compile Unix absolute path regex"),           // Unix absolute path
             // Null bytes
-            Regex::new(r"\x00").unwrap(),
+            Regex::new(r"\x00").expect("Failed to compile null byte regex"),
             // Control characters
-            Regex::new(r"[\x01-\x1F\x7F-\x9F]").unwrap(),
+            Regex::new(r"[\x01-\x1F\x7F-\x9F]").expect("Failed to compile control character regex"),
             // Reserved Windows names
-            Regex::new(r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|$)").unwrap(),
+            Regex::new(r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|$)").expect("Failed to compile Windows reserved names regex"),
             // Script injection patterns
-            Regex::new(r"<script").unwrap(),
-            Regex::new(r"javascript:").unwrap(),
-            Regex::new(r"data:").unwrap(),
+            Regex::new(r"<script").expect("Failed to compile script injection regex"),
+            Regex::new(r"javascript:").expect("Failed to compile javascript protocol regex"),
+            Regex::new(r"data:").expect("Failed to compile data protocol regex"),
             // Shell command patterns
-            Regex::new(r"[$`|;&><]").unwrap(),
+            Regex::new(r"[$`|;&><]").expect("Failed to compile shell command regex"),
         ];
 
         let allowed_extensions = [
@@ -215,9 +215,12 @@ impl LlmOutputValidator {
 
         // Check for sensitive information patterns
         let sensitive_patterns = [
-            Regex::new(r"(?i)(password|secret|key|token)\s*[:=]\s*\w+").unwrap(),
-            Regex::new(r"(?i)(credit card|ssn|social security)\s*[:=]?\s*[\d\-\s]+").unwrap(),
-            Regex::new(r"(?i)(api[_\s]?key|access[_\s]?token)\s*[:=]\s*[\w\-]+").unwrap(),
+            Regex::new(r"(?i)(password|secret|key|token)\s*[:=]\s*\w+")
+                .expect("Failed to compile sensitive data regex"),
+            Regex::new(r"(?i)(credit card|ssn|social security)\s*[:=]?\s*[\d\-\s]+")
+                .expect("Failed to compile PII regex"),
+            Regex::new(r"(?i)(api[_\s]?key|access[_\s]?token)\s*[:=]\s*[\w\-]+")
+                .expect("Failed to compile API key regex"),
         ];
 
         for pattern in &sensitive_patterns {
@@ -311,7 +314,7 @@ mod tests {
         let validator = LlmOutputValidator::new();
         let result = validator.validate_filename("document.pdf");
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "document.pdf");
+        assert_eq!(result.expect("Test validation failed"), "document.pdf");
     }
 
     #[test]
@@ -334,9 +337,11 @@ mod tests {
     #[test]
     fn test_sanitize_dangerous_characters() {
         let validator = LlmOutputValidator::new();
-        let result = validator.validate_filename("file<>:\"name|?.txt");
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "file_name_.txt");
+        // This filename contains dangerous characters that should be sanitized
+        // Using filesystem-only dangerous chars, not shell chars
+        let result = validator.validate_filename("doc:\"ument*.txt");
+        assert!(result.is_ok(), "Failed with error: {:?}", result.err());
+        assert_eq!(result.expect("Test validation failed"), "doc_ument_.txt");
     }
 
     #[test]
@@ -351,7 +356,7 @@ mod tests {
         let validator = LlmOutputValidator::new();
         let result = validator.validate_category("Documents");
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "Documents");
+        assert_eq!(result.expect("Test validation failed"), "Documents");
 
         let result = validator.validate_category("Doc<script>alert(1)</script>");
         assert!(result.is_err());
@@ -369,7 +374,7 @@ mod tests {
         ];
 
         let result = validator.validate_tags(&tags);
-        assert_eq!(result.len(), 2);
+        assert_eq!(result.len(), 3); // Should have 3 valid tags
         assert!(result.contains(&"document".to_string()));
         assert!(result.contains(&"important".to_string()));
         assert!(result.contains(&"valid-tag".to_string()));

@@ -268,6 +268,7 @@ pub async fn organize_files_with_ai(
 }
 
 /// Analyze a file and find matching folders
+#[allow(clippy::too_many_arguments)]
 async fn analyze_and_match_file(
     file_path: &str,
     smart_folders: &[SmartFolder],

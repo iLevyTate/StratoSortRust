@@ -451,8 +451,12 @@ impl Drop for AtomicFileOperation {
         if self.state == TransactionState::Committed && self.backup_dir.exists() {
             let backup_dir = self.backup_dir.clone();
             // Fire and forget cleanup
+            // SAFETY: Fire and forget cleanup with error handling
             tokio::spawn(async move {
-                let _ = fs::remove_dir_all(&backup_dir).await;
+                if let Err(e) = fs::remove_dir_all(&backup_dir).await {
+                    tracing::debug!("Backup directory cleanup failed in Drop: {}", e);
+                    // Non-critical - backup will be cleaned on next run
+                }
             });
         }
     }
@@ -565,7 +569,11 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let source = temp_dir.path().join("source.txt");
         let dest = temp_dir.path().join("dest.txt");
-        let invalid = PathBuf::from("/invalid/path/that/does/not/exist.txt");
+        // Use a path that will definitely fail on all platforms
+        #[cfg(windows)]
+        let invalid = PathBuf::from("CON:\\invalid\\path.txt"); // Invalid Windows path
+        #[cfg(not(windows))]
+        let invalid = PathBuf::from("/\0invalid/path.txt"); // Path with null byte
 
         // Create source file
         fs::write(&source, "test content").await.unwrap();
@@ -573,14 +581,15 @@ mod tests {
         // Create atomic operation that will fail
         let mut atomic_op = AtomicFileOperation::new().unwrap();
         atomic_op.add_move(&source, &dest).unwrap();
-        atomic_op.add_move(&dest, &invalid).unwrap(); // This will fail
+        atomic_op.add_move(&dest, &invalid).unwrap(); // This should fail
 
         // Execute should fail and rollback
-        assert!(atomic_op.execute().await.is_err());
+        let result = atomic_op.execute().await;
+        assert!(result.is_err(), "Expected operation to fail but it succeeded");
 
         // Verify rollback worked - source should still exist
-        assert!(source.exists());
-        assert!(!dest.exists());
+        assert!(source.exists(), "Source file should exist after rollback");
+        assert!(!dest.exists(), "Destination should not exist after rollback");
         assert_eq!(fs::read_to_string(&source).await.unwrap(), "test content");
     }
 }

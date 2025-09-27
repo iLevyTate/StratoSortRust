@@ -275,8 +275,16 @@ pub async fn check_ollama_health(host: &str, port: u16) -> Result<bool> {
     tracing::debug!("Checking Ollama health at {}:{}", host, port);
 
     // Try direct connection first with better timeout handling
+    // FIX: Handle IPv6 localhost and improve address parsing
     let addr = if host == "localhost" {
+        // Try IPv4 first, fallback to IPv6 if needed
         format!("127.0.0.1:{}", port)
+    } else if host == "::1" {
+        // IPv6 localhost
+        format!("[::1]:{}", port)
+    } else if host.contains(':') && !host.starts_with('[') {
+        // IPv6 address without brackets
+        format!("[{}]:{}", host, port)
     } else {
         format!("{}:{}", host, port)
     };
@@ -288,7 +296,11 @@ pub async fn check_ollama_health(host: &str, port: u16) -> Result<bool> {
         Ok(addr) => addr,
         Err(e) => {
             tracing::warn!("Failed to parse address {}: {}", addr, e);
-            return Ok(false);
+            // FIX: Try alternative parsing for complex addresses
+            match format!("{}:{}", host, port).parse() {
+                Ok(addr) => addr,
+                Err(_) => return Ok(false),
+            }
         }
     };
 
@@ -300,6 +312,10 @@ pub async fn check_ollama_health(host: &str, port: u16) -> Result<bool> {
 
     match connection_result {
         Ok(Ok(stream)) => {
+            // FIX: Properly shutdown the stream to avoid lingering connections
+            use tokio::io::AsyncWriteExt;
+            let mut stream = stream;
+            let _ = stream.shutdown().await;
             drop(stream); // Close the connection immediately
             tracing::debug!("Successfully connected to Ollama at {}", addr);
             
@@ -344,6 +360,12 @@ async fn check_ollama_http_health(host: &str, port: u16) -> Result<bool> {
 
     let url = if host == "localhost" {
         format!("http://127.0.0.1:{}/", port)
+    } else if host == "::1" {
+        // FIX: Handle IPv6 localhost
+        format!("http://[::1]:{}/", port)
+    } else if host.contains(':') && !host.starts_with('[') && !host.starts_with("http") {
+        // FIX: Handle IPv6 addresses
+        format!("http://[{}]:{}/", host, port)
     } else {
         format!("http://{}:{}/", host, port)
     };

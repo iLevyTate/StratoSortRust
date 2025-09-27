@@ -108,14 +108,25 @@ pub(crate) fn sanitize_prompt_content(input: &str) -> Result<String> {
         .collect();
 
     // Remove excessive newlines but allow some formatting - FIXED INFINITE LOOP BUG
-    // Limit iterations to prevent UI freeze from malicious input  
+    // Limit iterations to prevent UI freeze from malicious input
     let mut iteration_count = 0;
     const MAX_CLEANUP_ITERATIONS: usize = 100;
-    
+
+    // FIX: Store string length to detect if replacements are actually happening
+    let mut prev_len = result.len();
+
     while result.contains("\n\n\n") && iteration_count < MAX_CLEANUP_ITERATIONS {
         result = result.replace("\n\n\n", "\n\n");
         iteration_count += 1;
-        
+
+        // FIX: Check if the string is actually getting shorter (replacements are working)
+        // If not, break to avoid infinite loop
+        if result.len() >= prev_len {
+            tracing::debug!("String replacement not reducing size, stopping cleanup");
+            break;
+        }
+        prev_len = result.len();
+
         // Emergency brake for extremely malicious input
         if iteration_count >= MAX_CLEANUP_ITERATIONS {
             tracing::warn!("Input sanitization hit iteration limit - potential attack detected");

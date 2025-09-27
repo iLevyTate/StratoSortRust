@@ -162,15 +162,17 @@ impl OperationQueue {
         let mut pending = self.pending.lock();
 
         if let Some(position) = pending.iter().position(|op| op.id == id) {
-            let mut operation = pending.remove(position).unwrap();
-            operation.status = OperationStatus::Cancelled;
-            operation.completed_at = Some(chrono::Utc::now());
+            // Safe to use expect here as we just found the position
+            if let Some(mut operation) = pending.remove(position) {
+                operation.status = OperationStatus::Cancelled;
+                operation.completed_at = Some(chrono::Utc::now());
 
-            let mut completed = self.completed.lock();
-            completed.push(operation);
+                let mut completed = self.completed.lock();
+                completed.push(operation);
 
-            tracing::debug!("Cancelled operation {}", id);
-            return true;
+                tracing::debug!("Cancelled operation {}", id);
+                return true;
+            }
         }
 
         // Check if it's currently executing

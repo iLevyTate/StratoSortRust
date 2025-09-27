@@ -3,8 +3,18 @@ import { fontFamily } from 'tailwindcss/defaultTheme';
 /** @type {import('tailwindcss').Config} */
 const config = {
   darkMode: ['class'],
-  content: ['./src/**/*.{html,js,svelte,ts}'],
-  safelist: ['dark'],
+  content: [
+    './src/**/*.{html,js,svelte,ts}',
+    './index.html' // Include root HTML
+  ],
+  safelist: [
+    'dark',
+    // Safelist dynamic classes that might be generated
+    {
+      pattern: /^(bg|text|border)-(primary|secondary|destructive|muted|accent)/,
+      variants: ['hover', 'focus', 'active', 'dark']
+    }
+  ],
   theme: {
     container: {
       center: true,

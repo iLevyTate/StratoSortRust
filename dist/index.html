@@ -3,15 +3,30 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' http://localhost:11434; font-src 'self' data:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' customprotocol: asset: tauri:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data: blob: tauri: https:; font-src 'self' data:; connect-src 'self' ipc: http://localhost:11434 http://127.0.0.1:11434; media-src 'self' blob: data:; worker-src 'self' blob:; child-src 'none'; frame-src 'none'; frame-ancestors 'none'; object-src 'none'; embed-src 'none'; base-uri 'self'; form-action 'self'; manifest-src 'self';">
   <meta http-equiv="X-Content-Type-Options" content="nosniff">
   <meta http-equiv="X-Frame-Options" content="deny">
   <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin">
   <meta http-equiv="Permissions-Policy" content="geolocation=(), microphone=(), camera=()">
   <title>StratoSort - AI File Organization</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <script type="module" crossorigin src="/assets/index-f3Sdc_dx.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-tsgE8Ffx.css">
+  <script type="module" crossorigin src="/entry/index-bnMyo9ck.js"></script>
+  <link rel="modulepreload" crossorigin href="/chunks/vendor-C3DnGzSH.js">
+  <link rel="modulepreload" crossorigin href="/chunks/svelte-pr5K0zd9.js">
+  <link rel="modulepreload" crossorigin href="/chunks/styles-DBi9Kw8P.js">
+  <link rel="modulepreload" crossorigin href="/chunks/tauri-Bj24DQMV.js">
+  <link rel="modulepreload" crossorigin href="/chunks/api-B2J8afN2.js">
+  <link rel="modulepreload" crossorigin href="/chunks/stores-B7NWNVKL.js">
+  <link rel="modulepreload" crossorigin href="/chunks/utils-D042vgkY.js">
+  <link rel="modulepreload" crossorigin href="/chunks/page-AnalyzePage-B-U3XR2f.js">
+  <link rel="modulepreload" crossorigin href="/chunks/page-FirstRunSetupPage-C_VeNEqS.js">
+  <link rel="modulepreload" crossorigin href="/chunks/page-DiscoverPage-NATb4nVf.js">
+  <link rel="modulepreload" crossorigin href="/chunks/page-OrganizePage-B6w0QvFw.js">
+  <link rel="modulepreload" crossorigin href="/chunks/page-SettingsPage-BASH_eww.js">
+  <link rel="stylesheet" crossorigin href="/assets/svelte-CmIsWmXI.css">
+  <link rel="stylesheet" crossorigin href="/assets/page-AnalyzePage-DvOfY4Cv.css">
+  <link rel="stylesheet" crossorigin href="/assets/page-DiscoverPage-BSgrMAPq.css">
+  <link rel="stylesheet" crossorigin href="/assets/index-CHmBWkYa.css">
 </head>
 <body class="h-full">
   <div id="app"></div>

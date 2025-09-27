@@ -184,20 +184,15 @@ impl ArchiveHandler for TarHandler {
             let file = File::open(archive_path)?;
             let compressed_size = file.metadata()?.len();
 
+            // Note: Compression support disabled - would require flate2, bzip2, xz2 crates
+            // For now, only support uncompressed tar files
             let mut archive = match extension.as_str() {
-                "gz" | "tgz" => {
-                    use flate2::read::GzDecoder;
-                    Archive::new(GzDecoder::new(file))
+                "gz" | "tgz" | "bz2" | "tbz2" | "xz" | "txz" => {
+                    return Err(AppError::ProcessingError {
+                        message: "Compressed archive support not available. Please extract the archive first.".to_string(),
+                    });
                 }
-                "bz2" | "tbz2" => {
-                    use bzip2::read::BzDecoder;
-                    Archive::new(BzDecoder::new(file))
-                }
-                "xz" | "txz" => {
-                    use xz2::read::XzDecoder;
-                    Archive::new(XzDecoder::new(file))
-                }
-                _ => Archive::new(file), // Plain tar
+                _ => Archive::new(file), // Plain tar only
             };
 
             let mut entries = Vec::new();
@@ -297,17 +292,10 @@ impl ArchiveHandler for TarHandler {
             let file = File::open(archive_path)?;
 
             let mut archive = match extension.as_str() {
-                "gz" | "tgz" => {
-                    use flate2::read::GzDecoder;
-                    Archive::new(GzDecoder::new(file))
-                }
-                "bz2" | "tbz2" => {
-                    use bzip2::read::BzDecoder;
-                    Archive::new(BzDecoder::new(file))
-                }
-                "xz" | "txz" => {
-                    use xz2::read::XzDecoder;
-                    Archive::new(XzDecoder::new(file))
+                "gz" | "tgz" | "bz2" | "tbz2" | "xz" | "txz" => {
+                    return Err(AppError::ProcessingError {
+                        message: "Compressed archive support not available. Please extract the archive first.".to_string(),
+                    });
                 }
                 _ => Archive::new(file),
             };

@@ -12,12 +12,6 @@
   "plugins": {
     "shell": {
       "open": true
-    },
-    "updater": {
-      "active": false,
-      "dialog": false,
-      "endpoints": [],
-      "pubkey": ""
     }
   },
   "app": {
@@ -39,20 +33,21 @@
         "decorations": true,
         "transparent": false,
         "skipTaskbar": false,
-        "visible": true,
+        "visible": false,
         "dragDropEnabled": true
       }
     ],
     "security": {
-      "csp": "default-src 'self' customprotocol: asset: tauri:; script-src 'self' http://localhost:1431 https://localhost:1431; style-src 'self' http://localhost:1431 https://localhost:1431; img-src 'self' asset: data: blob: tauri: http://localhost:1431 https://localhost:1431; font-src 'self' data: http://localhost:1431 https://localhost:1431; connect-src 'self' ipc: http://localhost:1431 https://localhost:1431 ws://localhost:1431 wss://localhost:1431 http://127.0.0.1:11434 https://127.0.0.1:11434; media-src 'self' blob: data:; worker-src 'self' blob:; child-src 'none'; frame-src 'none'; frame-ancestors 'none'; object-src 'none'; embed-src 'none'; base-uri 'self'; form-action 'self'; manifest-src 'self'",
+      "csp": "default-src 'self' customprotocol: asset: tauri:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data: blob: tauri:; font-src 'self' data:; connect-src 'self' ipc: http://127.0.0.1:11434; media-src 'self' blob: data:; worker-src 'self' blob:; child-src 'none'; frame-src 'none'; frame-ancestors 'none'; object-src 'none'; embed-src 'none'; base-uri 'self'; form-action 'self'; manifest-src 'self'; upgrade-insecure-requests",
+      "dangerousDisableAssetCspModification": false,
       "assetProtocol": {
         "enable": true,
-        "scope": [
-          "$APPDATA/stratosort/**",
-          "$RESOURCE/**"
-        ]
+        "scope": ["**"]
       },
-      "freezePrototype": true
+      "freezePrototype": true,
+      "pattern": {
+        "use": "brownfield"
+      }
     },
     "trayIcon": {
       "iconPath": "icons/icon.png",
@@ -87,10 +82,7 @@
     "windows": {
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",
-      "timestampUrl": "",
-      "webviewInstallMode": {
-        "type": "downloadBootstrapper"
-      },
+      "timestampUrl": "http://timestamp.digicert.com",
       "wix": null,
       "nsis": null
     },

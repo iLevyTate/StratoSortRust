@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom';
-import { vi, afterEach, beforeAll, afterAll } from 'vitest';
+import { vi, afterEach } from 'vitest';
 // Temporarily disabled MSW due to import issues with msw/node in browser environment
 // import { setupMSW } from './setup-msw';
 
@@ -63,7 +63,7 @@ global.ResizeObserver = class ResizeObserver {
 	unobserve = vi.fn();
 	disconnect = vi.fn();
 	
-	constructor(callback: ResizeObserverCallback) {
+	constructor(_callback: ResizeObserverCallback) {
 		// Store the callback if needed for testing
 	}
 } as any;

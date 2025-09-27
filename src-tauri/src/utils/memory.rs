@@ -34,6 +34,7 @@ impl MemoryMonitor {
         let mut interval = interval(Duration::from_secs(30));
         let shutdown_token = self.shutdown_token.clone();
         let cached_usage = self.cached_usage.clone();
+        let threshold = self.threshold; // FIX: Capture threshold before moving into async block
 
         let handle = tokio::spawn(async move {
             info!("Memory monitor started");
@@ -69,7 +70,8 @@ impl MemoryMonitor {
 
                         debug!("Memory usage: {:.1}%", percentage);
 
-                        if percentage > self.threshold as f64 {
+                        // FIX: Use captured threshold instead of self.threshold
+                        if percentage > threshold as f64 {
                             warn!("High memory usage: {:.1}%", percentage);
                         }
                     }
@@ -108,8 +110,11 @@ pub struct MemoryUsage {
     pub percentage: f64,
 }
 
+/// Type alias for the complex memory cache type
+type MemoryCacheType = std::sync::OnceLock<Arc<RwLock<Option<(MemoryUsage, Instant)>>>>;
+
 /// Cached memory usage with rate limiting
-static MEMORY_CACHE: std::sync::OnceLock<Arc<RwLock<Option<(MemoryUsage, Instant)>>>> = std::sync::OnceLock::new();
+static MEMORY_CACHE: MemoryCacheType = std::sync::OnceLock::new();
 
 /// Get current memory usage information with caching to avoid thread pool exhaustion
 pub async fn get_memory_usage() -> MemoryUsage {

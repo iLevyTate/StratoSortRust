@@ -223,14 +223,12 @@ impl ContentExtractor {
         }
 
         // Extract records
-        for result in reader.records() {
-            if let Ok(record) = result {
-                for field in record.iter() {
-                    text.push_str(field);
-                    text.push('\t');
-                }
-                text.push('\n');
+        for record in reader.records().flatten() {
+            for field in record.iter() {
+                text.push_str(field);
+                text.push('\t');
             }
+            text.push('\n');
         }
 
         debug!("Successfully extracted {} characters from CSV", text.len());
@@ -326,6 +324,7 @@ impl ContentExtractor {
     }
 
     /// Recursively extract string values from JSON
+    #[allow(clippy::only_used_in_recursion)]
     fn extract_json_strings(&self, value: &serde_json::Value) -> String {
         let mut text = String::new();
 
@@ -397,7 +396,7 @@ impl ContentExtractor {
                     info!("Enhanced document analysis completed for {}", path.display());
 
                     // Build enhanced content with metadata
-                    let mut enhanced = format!("# Enhanced Document Analysis\n\n");
+                    let mut enhanced = "# Enhanced Document Analysis\n\n".to_string();
                     enhanced.push_str(&format!("**Suggested Name:** {}\n", analysis.suggested_name));
                     enhanced.push_str(&format!("**Document Type:** {}\n", analysis.document_type));
                     enhanced.push_str(&format!("**Purpose:** {}\n", analysis.purpose));
