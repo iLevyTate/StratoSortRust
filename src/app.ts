@@ -1,4 +1,5 @@
 import App from './App.svelte';
+import { initializeEventListeners, cleanupEventListeners } from '$lib/api/events';
 
 const isDev = import.meta.env.DEV;
 
@@ -12,15 +13,30 @@ window.addEventListener('unhandledrejection', (event) => {
 	console.error('Unhandled promise rejection:', event.reason);
 });
 
-// Check if Tauri is available
+// Check if Tauri is available and initialize event listeners
 if (typeof window !== 'undefined') {
 	if (isDev) console.log('Window.__TAURI__ available:', '__TAURI__' in window);
 	if ('__TAURI__' in window) {
 		if (isDev) console.log('Tauri IPC available');
+		// Initialize backend event listeners
+		initializeEventListeners()
+			.then(() => {
+				if (isDev) console.log('Backend event listeners initialized');
+			})
+			.catch((error) => {
+				console.error('Failed to initialize event listeners:', error);
+			});
 	} else {
 		if (isDev) console.warn('Tauri IPC not available - running in web mode');
 	}
 }
+
+// Clean up event listeners on window unload
+window.addEventListener('beforeunload', () => {
+	if ('__TAURI__' in window) {
+		cleanupEventListeners();
+	}
+});
 
 // Mount the app with error handling
 let app: App;

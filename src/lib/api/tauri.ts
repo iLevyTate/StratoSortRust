@@ -628,6 +628,16 @@ export const quickSearch = createApiCall(
 	}
 );
 
+// File Operations - Additional
+export async function openFile(path: string): Promise<void> {
+	try {
+		return await secureInvoke('open_file', { path });
+	} catch (error) {
+		console.error('Failed to open file:', error);
+		throw error;
+	}
+}
+
 // AI/Ollama Operations
 export async function checkOllamaStatus(): Promise<OllamaStatus> {
 	try {
