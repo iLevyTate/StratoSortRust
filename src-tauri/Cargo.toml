@@ -141,7 +141,7 @@ content_inspector = "0.2"                        # Binary vs text file detection
 async-stream = { version = "0.3", optional = true }  # Async streaming utilities
 futures-util = { version = "0.3", optional = true }  # Future utilities for streaming
 memmap2 = { version = "0.9", optional = true }      # Memory-mapped file I/O
-tempfile = "3.14"                                    # Temporary file management (updated)
+tempfile = "3.23"                                    # Temporary file management (updated)
 
 # Utils
 chrono = { version = "0.4", features = ["serde"] }
@@ -214,7 +214,7 @@ opt-level = 0
 
 [dev-dependencies]
 mockito = "1.5"
-tempfile = "3.14"
+tempfile = "3.23"
 tokio-test = "0.4"
 num_cpus = "1.16"
 # Test dependencies for archive/compression handling
