@@ -792,14 +792,21 @@ Respond ONLY with valid JSON, no explanations."#,
                 }
             });
 
-            // Make HTTP request directly since ollama-rs doesn't support vision yet
+            // Make HTTP request directly since ollama-rs doesn't support vision yet.
+            // Previously this used `format!("http://{}/api/generate", self.client.uri())`,
+            // which produced "http://http://localhost:11434/..." when uri() already
+            // contained a scheme — vision requests then failed silently.
+            let base = self.client.uri();
+            let base = base.trim_end_matches('/');
+            let url = if base.starts_with("http://") || base.starts_with("https://") {
+                format!("{}/api/generate", base)
+            } else {
+                format!("http://{}/api/generate", base)
+            };
             let client = reqwest::Client::new();
             let response_result = timeout(
                 Duration::from_secs(60), // Vision analysis can take longer
-                client
-                    .post(format!("http://{}/api/generate", self.client.uri()))
-                    .json(&request)
-                    .send(),
+                client.post(&url).json(&request).send(),
             )
             .await;
 

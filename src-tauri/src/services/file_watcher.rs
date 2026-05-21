@@ -394,27 +394,43 @@ impl FileWatcher {
     ) -> Result<()> {
         let path_str = file_path.to_string_lossy().to_string();
 
-        // 1. Analyze file with AI (if not already cached)
+        // 1. Analyze file with AI (if not already cached). Dispatches by file
+        // type so images go to vision, documents get text-extracted, and every
+        // analyzed file gets an embedding stored for semantic search.
         let ai_analysis = match state.database.get_analysis(&path_str).await? {
             Some(existing_analysis) => Some(existing_analysis),
-            None => {
-                // Perform AI analysis
-                if let Ok(content) = tokio::fs::read_to_string(&file_path).await {
-                    match state.ai_service.analyze_file(&content, "").await {
-                        Ok(analysis) => {
-                            // Cache the analysis
-                            let _ = state.database.save_analysis(&analysis).await;
-                            Some(analysis)
-                        }
-                        Err(e) => {
-                            warn!("AI analysis failed for {}: {}", path_str, e);
-                            None
+            None => match state.ai_service.analyze_path_with_ai(&path_str).await {
+                Ok(analysis) => {
+                    let _ = state.database.save_analysis(&analysis).await;
+
+                    let embed_text =
+                        format!("{} {}", analysis.summary, analysis.tags.join(" "));
+                    if !embed_text.trim().is_empty() {
+                        match state.ai_service.generate_embeddings(&embed_text).await {
+                            Ok(embedding) => {
+                                let model_name =
+                                    state.config.read().ollama_embedding_model.clone();
+                                if let Err(e) = state
+                                    .database
+                                    .save_embedding(&path_str, &embedding, Some(&model_name))
+                                    .await
+                                {
+                                    warn!("Failed to save embedding for {}: {}", path_str, e);
+                                }
+                            }
+                            Err(e) => {
+                                warn!("Embedding generation failed for {}: {}", path_str, e);
+                            }
                         }
                     }
-                } else {
+
+                    Some(analysis)
+                }
+                Err(e) => {
+                    warn!("AI analysis failed for {}: {}", path_str, e);
                     None
                 }
-            }
+            },
         };
 
         // 2. Find best matching smart folder (using existing logic)

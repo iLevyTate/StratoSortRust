@@ -160,6 +160,98 @@ impl AiService {
         }
     }
 
+    /// Dispatches a file path to the correct AI pipeline based on extension.
+    ///
+    /// - Images → `analyze_image` (vision model, llava).
+    /// - PDF / Office / Markdown / CSV → `DocumentProcessorManager` to extract
+    ///   text, then `analyze_file` (text model).
+    /// - Plain text / source files → read as UTF-8 and `analyze_file`.
+    /// - Everything else → `fallback_analysis_with_path` so the file is at
+    ///   least classified by extension and recorded in the DB (never silently
+    ///   dropped).
+    pub async fn analyze_path_with_ai(&self, path: &str) -> Result<FileAnalysis> {
+        use std::path::Path;
+        use std::time::Instant;
+
+        let started = Instant::now();
+        let file_path = Path::new(path);
+        let ext = file_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        let (branch, result): (&'static str, Result<FileAnalysis>) = match ext.as_str() {
+            "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" => {
+                ("vision", self.analyze_image(path).await)
+            }
+            "pdf" | "docx" | "xlsx" | "xls" | "csv" | "md" | "markdown" => {
+                let processor = crate::core::document_processor::DocumentProcessorManager::new();
+                match processor.process_document(file_path).await {
+                    Ok(doc) => {
+                        let mime = mime_guess::from_path(path)
+                            .first_or_octet_stream()
+                            .to_string();
+                        let truncated: String = doc.text_content.chars().take(10_000).collect();
+                        let mut analysis = self
+                            .analyze_file_with_path(&truncated, &mime, path)
+                            .await?;
+                        if analysis.extracted_text.is_none() {
+                            analysis.extracted_text = Some(truncated);
+                        }
+                        ("document", Ok(analysis))
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Document text extraction failed for {}: {}. Falling back.",
+                            path,
+                            e
+                        );
+                        let mime = mime_guess::from_path(path)
+                            .first_or_octet_stream()
+                            .to_string();
+                        ("fallback", self.fallback_analysis_with_path("", &mime, path))
+                    }
+                }
+            }
+            _ => {
+                let mime = mime_guess::from_path(path)
+                    .first_or_octet_stream()
+                    .to_string();
+                match tokio::fs::read_to_string(path).await {
+                    Ok(content) => {
+                        let truncated: String = content.chars().take(10_000).collect();
+                        ("text", self.analyze_file_with_path(&truncated, &mime, path).await)
+                    }
+                    Err(_) => (
+                        "fallback",
+                        self.fallback_analysis_with_path("", &mime, path),
+                    ),
+                }
+            }
+        };
+
+        match &result {
+            Ok(a) => tracing::info!(
+                "analyze_path_with_ai: path={} branch={} category={} confidence={:.2} elapsed_ms={}",
+                path,
+                branch,
+                a.category,
+                a.confidence,
+                started.elapsed().as_millis()
+            ),
+            Err(e) => tracing::warn!(
+                "analyze_path_with_ai: path={} branch={} failed in {}ms: {}",
+                path,
+                branch,
+                started.elapsed().as_millis(),
+                e
+            ),
+        }
+
+        result
+    }
+
     /// Analyzes image files using vision AI
     pub async fn analyze_image(&self, image_path: &str) -> Result<FileAnalysis> {
         let provider = self.provider.read().clone();
