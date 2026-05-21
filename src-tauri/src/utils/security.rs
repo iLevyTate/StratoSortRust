@@ -3,9 +3,6 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
-#[cfg(unix)]
-use std::os::unix::fs::MetadataExt;
-
 /// Securely validates and sanitizes file paths to prevent TOCTOU and path traversal attacks
 /// Uses file descriptors and atomic operations to minimize race conditions
 pub fn validate_and_sanitize_path(path: &str, app: &AppHandle) -> Result<ValidatedPath> {
