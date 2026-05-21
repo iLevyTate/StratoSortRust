@@ -2046,3 +2046,139 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 
     dot_product / (magnitude_a * magnitude_b)
 }
+
+#[cfg(test)]
+mod delete_tests {
+    //! Tests for `delete_analysis` and `delete_stale_fallback_analyses`.
+    //! These are the load-bearing pieces of the Tier 3 cache-hygiene fix —
+    //! if the SQL pattern in `delete_stale_fallback_analyses` is off, we
+    //! either fail to purge old stub rows (leaving the bug visible) or purge
+    //! legitimate user data.
+
+    use super::*;
+    use crate::ai::FileAnalysis;
+
+    fn stub_analysis(path: &str) -> FileAnalysis {
+        // Matches the exact shape `fallback_analysis_with_path` writes when
+        // the AI layer can't reach the model — summary starts with
+        // "File type: " and confidence is 0.5.
+        FileAnalysis {
+            path: path.to_string(),
+            category: "Other".to_string(),
+            tags: vec![],
+            summary: "File type: application/octet-stream".to_string(),
+            confidence: 0.5,
+            extracted_text: None,
+            detected_language: None,
+            metadata: serde_json::json!({}),
+        }
+    }
+
+    fn real_analysis(path: &str) -> FileAnalysis {
+        FileAnalysis {
+            path: path.to_string(),
+            category: "Documents".to_string(),
+            tags: vec!["invoice".to_string()],
+            summary: "Quarterly invoice from Acme Corp totaling $4,200".to_string(),
+            confidence: 0.91,
+            extracted_text: Some("Invoice #1234".to_string()),
+            detected_language: Some("en".to_string()),
+            metadata: serde_json::json!({}),
+        }
+    }
+
+    async fn fresh_db() -> Database {
+        let tmp = tempfile::tempdir().unwrap();
+        // Keep the tempdir alive for the test's lifetime — Database::new_test
+        // holds a connection open against the path.
+        let path = tmp.keep().join("test.db");
+        Database::new_test(&path).await.expect("init test db")
+    }
+
+    #[tokio::test]
+    async fn delete_analysis_removes_present_row() {
+        let db = fresh_db().await;
+        let a = real_analysis("/tmp/keep.pdf");
+        db.save_analysis(&a).await.unwrap();
+        assert!(db.get_analysis(&a.path).await.unwrap().is_some());
+
+        db.delete_analysis(&a.path).await.unwrap();
+        assert!(db.get_analysis(&a.path).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_analysis_is_a_noop_on_missing_row() {
+        let db = fresh_db().await;
+        // Should not error — the contract is "remove if present, otherwise
+        // do nothing". The dispatcher's reanalyze flow relies on this so it
+        // can pre-clear regardless of whether a cached row exists.
+        db.delete_analysis("/never/inserted.pdf").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_stale_purges_only_fallback_stubs() {
+        let db = fresh_db().await;
+        let stub = stub_analysis("/tmp/stub.bin");
+        let real = real_analysis("/tmp/real.pdf");
+
+        db.save_analysis(&stub).await.unwrap();
+        db.save_analysis(&real).await.unwrap();
+
+        let removed = db.delete_stale_fallback_analyses().await.unwrap();
+        assert_eq!(removed, 1, "exactly one stub row should be deleted");
+
+        // Stub is gone.
+        assert!(db.get_analysis(&stub.path).await.unwrap().is_none());
+        // Real row survives.
+        let surviving = db.get_analysis(&real.path).await.unwrap().expect("survived");
+        assert_eq!(surviving.summary, real.summary);
+    }
+
+    #[tokio::test]
+    async fn delete_stale_does_not_match_real_analysis_starting_with_file_type() {
+        // A real analysis that happens to start its summary with "File type: "
+        // but has a non-stub confidence should *survive* the purge — the
+        // pattern requires BOTH the prefix AND confidence <= 0.5.
+        let db = fresh_db().await;
+        let edge_case = FileAnalysis {
+            path: "/tmp/edge.pdf".to_string(),
+            category: "Documents".to_string(),
+            tags: vec![],
+            summary: "File type: text/plain. This is actually a meaningful analysis.".to_string(),
+            confidence: 0.85,
+            extracted_text: None,
+            detected_language: None,
+            metadata: serde_json::json!({}),
+        };
+        db.save_analysis(&edge_case).await.unwrap();
+
+        let removed = db.delete_stale_fallback_analyses().await.unwrap();
+        assert_eq!(removed, 0, "high-confidence row should not be purged");
+        assert!(db.get_analysis(&edge_case.path).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn delete_stale_returns_zero_on_empty_table() {
+        let db = fresh_db().await;
+        let removed = db.delete_stale_fallback_analyses().await.unwrap();
+        assert_eq!(removed, 0);
+    }
+
+    #[tokio::test]
+    async fn delete_stale_purges_multiple_stubs() {
+        let db = fresh_db().await;
+        for i in 0..5 {
+            db.save_analysis(&stub_analysis(&format!("/tmp/stub-{}.bin", i)))
+                .await
+                .unwrap();
+        }
+        // Plus one real row.
+        db.save_analysis(&real_analysis("/tmp/keep.pdf"))
+            .await
+            .unwrap();
+
+        let removed = db.delete_stale_fallback_analyses().await.unwrap();
+        assert_eq!(removed, 5);
+        assert!(db.get_analysis("/tmp/keep.pdf").await.unwrap().is_some());
+    }
+}

@@ -315,93 +315,23 @@ impl FileWatcher {
     }
 
     /// Walk the given directories and add any files we find to the pending
-    /// auto-organization queue, respecting the same filters as the live event
-    /// handler. Walks at most `MAX_INITIAL_SCAN_DEPTH` levels deep and caps the
-    /// total enqueue count so a user pointing at `~/` doesn't queue half a
-    /// million files at once.
+    /// auto-organization queue. Delegates to the free function
+    /// `walk_existing_files_into` so the same logic can be unit-tested without
+    /// constructing a full `FileWatcher` (which needs an `AppHandle`).
     async fn enqueue_existing_files(
         &self,
         directories: &[String],
         config: &WatchModeConfig,
     ) -> usize {
-        const MAX_INITIAL_SCAN_DEPTH: usize = 8;
-        const MAX_INITIAL_SCAN_FILES: usize = 5_000;
-
-        let mut enqueued = 0usize;
-        for dir in directories {
-            let root = Path::new(dir);
-            if !root.exists() || !root.is_dir() {
-                debug!("Initial scan: skipping non-directory {}", dir);
-                continue;
-            }
-
-            let mut stack: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
-            while let Some((current, depth)) = stack.pop() {
-                if enqueued >= MAX_INITIAL_SCAN_FILES {
-                    warn!(
-                        "Initial scan hit cap of {} files; stopping early",
-                        MAX_INITIAL_SCAN_FILES
-                    );
-                    return enqueued;
-                }
-
-                let mut entries = match tokio::fs::read_dir(&current).await {
-                    Ok(e) => e,
-                    Err(e) => {
-                        debug!("Initial scan: cannot read {}: {}", current.display(), e);
-                        continue;
-                    }
-                };
-
-                while let Ok(Some(entry)) = entries.next_entry().await {
-                    let path = entry.path();
-                    let file_type = match entry.file_type().await {
-                        Ok(t) => t,
-                        Err(_) => continue,
-                    };
-
-                    if file_type.is_dir() {
-                        if depth + 1 < MAX_INITIAL_SCAN_DEPTH
-                            && !should_ignore_file_enhanced(&path, config)
-                        {
-                            stack.push((path, depth + 1));
-                        }
-                        continue;
-                    }
-
-                    if !file_type.is_file() || should_ignore_file_enhanced(&path, config) {
-                        continue;
-                    }
-
-                    let metadata = match entry.metadata().await {
-                        Ok(m) => m,
-                        Err(_) => continue,
-                    };
-
-                    let pending = PendingFile {
-                        path: path.clone(),
-                        detected_at: Instant::now(),
-                        file_size: metadata.len(),
-                        last_modified: metadata.modified().unwrap_or(SystemTime::now()),
-                    };
-
-                    self.pending_files
-                        .write()
-                        .await
-                        .insert(path, pending);
-                    enqueued += 1;
-
-                    if enqueued >= MAX_INITIAL_SCAN_FILES {
-                        warn!(
-                            "Initial scan hit cap of {} files; stopping early",
-                            MAX_INITIAL_SCAN_FILES
-                        );
-                        return enqueued;
-                    }
-                }
-            }
-        }
-        enqueued
+        let mut target = self.pending_files.write().await;
+        walk_existing_files_into(
+            directories,
+            config,
+            &mut target,
+            MAX_INITIAL_SCAN_DEPTH,
+            MAX_INITIAL_SCAN_FILES,
+        )
+        .await
     }
 
     /// Get current watch mode configuration
@@ -814,8 +744,94 @@ async fn handle_enhanced_file_event(
     }
 }
 
+/// Default depth/count caps for the initial directory scan. Surfaced as
+/// constants so tests can reference them and so a user pointing at `~/` does
+/// not enqueue half a million files on every watch-mode toggle.
+pub(crate) const MAX_INITIAL_SCAN_DEPTH: usize = 8;
+pub(crate) const MAX_INITIAL_SCAN_FILES: usize = 5_000;
+
+/// Walk `directories` and insert any matching files into `target`, applying
+/// the same filters as the live notify event handler and capping both
+/// recursion depth and total inserted entries. Returns the number of files
+/// actually inserted (which can be < total caller intends if either cap is
+/// hit). Designed to be callable both from the live watcher (`enqueue_existing_files`)
+/// and from unit tests that own a plain `HashMap`.
+pub(crate) async fn walk_existing_files_into(
+    directories: &[String],
+    config: &WatchModeConfig,
+    target: &mut HashMap<PathBuf, PendingFile>,
+    max_depth: usize,
+    max_files: usize,
+) -> usize {
+    let mut enqueued = 0usize;
+    for dir in directories {
+        let root = Path::new(dir);
+        if !root.exists() || !root.is_dir() {
+            debug!("Initial scan: skipping non-directory {}", dir);
+            continue;
+        }
+
+        let mut stack: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
+        while let Some((current, depth)) = stack.pop() {
+            if enqueued >= max_files {
+                warn!("Initial scan hit cap of {} files; stopping early", max_files);
+                return enqueued;
+            }
+
+            let mut entries = match tokio::fs::read_dir(&current).await {
+                Ok(e) => e,
+                Err(e) => {
+                    debug!("Initial scan: cannot read {}: {}", current.display(), e);
+                    continue;
+                }
+            };
+
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                let file_type = match entry.file_type().await {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+
+                if file_type.is_dir() {
+                    if depth + 1 < max_depth && !should_ignore_file_enhanced(&path, config) {
+                        stack.push((path, depth + 1));
+                    }
+                    continue;
+                }
+
+                if !file_type.is_file() || should_ignore_file_enhanced(&path, config) {
+                    continue;
+                }
+
+                let metadata = match entry.metadata().await {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+
+                target.insert(
+                    path.clone(),
+                    PendingFile {
+                        path,
+                        detected_at: Instant::now(),
+                        file_size: metadata.len(),
+                        last_modified: metadata.modified().unwrap_or(SystemTime::now()),
+                    },
+                );
+                enqueued += 1;
+
+                if enqueued >= max_files {
+                    warn!("Initial scan hit cap of {} files; stopping early", max_files);
+                    return enqueued;
+                }
+            }
+        }
+    }
+    enqueued
+}
+
 /// Enhanced file filtering with watch mode configuration
-fn should_ignore_file_enhanced(path: &Path, config: &WatchModeConfig) -> bool {
+pub(crate) fn should_ignore_file_enhanced(path: &Path, config: &WatchModeConfig) -> bool {
     let path_str = path.to_string_lossy().to_lowercase();
 
     // Check excluded extensions
@@ -894,4 +910,198 @@ fn generate_smart_filename_from_analysis(
         .unwrap_or_default()
         .to_string_lossy()
         .to_string()
+}
+
+#[cfg(test)]
+mod walk_tests {
+    //! Unit tests for the free function `walk_existing_files_into`.
+    //! Exercises the initial-scan path that runs when watch mode flips on or
+    //! a new directory is added — the load-bearing piece of the "I turned it
+    //! on and nothing happened" fix. Tests touch only the filesystem and the
+    //! free function, so they need neither an `AppHandle` nor Ollama.
+
+    use super::*;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+    use tokio::io::AsyncWriteExt;
+
+    async fn touch(dir: &std::path::Path, name: &str) -> PathBuf {
+        let p = dir.join(name);
+        let mut f = tokio::fs::File::create(&p).await.unwrap();
+        f.write_all(b"x").await.unwrap();
+        f.flush().await.ok();
+        p
+    }
+
+    fn cfg() -> WatchModeConfig {
+        WatchModeConfig::default()
+    }
+
+    #[tokio::test]
+    async fn enqueues_files_in_flat_directory() {
+        let tmp = TempDir::new().unwrap();
+        touch(tmp.path(), "a.txt").await;
+        touch(tmp.path(), "b.png").await;
+        touch(tmp.path(), "c.pdf").await;
+
+        let mut target = HashMap::new();
+        let dirs = vec![tmp.path().to_string_lossy().to_string()];
+        let n = walk_existing_files_into(&dirs, &cfg(), &mut target, 8, 5_000).await;
+
+        assert_eq!(n, 3, "all three plain files should be enqueued");
+        assert_eq!(target.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn skips_hidden_and_temp_files() {
+        let tmp = TempDir::new().unwrap();
+        touch(tmp.path(), ".hidden").await;
+        touch(tmp.path(), "real.txt").await;
+        touch(tmp.path(), "scratch.tmp").await;
+        touch(tmp.path(), "Thumbs.db").await;
+        touch(tmp.path(), ".DS_Store").await;
+        touch(tmp.path(), "~temp").await;
+
+        let mut target = HashMap::new();
+        let dirs = vec![tmp.path().to_string_lossy().to_string()];
+        let n = walk_existing_files_into(&dirs, &cfg(), &mut target, 8, 5_000).await;
+
+        assert_eq!(n, 1, "only real.txt should survive filtering");
+        assert!(target
+            .keys()
+            .any(|p| p.file_name().and_then(|s| s.to_str()) == Some("real.txt")));
+    }
+
+    #[tokio::test]
+    async fn recurses_into_subdirectories_within_depth_cap() {
+        let tmp = TempDir::new().unwrap();
+        // Build: tmp/lvl1/lvl2/lvl3/leaf.txt
+        let lvl3 = tmp.path().join("lvl1").join("lvl2").join("lvl3");
+        tokio::fs::create_dir_all(&lvl3).await.unwrap();
+        touch(&lvl3, "leaf.txt").await;
+        touch(tmp.path(), "top.txt").await;
+
+        let mut target = HashMap::new();
+        let dirs = vec![tmp.path().to_string_lossy().to_string()];
+        let n = walk_existing_files_into(&dirs, &cfg(), &mut target, 8, 5_000).await;
+        assert_eq!(n, 2, "both top.txt and leaf.txt should be enqueued");
+    }
+
+    #[tokio::test]
+    async fn respects_depth_cap() {
+        let tmp = TempDir::new().unwrap();
+        // Chain 5 deep: root/d1/d2/d3/d4 each with one file
+        let mut cur = tmp.path().to_path_buf();
+        touch(&cur, "f0.txt").await;
+        for i in 1..=4 {
+            cur = cur.join(format!("d{}", i));
+            tokio::fs::create_dir(&cur).await.unwrap();
+            touch(&cur, &format!("f{}.txt", i)).await;
+        }
+
+        let mut target = HashMap::new();
+        let dirs = vec![tmp.path().to_string_lossy().to_string()];
+        // Cap depth at 2 — only files at depth 0 and 1 should be reached.
+        // Depth 0 = root (f0.txt). Depth 1 = root/d1 (f1.txt). f2.txt is at
+        // depth 2 which is excluded by `depth + 1 < max_depth` (the directory
+        // d2 would be at depth 2; pushing it requires depth+1=2 < max_depth=2,
+        // which is false, so d2 is not entered).
+        let n = walk_existing_files_into(&dirs, &cfg(), &mut target, 2, 5_000).await;
+        assert_eq!(n, 2, "depth cap of 2 should yield f0.txt and f1.txt only");
+        let names: std::collections::HashSet<_> = target
+            .keys()
+            .filter_map(|p| p.file_name().and_then(|s| s.to_str()).map(|s| s.to_string()))
+            .collect();
+        assert!(names.contains("f0.txt"));
+        assert!(names.contains("f1.txt"));
+        assert!(!names.contains("f2.txt"));
+    }
+
+    #[tokio::test]
+    async fn respects_file_count_cap() {
+        let tmp = TempDir::new().unwrap();
+        for i in 0..50 {
+            touch(tmp.path(), &format!("file_{:03}.txt", i)).await;
+        }
+
+        let mut target = HashMap::new();
+        let dirs = vec![tmp.path().to_string_lossy().to_string()];
+        let n = walk_existing_files_into(&dirs, &cfg(), &mut target, 8, 10).await;
+        assert_eq!(n, 10, "scan must stop at the count cap");
+        assert_eq!(target.len(), 10);
+    }
+
+    #[tokio::test]
+    async fn nonexistent_directory_is_skipped_silently() {
+        let mut target = HashMap::new();
+        let dirs = vec![
+            "/nonexistent/path/abc123".to_string(),
+            "/another/missing/one".to_string(),
+        ];
+        let n = walk_existing_files_into(&dirs, &cfg(), &mut target, 8, 5_000).await;
+        assert_eq!(n, 0);
+        assert!(target.is_empty());
+    }
+
+    #[tokio::test]
+    async fn excluded_extensions_from_config_are_filtered() {
+        let tmp = TempDir::new().unwrap();
+        touch(tmp.path(), "doc.txt").await;
+        touch(tmp.path(), "trace.log").await;
+        touch(tmp.path(), "data.csv").await;
+
+        let mut c = cfg();
+        c.excluded_extensions = vec![".log".to_string(), ".csv".to_string()];
+
+        let mut target = HashMap::new();
+        let dirs = vec![tmp.path().to_string_lossy().to_string()];
+        let n = walk_existing_files_into(&dirs, &c, &mut target, 8, 5_000).await;
+        assert_eq!(n, 1, "only doc.txt should survive the extension filter");
+        assert!(target
+            .keys()
+            .any(|p| p.file_name().and_then(|s| s.to_str()) == Some("doc.txt")));
+    }
+
+    #[tokio::test]
+    async fn excluded_directories_skip_whole_subtrees() {
+        let tmp = TempDir::new().unwrap();
+        let git_dir = tmp.path().join(".git");
+        tokio::fs::create_dir(&git_dir).await.unwrap();
+        touch(&git_dir, "HEAD").await;
+        touch(&git_dir, "config").await;
+        touch(tmp.path(), "src.rs").await;
+
+        let mut target = HashMap::new();
+        let dirs = vec![tmp.path().to_string_lossy().to_string()];
+        let n = walk_existing_files_into(&dirs, &cfg(), &mut target, 8, 5_000).await;
+        // The default WatchModeConfig excludes ".git" — the two files inside
+        // it should be skipped, leaving only src.rs.
+        assert_eq!(n, 1, ".git contents should be skipped");
+        assert!(target
+            .keys()
+            .any(|p| p.file_name().and_then(|s| s.to_str()) == Some("src.rs")));
+    }
+
+    #[tokio::test]
+    async fn multiple_directories_are_all_walked() {
+        let tmp1 = TempDir::new().unwrap();
+        let tmp2 = TempDir::new().unwrap();
+        touch(tmp1.path(), "from_first.txt").await;
+        touch(tmp2.path(), "from_second.txt").await;
+
+        let mut target = HashMap::new();
+        let dirs = vec![
+            tmp1.path().to_string_lossy().to_string(),
+            tmp2.path().to_string_lossy().to_string(),
+        ];
+        let n = walk_existing_files_into(&dirs, &cfg(), &mut target, 8, 5_000).await;
+        assert_eq!(n, 2);
+        let names: std::collections::HashSet<_> = target
+            .keys()
+            .filter_map(|p| p.file_name().and_then(|s| s.to_str()).map(|s| s.to_string()))
+            .collect();
+        assert!(names.contains("from_first.txt"));
+        assert!(names.contains("from_second.txt"));
+    }
 }
