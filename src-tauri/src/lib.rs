@@ -404,6 +404,8 @@ pub fn run() -> crate::error::Result<()> {
             commands::ai::get_search_history,
             commands::ai::clear_search_history,
             commands::ai::batch_analyze_files,
+            commands::ai::reanalyze_files,
+            commands::ai::clear_stale_analyses,
             commands::ai::get_analysis_history,
 
             // AI Status commands

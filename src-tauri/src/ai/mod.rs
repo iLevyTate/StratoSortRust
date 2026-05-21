@@ -38,7 +38,14 @@ impl AiService {
                     tracing::warn!("Ollama host is empty. Using fallback mode.");
                     (None, AiProvider::Fallback)
                 } else {
-                    match ollama::OllamaClient::new(&config.ollama_host).await {
+                    match ollama::OllamaClient::new_with_models(
+                        &config.ollama_host,
+                        &config.ollama_model,
+                        &config.ollama_vision_model,
+                        &config.ollama_embedding_model,
+                    )
+                    .await
+                    {
                         Ok(client) => {
                             tracing::info!(
                                 "Ollama client initialized successfully with host: {}",
@@ -81,10 +88,17 @@ impl AiService {
             }
         };
 
-        // Check if we need to reinitialize the client
+        // Check if we need to reinitialize the client. We reinit on transitions
+        // into Ollama mode, on host changes, AND on any model name change — the
+        // model names are baked into the client at construction time, so a
+        // settings change to (e.g.) the vision model would otherwise be ignored.
+        let models_changed = old_config.ollama_model != config.ollama_model
+            || old_config.ollama_vision_model != config.ollama_vision_model
+            || old_config.ollama_embedding_model != config.ollama_embedding_model;
         let should_reinit = matches!(new_provider, AiProvider::Ollama)
             && (!matches!(old_provider, AiProvider::Ollama)
-                || old_config.ollama_host != config.ollama_host);
+                || old_config.ollama_host != config.ollama_host
+                || models_changed);
 
         // Update config first
         *self.config.write() = config.clone();
@@ -98,7 +112,14 @@ impl AiService {
                 *self.provider.write() = AiProvider::Fallback;
                 None
             } else {
-                match ollama::OllamaClient::new(&config.ollama_host).await {
+                match ollama::OllamaClient::new_with_models(
+                    &config.ollama_host,
+                    &config.ollama_model,
+                    &config.ollama_vision_model,
+                    &config.ollama_embedding_model,
+                )
+                .await
+                {
                     Ok(client) => {
                         tracing::info!(
                             "Ollama client reinitialized successfully with host: {}",
@@ -651,7 +672,23 @@ impl AiService {
     pub async fn reconnect_ollama(&self, host: &str) -> Result<AiServiceStatus> {
         tracing::info!("Attempting to connect to Ollama at: {}", host);
 
-        match ollama::OllamaClient::new(host).await {
+        let (text_model, vision_model, embedding_model) = {
+            let cfg = self.config.read();
+            (
+                cfg.ollama_model.clone(),
+                cfg.ollama_vision_model.clone(),
+                cfg.ollama_embedding_model.clone(),
+            )
+        };
+
+        match ollama::OllamaClient::new_with_models(
+            host,
+            &text_model,
+            &vision_model,
+            &embedding_model,
+        )
+        .await
+        {
             Ok(client) => {
                 // Test the connection
                 match client.health_check().await {
