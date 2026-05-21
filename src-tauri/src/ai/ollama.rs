@@ -171,6 +171,53 @@ fn extract_balanced(text: &str, open: u8, close: u8) -> Option<&str> {
     None
 }
 
+/// Tolerantly parse a vision model's response into the fields the dispatcher
+/// expects. Vision models (especially llava variants on local hardware) routinely:
+///   * wrap output in ```` ```json ... ``` ```` fences,
+///   * prefix the JSON with "Here is the analysis:" or similar prose,
+///   * emit only a subset of fields, or
+///   * return free-form prose with no JSON at all when confused.
+///
+/// Strict `serde_json::from_str` fails on every one of those and used to take
+/// down the whole vision pipeline. This helper:
+///   1. Tries to extract the first balanced JSON object via `extract_json_object`.
+///   2. Deserializes it into `VisionAnalysisResponse` (whose fields are
+///      `#[serde(default)]`, so missing keys don't kill the parse).
+///   3. If steps 1 or 2 fail, synthesizes a low-confidence "Images" result
+///      using the raw response as a summary so the file is still recorded.
+///   4. Clamps `confidence` to [0.0, 1.0] and forces a non-empty `category`.
+///
+/// Returns `(category, confidence, VisionAnalysisResponse)` — `category` and
+/// `confidence` are pre-normalized; the rest is in the struct.
+pub(crate) fn parse_vision_response(
+    response: &str,
+) -> (String, f32, VisionAnalysisResponse) {
+    let analysis = extract_json_object(response)
+        .and_then(|json| serde_json::from_str::<VisionAnalysisResponse>(json).ok())
+        .unwrap_or_else(|| {
+            warn!(
+                "Vision response was not valid JSON, synthesizing fallback. Response: {}",
+                response.chars().take(500).collect::<String>()
+            );
+            VisionAnalysisResponse {
+                category: "Images".to_string(),
+                tags: vec!["image".to_string()],
+                summary: response.chars().take(500).collect(),
+                confidence: 0.4,
+                ..Default::default()
+            }
+        });
+
+    let confidence = analysis.confidence.clamp(0.0, 1.0);
+    let category = if analysis.category.is_empty() {
+        "Images".to_string()
+    } else {
+        analysis.category.clone()
+    };
+
+    (category, confidence, analysis)
+}
+
 /// Case-insensitive string replacement
 fn replace_case_insensitive(text: &str, pattern: &str, replacement: &str) -> String {
     let pattern_lower = pattern.to_lowercase();
@@ -823,35 +870,7 @@ Respond ONLY with valid JSON, no explanations."#,
             .generate_vision_completion(&prompt, &base64_image)
             .await?;
 
-        // Parse JSON response tolerantly: vision models routinely wrap their
-        // JSON in markdown fences or prefix it with prose, and serde_json's
-        // strict parse fails on either. Extract the first balanced { ... }
-        // block; if that still fails to deserialize, synthesize an analysis
-        // from the raw response so the file is still classified instead of
-        // erroring out the entire pipeline.
-        let analysis: VisionAnalysisResponse = extract_json_object(&response)
-            .and_then(|json| serde_json::from_str(json).ok())
-            .unwrap_or_else(|| {
-                warn!(
-                    "Vision response was not valid JSON, synthesizing fallback from text. Response: {}",
-                    response.chars().take(500).collect::<String>()
-                );
-                VisionAnalysisResponse {
-                    category: "Images".to_string(),
-                    tags: vec!["image".to_string()],
-                    summary: response.chars().take(500).collect(),
-                    confidence: 0.4,
-                    ..Default::default()
-                }
-            });
-
-        // Normalize confidence and ensure category is non-empty.
-        let confidence = analysis.confidence.clamp(0.0, 1.0);
-        let category = if analysis.category.is_empty() {
-            "Images".to_string()
-        } else {
-            analysis.category
-        };
+        let (category, confidence, analysis) = parse_vision_response(&response);
 
         // Convert to FileAnalysis
         Ok(FileAnalysis {
@@ -1242,21 +1261,21 @@ struct SuggestionResponse {
 }
 
 #[derive(Debug, Deserialize, Default)]
-struct VisionAnalysisResponse {
+pub(crate) struct VisionAnalysisResponse {
     #[serde(default)]
-    category: String,
+    pub(crate) category: String,
     #[serde(default)]
-    tags: Vec<String>,
+    pub(crate) tags: Vec<String>,
     #[serde(default, alias = "description", alias = "content_summary")]
-    summary: String,
+    pub(crate) summary: String,
     #[serde(default)]
-    confidence: f32,
+    pub(crate) confidence: f32,
     #[serde(default)]
-    detected_objects: Vec<String>,
+    pub(crate) detected_objects: Vec<String>,
     #[serde(default)]
-    scene_type: String,
+    pub(crate) scene_type: String,
     #[serde(default)]
-    colors: Vec<String>,
+    pub(crate) colors: Vec<String>,
     #[serde(default, alias = "text", alias = "ocr_text")]
-    text_detected: String,
+    pub(crate) text_detected: String,
 }
