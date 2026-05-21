@@ -6,7 +6,33 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::State;
-use tracing::info;
+use tracing::{info, warn};
+
+/// Mirror watch-mode runtime state into the persisted Config so the user's
+/// choice survives a restart. Mutating the in-memory FileWatcher config without
+/// this leaves Config out of sync — on the next boot the watcher would start
+/// disabled and empty even though the user had it on. Failures are logged but
+/// not propagated; the runtime change still took effect for this session.
+fn persist_watch_state(
+    state: &State<'_, Arc<AppState>>,
+    enabled: Option<bool>,
+    directories: Option<Vec<String>>,
+) {
+    let snapshot = {
+        let mut cfg = state.config.write();
+        if let Some(enabled) = enabled {
+            cfg.watch_folders = enabled;
+        }
+        if let Some(dirs) = directories {
+            cfg.watch_paths = dirs;
+        }
+        cfg.clone()
+    };
+
+    if let Err(e) = snapshot.save(&state.handle) {
+        warn!("Failed to persist watch-mode config: {}", e);
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WatchModeStatus {
@@ -69,7 +95,10 @@ pub async fn configure_watch_mode(
     };
 
     if let Some(watcher_arc) = watcher_arc {
+        let enabled = config.enabled;
+        let directories = config.watch_directories.clone();
         watcher_arc.configure_watch_mode(config).await?;
+        persist_watch_state(&state, Some(enabled), Some(directories));
     }
     Ok(())
 }
@@ -88,9 +117,10 @@ pub async fn enable_watch_mode(
     if let Some(watcher_arc) = watcher_arc {
         let mut config = watcher_arc.get_watch_config().await;
         config.enabled = true;
-        config.watch_directories = directories;
+        config.watch_directories = directories.clone();
 
         watcher_arc.configure_watch_mode(config).await?;
+        persist_watch_state(&state, Some(true), Some(directories));
         info!("Watch mode enabled");
     }
     Ok(())
@@ -109,6 +139,7 @@ pub async fn disable_watch_mode(state: State<'_, Arc<AppState>>) -> Result<()> {
         config.enabled = false;
 
         watcher_arc.configure_watch_mode(config).await?;
+        persist_watch_state(&state, Some(false), None);
         info!("Watch mode disabled");
     }
     Ok(())
@@ -256,7 +287,9 @@ pub async fn add_watch_directory(
 
         if !config.watch_directories.contains(&directory_path) {
             config.watch_directories.push(directory_path.clone());
+            let new_dirs = config.watch_directories.clone();
             watcher_arc.configure_watch_mode(config).await?;
+            persist_watch_state(&state, None, Some(new_dirs));
             info!("Added directory to watch list: {}", directory_path);
         }
     }
@@ -281,7 +314,9 @@ pub async fn remove_watch_directory(
         config
             .watch_directories
             .retain(|dir| dir != &directory_path);
+        let new_dirs = config.watch_directories.clone();
         watcher_arc.configure_watch_mode(config).await?;
+        persist_watch_state(&state, None, Some(new_dirs));
         info!("Removed directory from watch list: {}", directory_path);
     }
 
