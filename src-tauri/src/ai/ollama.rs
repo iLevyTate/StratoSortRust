@@ -122,6 +122,55 @@ pub(crate) fn sanitize_prompt_content(input: &str) -> Result<String> {
     Ok(result)
 }
 
+/// Extracts the first complete JSON object from a noisy LLM response.
+///
+/// Local vision/text models routinely wrap their JSON in ```` ```json ... ``` ````
+/// fences or sandwich it between explanatory prose. Strict `serde_json::from_str`
+/// fails on either. This walks the string, finds the first `{`, then scans
+/// forward tracking brace depth (and skipping over string literals) until it
+/// finds the matching `}`. Returns the substring if found.
+pub(crate) fn extract_json_object(text: &str) -> Option<&str> {
+    extract_balanced(text, b'{', b'}')
+}
+
+/// Same as `extract_json_object` but for JSON arrays. Used for endpoints that
+/// return a `[ ... ]` list (e.g. organization suggestions).
+pub(crate) fn extract_json_array(text: &str) -> Option<&str> {
+    extract_balanced(text, b'[', b']')
+}
+
+fn extract_balanced(text: &str, open: u8, close: u8) -> Option<&str> {
+    let bytes = text.as_bytes();
+    let start = bytes.iter().position(|&b| b == open)?;
+
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape = false;
+    for (i, &b) in bytes[start..].iter().enumerate() {
+        if in_string {
+            if escape {
+                escape = false;
+            } else if b == b'\\' {
+                escape = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if b == b'"' {
+            in_string = true;
+        } else if b == open {
+            depth += 1;
+        } else if b == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(&text[start..=start + i]);
+            }
+        }
+    }
+    None
+}
+
 /// Case-insensitive string replacement
 fn replace_case_insensitive(text: &str, pattern: &str, replacement: &str) -> String {
     let pattern_lower = pattern.to_lowercase();
@@ -173,9 +222,33 @@ impl Default for ConnectionHealth {
     }
 }
 
+/// Default model names used when the caller does not provide one
+pub const DEFAULT_TEXT_MODEL: &str = "llama3.2:3b";
+pub const DEFAULT_VISION_MODEL: &str = "llava:7b";
+pub const DEFAULT_EMBEDDING_MODEL: &str = "nomic-embed-text";
+
 impl OllamaClient {
-    /// Creates a new OllamaClient with robust connection handling
+    /// Creates a new OllamaClient with default model names.
+    /// Prefer `new_with_models` so user-configured models are honored.
     pub async fn new(host: &str) -> Result<Self> {
+        Self::new_with_models(
+            host,
+            DEFAULT_TEXT_MODEL,
+            DEFAULT_VISION_MODEL,
+            DEFAULT_EMBEDDING_MODEL,
+        )
+        .await
+    }
+
+    /// Creates a new OllamaClient with explicit model names.
+    /// Empty model names fall back to the defaults so a partially-populated
+    /// `Config` cannot silently break inference.
+    pub async fn new_with_models(
+        host: &str,
+        text_model: &str,
+        vision_model: &str,
+        embedding_model: &str,
+    ) -> Result<Self> {
         // Validate input
         if host.is_empty() {
             return Err(AppError::InvalidInput {
@@ -255,11 +328,32 @@ impl OllamaClient {
             }
         }
 
+        let resolved_text_model = if text_model.is_empty() {
+            DEFAULT_TEXT_MODEL.to_string()
+        } else {
+            text_model.to_string()
+        };
+        let resolved_vision_model = if vision_model.is_empty() {
+            DEFAULT_VISION_MODEL.to_string()
+        } else {
+            vision_model.to_string()
+        };
+        let resolved_embedding_model = if embedding_model.is_empty() {
+            DEFAULT_EMBEDDING_MODEL.to_string()
+        } else {
+            embedding_model.to_string()
+        };
+
+        info!(
+            "OllamaClient models: text={} vision={} embedding={}",
+            resolved_text_model, resolved_vision_model, resolved_embedding_model
+        );
+
         let ollama_client = Self {
             client,
-            text_model: "llama3.2:3b".to_string(),
-            vision_model: "llava:7b".to_string(),
-            embedding_model: "nomic-embed-text".to_string(),
+            text_model: resolved_text_model,
+            vision_model: resolved_vision_model,
+            embedding_model: resolved_embedding_model,
             max_retries: 3,
             initial_retry_delay: Duration::from_millis(100),
             connection_health: Arc::new(RwLock::new(ConnectionHealth {
@@ -594,8 +688,10 @@ Analyze the content above and respond with ONLY this JSON structure (no addition
         // Get completion from text model
         let response = self.generate_completion(&prompt, &self.text_model).await?;
 
-        // Try to parse the JSON response
-        match serde_json::from_str::<FileAnalysis>(&response) {
+        // Try to parse the JSON response. Strip prose/markdown fences first;
+        // fall back to the raw response if no `{...}` block is found.
+        let json_candidate = extract_json_object(&response).unwrap_or(response.as_str());
+        match serde_json::from_str::<FileAnalysis>(json_candidate) {
             Ok(mut analysis) => {
                 // Ensure confidence is in valid range
                 if analysis.confidence < 0.0 {
@@ -727,24 +823,43 @@ Respond ONLY with valid JSON, no explanations."#,
             .generate_vision_completion(&prompt, &base64_image)
             .await?;
 
-        // Parse JSON response
-        let analysis: VisionAnalysisResponse = serde_json::from_str(&response).map_err(|e| {
-            error!(
-                "Failed to parse vision analysis JSON: {} - Response: {}",
-                e, response
-            );
-            AppError::ParseError {
-                message: format!("Invalid JSON response from vision model: {}", e),
-            }
-        })?;
+        // Parse JSON response tolerantly: vision models routinely wrap their
+        // JSON in markdown fences or prefix it with prose, and serde_json's
+        // strict parse fails on either. Extract the first balanced { ... }
+        // block; if that still fails to deserialize, synthesize an analysis
+        // from the raw response so the file is still classified instead of
+        // erroring out the entire pipeline.
+        let analysis: VisionAnalysisResponse = extract_json_object(&response)
+            .and_then(|json| serde_json::from_str(json).ok())
+            .unwrap_or_else(|| {
+                warn!(
+                    "Vision response was not valid JSON, synthesizing fallback from text. Response: {}",
+                    response.chars().take(500).collect::<String>()
+                );
+                VisionAnalysisResponse {
+                    category: "Images".to_string(),
+                    tags: vec!["image".to_string()],
+                    summary: response.chars().take(500).collect(),
+                    confidence: 0.4,
+                    ..Default::default()
+                }
+            });
+
+        // Normalize confidence and ensure category is non-empty.
+        let confidence = analysis.confidence.clamp(0.0, 1.0);
+        let category = if analysis.category.is_empty() {
+            "Images".to_string()
+        } else {
+            analysis.category
+        };
 
         // Convert to FileAnalysis
         Ok(FileAnalysis {
             path: image_path.to_string(),
-            category: analysis.category,
+            category,
             tags: analysis.tags,
             summary: analysis.summary,
-            confidence: analysis.confidence,
+            confidence,
             extracted_text: if analysis.text_detected.is_empty() {
                 None
             } else {
@@ -792,14 +907,21 @@ Respond ONLY with valid JSON, no explanations."#,
                 }
             });
 
-            // Make HTTP request directly since ollama-rs doesn't support vision yet
+            // Make HTTP request directly since ollama-rs doesn't support vision yet.
+            // Previously this used `format!("http://{}/api/generate", self.client.uri())`,
+            // which produced "http://http://localhost:11434/..." when uri() already
+            // contained a scheme — vision requests then failed silently.
+            let base = self.client.uri();
+            let base = base.trim_end_matches('/');
+            let url = if base.starts_with("http://") || base.starts_with("https://") {
+                format!("{}/api/generate", base)
+            } else {
+                format!("http://{}/api/generate", base)
+            };
             let client = reqwest::Client::new();
             let response_result = timeout(
                 Duration::from_secs(60), // Vision analysis can take longer
-                client
-                    .post(format!("http://{}/api/generate", self.client.uri()))
-                    .json(&request)
-                    .send(),
+                client.post(&url).json(&request).send(),
             )
             .await;
 
@@ -913,14 +1035,19 @@ Respond ONLY with valid JSON, no explanations."#,
         // Sanitize response to prevent XSS or injection through AI output
         let sanitized_response = sanitize_prompt_content(&response)?;
 
-        // Parse JSON response
-        let analysis: AnalysisResponse =
-            serde_json::from_str(&sanitized_response).map_err(|e| {
-                error!("Failed to parse AI response: {}", e);
-                AppError::ParseError {
-                    message: "Invalid AI response format".to_string(),
-                }
-            })?;
+        // Parse JSON response tolerantly — strip prose/fences then deserialize.
+        let json_candidate = extract_json_object(&sanitized_response)
+            .unwrap_or(sanitized_response.as_str());
+        let analysis: AnalysisResponse = serde_json::from_str(json_candidate).map_err(|e| {
+            error!(
+                "Failed to parse AI response: {} - Response: {}",
+                e,
+                sanitized_response.chars().take(300).collect::<String>()
+            );
+            AppError::ParseError {
+                message: "Invalid AI response format".to_string(),
+            }
+        })?;
 
         // Validate analysis content
         if analysis.category.len() > 100
@@ -1036,9 +1163,14 @@ Respond with ONLY a JSON array (no additional text):
 
         let response = self.generate_completion(&prompt, &self.text_model).await?;
 
-        let suggestions: Vec<SuggestionResponse> =
-            serde_json::from_str(&response).map_err(|e| {
-                error!("Failed to parse suggestions: {}", e);
+        let json_candidate = extract_json_array(&response).unwrap_or(response.as_str());
+        let suggestions: Vec<SuggestionResponse> = serde_json::from_str(json_candidate)
+            .map_err(|e| {
+                error!(
+                    "Failed to parse suggestions: {} - Response: {}",
+                    e,
+                    response.chars().take(300).collect::<String>()
+                );
                 AppError::ParseError {
                     message: "Invalid suggestion format".to_string(),
                 }
@@ -1069,7 +1201,11 @@ pub async fn setup_ollama() -> Result<()> {
     // Check for required models
     let model_names = client.list_models().await?;
 
-    let required_models = vec!["llama3.2:3b", "nomic-embed-text"];
+    let required_models = vec![
+        DEFAULT_TEXT_MODEL,
+        DEFAULT_VISION_MODEL,
+        DEFAULT_EMBEDDING_MODEL,
+    ];
 
     for model in required_models {
         if !model_names.iter().any(|m| m.starts_with(model)) {
@@ -1105,14 +1241,22 @@ struct SuggestionResponse {
     confidence: f32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 struct VisionAnalysisResponse {
+    #[serde(default)]
     category: String,
+    #[serde(default)]
     tags: Vec<String>,
+    #[serde(default, alias = "description", alias = "content_summary")]
     summary: String,
+    #[serde(default)]
     confidence: f32,
+    #[serde(default)]
     detected_objects: Vec<String>,
+    #[serde(default)]
     scene_type: String,
+    #[serde(default)]
     colors: Vec<String>,
+    #[serde(default, alias = "text", alias = "ocr_text")]
     text_detected: String,
 }

@@ -162,7 +162,7 @@ regex = "1"  # Regular expressions
 base64 = "0.22"  # Base64 encoding for backup data
 
 [features]
-default = ["custom-protocol", "sysinfo"]
+default = ["custom-protocol", "sysinfo", "documents-core", "pulldown-cmark"]
 custom-protocol = ["tauri/custom-protocol"]
 rusqlite-init = []  # Alternative rusqlite initialization method
 
