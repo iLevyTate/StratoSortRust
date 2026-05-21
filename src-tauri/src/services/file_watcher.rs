@@ -546,6 +546,18 @@ impl FileWatcher {
     ) -> Result<()> {
         let path_str = file_path.to_string_lossy().to_string();
 
+        // Honor the user's `auto_analyze_on_add` setting. When false, we still
+        // surface the file to the UI (it stays in the pending queue / emits the
+        // file-created event) but skip the AI analysis + auto-move entirely —
+        // the user has opted out of having models touch newly-added files.
+        if !state.config.read().auto_analyze_on_add {
+            debug!(
+                "auto_analyze_on_add is disabled; skipping analysis for {}",
+                path_str
+            );
+            return Ok(());
+        }
+
         // 1. Analyze file with AI (if not already cached). Dispatches by file
         // type so images go to vision, documents get text-extracted, and every
         // analyzed file gets an embedding stored for semantic search.
