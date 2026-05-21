@@ -402,6 +402,32 @@ impl Database {
         Ok(())
     }
 
+    /// Delete the analysis row for a single file path. Used by re-analyze so
+    /// the next analysis call writes fresh data instead of being short-circuited
+    /// by the cached row.
+    pub async fn delete_analysis(&self, path: &str) -> Result<()> {
+        sqlx::query("DELETE FROM file_analysis WHERE path = ?")
+            .bind(path)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Delete cached analysis rows whose contents look like fallback stubs
+    /// generated when no real model was reached. Identified by the
+    /// `fallback_analysis_with_path` signature: summary begins with
+    /// "File type: " and confidence is the stub's default 0.5. Returns the
+    /// number of rows deleted.
+    pub async fn delete_stale_fallback_analyses(&self) -> Result<u64> {
+        let result = sqlx::query(
+            "DELETE FROM file_analysis \
+             WHERE summary LIKE 'File type: %' AND confidence <= 0.5",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn get_analysis(&self, path: &str) -> Result<Option<FileAnalysis>> {
         let row = sqlx::query(
             r#"

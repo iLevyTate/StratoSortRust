@@ -244,12 +244,164 @@ impl FileWatcher {
         Ok(())
     }
 
-    /// Configure watch mode settings
+    /// Configure watch mode settings.
+    ///
+    /// Beyond storing the new config, this also reconciles the notify watcher's
+    /// registered directories with the new list (new dirs get registered, removed
+    /// dirs get unregistered) and — if the config transitions from disabled to
+    /// enabled, or watches a new directory — enqueues any *existing* files in
+    /// those directories so the AI pipeline processes them on next tick. Without
+    /// this, a user who turns on watch mode after dropping files into the folder
+    /// would never see anything happen, because notify only fires on future
+    /// Create events.
     pub async fn configure_watch_mode(&self, config: WatchModeConfig) -> Result<()> {
-        let mut current_config = self.watch_config.write().await;
-        *current_config = config;
+        let previous = {
+            let guard = self.watch_config.read().await;
+            guard.clone()
+        };
+
+        // Compute directory diff before we swap the config.
+        let previous_dirs: std::collections::HashSet<String> =
+            previous.watch_directories.iter().cloned().collect();
+        let new_dirs: std::collections::HashSet<String> =
+            config.watch_directories.iter().cloned().collect();
+        let added_dirs: Vec<String> = new_dirs.difference(&previous_dirs).cloned().collect();
+        let removed_dirs: Vec<String> = previous_dirs.difference(&new_dirs).cloned().collect();
+
+        let just_enabled = !previous.enabled && config.enabled;
+
+        // Capture excluded extensions/dirs for the scan filter while we still
+        // own the new config (the swap below moves it).
+        let scan_config = config.clone();
+
+        {
+            let mut current_config = self.watch_config.write().await;
+            *current_config = config;
+        }
+
+        // Register newly-added directories with the notify watcher.
+        for dir in &added_dirs {
+            if let Err(e) = self.add_watch_path(dir).await {
+                warn!("Failed to register watch path {}: {}", dir, e);
+            }
+        }
+        for dir in &removed_dirs {
+            if let Err(e) = self.remove_watch_path(dir).await {
+                warn!("Failed to unregister watch path {}: {}", dir, e);
+            }
+        }
+
+        // Enqueue existing files for any directory the user just started
+        // watching, or every watched directory if watch mode was just toggled on.
+        if scan_config.enabled {
+            let to_scan: Vec<String> = if just_enabled {
+                scan_config.watch_directories.clone()
+            } else {
+                added_dirs.clone()
+            };
+            if !to_scan.is_empty() {
+                info!(
+                    "Initial scan: enqueueing existing files from {} director{}",
+                    to_scan.len(),
+                    if to_scan.len() == 1 { "y" } else { "ies" }
+                );
+                let enqueued = self.enqueue_existing_files(&to_scan, &scan_config).await;
+                info!("Initial scan complete: {} files enqueued", enqueued);
+            }
+        }
+
         info!("Watch mode configuration updated");
         Ok(())
+    }
+
+    /// Walk the given directories and add any files we find to the pending
+    /// auto-organization queue, respecting the same filters as the live event
+    /// handler. Walks at most `MAX_INITIAL_SCAN_DEPTH` levels deep and caps the
+    /// total enqueue count so a user pointing at `~/` doesn't queue half a
+    /// million files at once.
+    async fn enqueue_existing_files(
+        &self,
+        directories: &[String],
+        config: &WatchModeConfig,
+    ) -> usize {
+        const MAX_INITIAL_SCAN_DEPTH: usize = 8;
+        const MAX_INITIAL_SCAN_FILES: usize = 5_000;
+
+        let mut enqueued = 0usize;
+        for dir in directories {
+            let root = Path::new(dir);
+            if !root.exists() || !root.is_dir() {
+                debug!("Initial scan: skipping non-directory {}", dir);
+                continue;
+            }
+
+            let mut stack: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
+            while let Some((current, depth)) = stack.pop() {
+                if enqueued >= MAX_INITIAL_SCAN_FILES {
+                    warn!(
+                        "Initial scan hit cap of {} files; stopping early",
+                        MAX_INITIAL_SCAN_FILES
+                    );
+                    return enqueued;
+                }
+
+                let mut entries = match tokio::fs::read_dir(&current).await {
+                    Ok(e) => e,
+                    Err(e) => {
+                        debug!("Initial scan: cannot read {}: {}", current.display(), e);
+                        continue;
+                    }
+                };
+
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    let path = entry.path();
+                    let file_type = match entry.file_type().await {
+                        Ok(t) => t,
+                        Err(_) => continue,
+                    };
+
+                    if file_type.is_dir() {
+                        if depth + 1 < MAX_INITIAL_SCAN_DEPTH
+                            && !should_ignore_file_enhanced(&path, config)
+                        {
+                            stack.push((path, depth + 1));
+                        }
+                        continue;
+                    }
+
+                    if !file_type.is_file() || should_ignore_file_enhanced(&path, config) {
+                        continue;
+                    }
+
+                    let metadata = match entry.metadata().await {
+                        Ok(m) => m,
+                        Err(_) => continue,
+                    };
+
+                    let pending = PendingFile {
+                        path: path.clone(),
+                        detected_at: Instant::now(),
+                        file_size: metadata.len(),
+                        last_modified: metadata.modified().unwrap_or(SystemTime::now()),
+                    };
+
+                    self.pending_files
+                        .write()
+                        .await
+                        .insert(path, pending);
+                    enqueued += 1;
+
+                    if enqueued >= MAX_INITIAL_SCAN_FILES {
+                        warn!(
+                            "Initial scan hit cap of {} files; stopping early",
+                            MAX_INITIAL_SCAN_FILES
+                        );
+                        return enqueued;
+                    }
+                }
+            }
+        }
+        enqueued
     }
 
     /// Get current watch mode configuration
