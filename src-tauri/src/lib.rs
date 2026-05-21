@@ -210,13 +210,24 @@ pub fn run() -> crate::error::Result<()> {
             // Initialize background services
             initialize_services(app, state.clone())?;
 
-            // Initialize file watcher with proper deadlock prevention
-            if config.watch_folders {
+            // Initialize file watcher with proper deadlock prevention.
+            //
+            // We always create + start the watcher (even when watch mode is off
+            // in config) so the runtime is available the moment the user
+            // toggles watch mode on from the UI — without this, the
+            // watch-mode commands would all silently no-op until the next
+            // restart. Whether files actually get processed is gated by
+            // `WatchModeConfig.enabled` inside the watcher; we seed that from
+            // the persisted Config so previously-saved settings survive
+            // restarts.
+            {
                 info!("Initializing file watcher...");
 
                 // Use a separate task to avoid blocking the setup and prevent deadlocks
                 let state_for_watcher = state.clone();
                 let handle_for_watcher = handle.clone();
+                let watch_enabled_at_boot = config.watch_folders;
+                let watch_paths_at_boot = config.watch_paths.clone();
 
                 async_runtime::spawn(async move {
                     // Wait for app to be fully initialized to prevent race conditions
@@ -236,10 +247,26 @@ pub fn run() -> crate::error::Result<()> {
                             }
 
                             // Start the watcher with timeout protection
-                            tokio::time::timeout(
+                            let start_result = tokio::time::timeout(
                                 tokio::time::Duration::from_secs(5),
                                 file_watcher.start()
-                            ).await
+                            ).await;
+
+                            // Bridge persisted Config -> WatchModeConfig so the
+                            // user's previous settings take effect on startup.
+                            // configure_watch_mode also registers the
+                            // directories with notify and triggers an initial
+                            // scan of existing files.
+                            if let Ok(Ok(_)) = &start_result {
+                                let mut wm_config = file_watcher.get_watch_config().await;
+                                wm_config.enabled = watch_enabled_at_boot;
+                                wm_config.watch_directories = watch_paths_at_boot;
+                                if let Err(e) = file_watcher.configure_watch_mode(wm_config).await {
+                                    warn!("Failed to apply persisted watch config: {}", e);
+                                }
+                            }
+
+                            start_result
                         }
                     ).await;
 
@@ -290,8 +317,6 @@ pub fn run() -> crate::error::Result<()> {
                         }
                     }
                 });
-            } else {
-                info!("File watching disabled in configuration");
             }
 
             // Try to connect to Ollama in background with retry logic
