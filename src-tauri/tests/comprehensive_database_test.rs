@@ -38,6 +38,12 @@ struct DatabaseTestSuite {
     #[allow(dead_code)]
     test_files: Vec<PathBuf>,
     results: Arc<RwLock<Vec<TestResult>>>,
+    // Keep the tempdir alive for the test's lifetime. Previously this was
+    // dropped at the end of `new()`, deleting the SQLite file before any
+    // test ran and causing "unable to open database file" panics. Holding
+    // a TempDir here ties its lifetime to the suite.
+    #[allow(dead_code)]
+    _temp_dir: tempfile::TempDir,
 }
 
 impl DatabaseTestSuite {
@@ -61,6 +67,7 @@ impl DatabaseTestSuite {
             db: Arc::new(db),
             test_files,
             results: Arc::new(RwLock::new(Vec::new())),
+            _temp_dir: temp_dir,
         })
     }
 

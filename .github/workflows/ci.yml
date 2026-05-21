@@ -80,14 +80,10 @@ jobs:
 
       - name: Run integration tests
         working-directory: src-tauri
-        # Excluded (pre-existing issues unrelated to this PR):
-        #   - test_ollama_*           : needs `ollama serve` on the runner
-        #   - test_tauri_plugins      : opens sockets/processes and hangs
-        #   - comprehensive_database_test : tempdir lifetime bug in test setup
-        #   - validate_test_structure : hardcoded Windows path to fixture data
-        # The remaining suites run against tempfile-backed SQLite.
-        run: |
-          cargo test --test integration_tests \
-                     --test test_backend_fixes \
-                     --test test_smart_folder_integration \
-                     --no-fail-fast
+        # `--tests` runs every integration target Cargo knows about. The
+        # `test_ollama_*` Ollama-dependent tests are marked `#[ignore]` and
+        # only run when explicitly opted in with `-- --ignored`. The
+        # tests/security/*.rs files were written against an outdated
+        # Database API and are commented out of Cargo.toml as documented
+        # there, so they don't block the build.
+        run: cargo test --tests --no-fail-fast
