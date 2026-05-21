@@ -1170,45 +1170,34 @@ pub async fn batch_analyze_files(
         let progress = index as f32 / paths.len() as f32;
         state.update_progress(operation_id, progress, format!("Analyzing {}", path));
 
-        // Read file content with size limit
-        match tokio::fs::read_to_string(path).await {
-            Ok(content) => {
-                let mime_type = mime_guess::from_path(path)
-                    .first_or_octet_stream()
-                    .to_string();
-                match state.ai_service.analyze_file(&content, &mime_type).await {
-                    Ok(mut analysis) => {
-                        analysis.path = path.clone();
+        // Dispatch by file type so images go to vision, documents get
+        // text-extracted, and plain text uses analyze_file.
+        match state.ai_service.analyze_path_with_ai(path).await {
+            Ok(mut analysis) => {
+                analysis.path = path.clone();
 
-                        // Save to database
-                        let _ = state.database.save_analysis(&analysis).await;
+                let _ = state.database.save_analysis(&analysis).await;
 
-                        // Generate and save embeddings
-                        if let Ok(embedding) = state
-                            .ai_service
-                            .generate_embeddings(&format!(
-                                "{} {}",
-                                analysis.summary,
-                                analysis.tags.join(" ")
-                            ))
-                            .await
-                        {
-                            let model_name = state.config.read().ollama_embedding_model.clone();
-                            let _ = state
-                                .database
-                                .save_embedding(&analysis.path, &embedding, Some(&model_name))
-                                .await;
-                        }
-
-                        results.push(analysis);
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to analyze {}: {}", path, e);
-                    }
+                if let Ok(embedding) = state
+                    .ai_service
+                    .generate_embeddings(&format!(
+                        "{} {}",
+                        analysis.summary,
+                        analysis.tags.join(" ")
+                    ))
+                    .await
+                {
+                    let model_name = state.config.read().ollama_embedding_model.clone();
+                    let _ = state
+                        .database
+                        .save_embedding(&analysis.path, &embedding, Some(&model_name))
+                        .await;
                 }
+
+                results.push(analysis);
             }
             Err(e) => {
-                tracing::warn!("Failed to read file {}: {}", path, e);
+                tracing::warn!("Failed to analyze {}: {}", path, e);
             }
         }
     }
