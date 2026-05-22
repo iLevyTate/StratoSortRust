@@ -740,12 +740,7 @@ Analyze the content above and respond with ONLY this JSON structure (no addition
         let json_candidate = extract_json_object(&response).unwrap_or(response.as_str());
         match serde_json::from_str::<FileAnalysis>(json_candidate) {
             Ok(mut analysis) => {
-                // Ensure confidence is in valid range
-                if analysis.confidence < 0.0 {
-                    analysis.confidence = 0.0;
-                } else if analysis.confidence > 1.0 {
-                    analysis.confidence = 1.0;
-                }
+                analysis.confidence = analysis.confidence.clamp(0.0, 1.0);
                 Ok(analysis)
             }
             Err(e) => {

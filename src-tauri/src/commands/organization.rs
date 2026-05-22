@@ -772,27 +772,26 @@ async fn perform_organization_operation(op: &OrganizationOperation) -> Result<()
     let source = std::path::Path::new(&op.source_path);
 
     // For rename operations with a pattern, calculate the new name
-    let target_path = if op.action == ActionType::Rename && op.rename_pattern.is_some() {
-        let pattern = op.rename_pattern.as_ref().unwrap();
-        let new_name = apply_rename_pattern(&op.source_path, pattern);
+    let target_path = match (&op.action, op.rename_pattern.as_ref()) {
+        (ActionType::Rename, Some(pattern)) => {
+            let new_name = apply_rename_pattern(&op.source_path, pattern);
 
-        // If target_path contains a directory, use it; otherwise use source parent
-        let target = std::path::Path::new(&op.target_path);
-        if target.is_dir() || op.target_path.ends_with('/') || op.target_path.ends_with('\\') {
-            // target_path is a directory, append the new name
-            target.join(&new_name)
-        } else if let Some(parent) = target.parent() {
-            // target_path includes a filename, replace it with new name
-            parent.join(&new_name)
-        } else {
-            // Use source parent directory
-            source
-                .parent()
-                .unwrap_or(std::path::Path::new("."))
-                .join(&new_name)
+            // If target_path is a directory, append the new name; otherwise
+            // use the file's parent directory; fall back to the source's
+            // parent if neither is available.
+            let target = std::path::Path::new(&op.target_path);
+            if target.is_dir() || op.target_path.ends_with('/') || op.target_path.ends_with('\\') {
+                target.join(&new_name)
+            } else if let Some(parent) = target.parent() {
+                parent.join(&new_name)
+            } else {
+                source
+                    .parent()
+                    .unwrap_or(std::path::Path::new("."))
+                    .join(&new_name)
+            }
         }
-    } else {
-        std::path::Path::new(&op.target_path).to_path_buf()
+        _ => std::path::Path::new(&op.target_path).to_path_buf(),
     };
 
     if !source.exists() {
