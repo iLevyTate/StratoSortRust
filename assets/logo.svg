@@ -1,4 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none">
+  <!--
+    Stratosort logo.
+    Three "strata" (rounded bars) offset left/right/left to suggest both
+    layered sorting and a stylized S. Blue gradient deepens top→bottom to
+    imply depth/order. Background is a soft slate panel; the bars are the
+    only foreground element so the mark reads at favicon size.
+  -->
   <rect x="2" y="2" width="60" height="60" rx="14" fill="#0f172a"/>
   <rect x="13" y="15" width="33" height="8" rx="4" fill="#93c5fd"/>
   <rect x="20" y="28" width="31" height="8" rx="4" fill="#3b82f6"/>
