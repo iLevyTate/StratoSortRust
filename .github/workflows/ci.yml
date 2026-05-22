@@ -17,11 +17,11 @@ jobs:
   # Quick sanity checks
   lint:
     name: Lint & Format
-    # Pinned to 22.04 — `ubuntu-latest` is now 24.04 (Noble), which dropped
-    # `libwebkit2gtk-4.0-dev` from its package repos. The Tauri 2 crate
-    # links webkit2gtk transitively even for `cargo clippy`, so a 24.04
-    # runner can't even check the workspace without the package present.
-    runs-on: ubuntu-22.04
+    # The Tauri 2 crate transitively links against javascriptcoregtk-4.1 +
+    # webkit2gtk-4.1 even at `cargo clippy` time, so the runner needs those
+    # dev packages. They ship on both ubuntu-22.04 and ubuntu-24.04, so we
+    # use `ubuntu-latest`.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -36,13 +36,19 @@ jobs:
           workspaces: src-tauri
 
       - name: Install system dependencies
-        # Same packages as backend-tests — clippy on the Tauri crate links
-        # against webkit2gtk at check time.
+        # Tauri 2 / wry uses the GTK4-era stack on Linux:
+        #   * libwebkit2gtk-4.1-dev brings webkit
+        #   * libjavascriptcoregtk-4.1-dev is required separately by wry's
+        #     build script (this was the missing package that caused
+        #     `pkg-config --libs --cflags javascriptcoregtk-4.1` to exit 1).
+        #   * libsoup-3.0-dev is the modern soup the new wry pulls in.
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libgtk-3-dev \
-            libwebkit2gtk-4.0-dev \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
@@ -62,8 +68,7 @@ jobs:
   # Backend tests — the load-bearing layer. These must stay green on every PR.
   backend-tests:
     name: Backend Tests
-    # Pinned to 22.04 for the same webkit2gtk-4.0-dev reason as `lint`.
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -76,11 +81,16 @@ jobs:
           workspaces: src-tauri
 
       - name: Install system dependencies
+        # Tauri 2 / wry uses the GTK4-era stack on Linux. See the `lint` job
+        # above for the per-package rationale; mirror them here so build
+        # against the same headers.
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libgtk-3-dev \
-            libwebkit2gtk-4.0-dev \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
