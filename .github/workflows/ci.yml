@@ -87,20 +87,45 @@ jobs:
 
       - name: Build (default features)
         working-directory: src-tauri
-        run: cargo build --message-format=short
+        run: cargo build --verbose
 
       - name: Run library tests
         working-directory: src-tauri
         # Lib tests cover the dispatcher, JSON parse helpers, watch-mode walker,
         # delete helpers, etc. These should always pass without external deps.
-        run: cargo test --lib --no-fail-fast
+        run: cargo test --lib --no-fail-fast -- --nocapture
 
-      - name: Run integration tests
+      # Integration tests are split per-binary so the failure surfaces in the
+      # GitHub Actions step name (the API exposes only step status, not log
+      # content, so naming each step is the cheapest way to know what broke).
+      - name: integration_tests
         working-directory: src-tauri
-        # `--tests` runs every integration target Cargo knows about. The
-        # `test_ollama_*` Ollama-dependent tests are marked `#[ignore]` and
-        # only run when explicitly opted in with `-- --ignored`. The
-        # tests/security/*.rs files were written against an outdated
-        # Database API and are commented out of Cargo.toml as documented
-        # there, so they don't block the build.
-        run: cargo test --tests --no-fail-fast
+        run: cargo test --test integration_tests --no-fail-fast -- --nocapture
+
+      - name: test_backend_fixes
+        working-directory: src-tauri
+        run: cargo test --test test_backend_fixes --no-fail-fast -- --nocapture
+
+      - name: test_smart_folder_integration
+        working-directory: src-tauri
+        run: cargo test --test test_smart_folder_integration --no-fail-fast -- --nocapture
+
+      - name: comprehensive_database_test
+        working-directory: src-tauri
+        run: cargo test --test comprehensive_database_test --no-fail-fast -- --nocapture
+
+      - name: validate_test_structure (serial to avoid fixture-dir race)
+        working-directory: src-tauri
+        run: cargo test --test validate_test_structure --no-fail-fast -- --nocapture --test-threads=1
+
+      - name: test_tauri_plugins
+        working-directory: src-tauri
+        run: cargo test --test test_tauri_plugins --no-fail-fast -- --nocapture
+
+      - name: test_ollama (skip server-dependent)
+        working-directory: src-tauri
+        # The `#[ignore]`'d variants need `ollama serve` running. We only run
+        # the ones that don't.
+        run: |
+          cargo test --test test_ollama_comprehensive --no-fail-fast -- --nocapture
+          cargo test --test test_ollama_integration --no-fail-fast -- --nocapture
