@@ -1,13 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
   <!--
     Stratosort logo.
-    Three "strata" (rounded bars) offset left/right/left to suggest both
-    layered sorting and a stylized S. Blue gradient deepens top→bottom to
-    imply depth/order. Background is a soft slate panel; the bars are the
-    only foreground element so the mark reads at favicon size.
+    Three stadium-shaped "strata" bars in a sky→navy gradient, centered on a
+    soft slate-blue rounded panel. Bars are uniform width to read as cleanly
+    sorted layers; gradient on the panel adds gentle depth without competing
+    with the foreground.
   -->
-  <rect x="2" y="2" width="60" height="60" rx="14" fill="#0f172a"/>
-  <rect x="13" y="15" width="33" height="8" rx="4" fill="#93c5fd"/>
-  <rect x="20" y="28" width="31" height="8" rx="4" fill="#3b82f6"/>
-  <rect x="13" y="41" width="33" height="8" rx="4" fill="#1d4ed8"/>
+  <defs>
+    <linearGradient id="ssPanel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#94a3b8"/>
+      <stop offset="100%" stop-color="#64748b"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#ssPanel)"/>
+  <rect x="13" y="15" width="38" height="8" rx="4" fill="#93c5fd"/>
+  <rect x="13" y="29" width="38" height="8" rx="4" fill="#3b82f6"/>
+  <rect x="13" y="43" width="38" height="8" rx="4" fill="#1e3a8a"/>
 </svg>
