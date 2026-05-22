@@ -1,8 +1,13 @@
-name: CI / Lint & Format
+name: CI / Lint, Format & Backend Tests
 
+# Runs on every PR and on every push to main so we catch regressions
+# automatically. The comprehensive matrix (frontend + e2e + a11y) lives in
+# test.yml and stays workflow_dispatch-only until the frontend exists.
 on:
   pull_request:
     branches: [main, develop]
+  push:
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -12,6 +17,10 @@ jobs:
   # Quick sanity checks
   lint:
     name: Lint & Format
+    # The Tauri 2 crate transitively links against javascriptcoregtk-4.1 +
+    # webkit2gtk-4.1 even at `cargo clippy` time, so the runner needs those
+    # dev packages. They ship on both ubuntu-22.04 and ubuntu-24.04, so we
+    # use `ubuntu-latest`.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,6 +35,24 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Install system dependencies
+        # Tauri 2 / wry uses the GTK4-era stack on Linux:
+        #   * libwebkit2gtk-4.1-dev brings webkit
+        #   * libjavascriptcoregtk-4.1-dev is required separately by wry's
+        #     build script (this was the missing package that caused
+        #     `pkg-config --libs --cflags javascriptcoregtk-4.1` to exit 1).
+        #   * libsoup-3.0-dev is the modern soup the new wry pulls in.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
       - name: Check formatting
         working-directory: src-tauri
         run: cargo fmt -- --check
@@ -33,5 +60,82 @@ jobs:
 
       - name: Run clippy
         working-directory: src-tauri
-        run: cargo clippy --no-deps -- -D warnings
+        # Not -D warnings yet — there are pre-existing dead-code warnings we
+        # haven't cleaned up. Flip to -D warnings once those are addressed.
+        run: cargo clippy --no-deps
         continue-on-error: true
+
+  # Backend tests — the load-bearing layer. These must stay green on every PR.
+  backend-tests:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install system dependencies
+        # Tauri 2 / wry uses the GTK4-era stack on Linux. See the `lint` job
+        # above for the per-package rationale; mirror them here so build
+        # against the same headers.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Build (default features)
+        working-directory: src-tauri
+        run: cargo build --verbose
+
+      - name: Run library tests
+        working-directory: src-tauri
+        # Lib tests cover the dispatcher, JSON parse helpers, watch-mode walker,
+        # delete helpers, etc. These should always pass without external deps.
+        run: cargo test --lib --no-fail-fast -- --nocapture
+
+      # Integration tests are split per-binary so the failure surfaces in the
+      # GitHub Actions step name (the API exposes only step status, not log
+      # content, so naming each step is the cheapest way to know what broke).
+      - name: integration_tests
+        working-directory: src-tauri
+        run: cargo test --test integration_tests --no-fail-fast -- --nocapture
+
+      - name: test_backend_fixes
+        working-directory: src-tauri
+        run: cargo test --test test_backend_fixes --no-fail-fast -- --nocapture
+
+      - name: test_smart_folder_integration
+        working-directory: src-tauri
+        run: cargo test --test test_smart_folder_integration --no-fail-fast -- --nocapture
+
+      - name: comprehensive_database_test
+        working-directory: src-tauri
+        run: cargo test --test comprehensive_database_test --no-fail-fast -- --nocapture
+
+      - name: validate_test_structure (serial to avoid fixture-dir race)
+        working-directory: src-tauri
+        run: cargo test --test validate_test_structure --no-fail-fast -- --nocapture --test-threads=1
+
+      - name: test_tauri_plugins
+        working-directory: src-tauri
+        run: cargo test --test test_tauri_plugins --no-fail-fast -- --nocapture
+
+      - name: test_ollama (skip server-dependent)
+        working-directory: src-tauri
+        # The `#[ignore]`'d variants need `ollama serve` running. We only run
+        # the ones that don't.
+        run: |
+          cargo test --test test_ollama_comprehensive --no-fail-fast -- --nocapture
+          cargo test --test test_ollama_integration --no-fail-fast -- --nocapture

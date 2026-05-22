@@ -253,7 +253,6 @@ impl DocumentProcessor for ExcelProcessor {
                 })?;
 
             let mut text_content = String::new();
-            let mut total_rows = 0;
 
             // Get all worksheet names — clone so we can use them for both the
             // loop and the page_count after consuming `workbook` borrows below.
@@ -263,9 +262,6 @@ impl DocumentProcessor for ExcelProcessor {
             for sheet_name in &sheet_names {
                 if let Ok(range) = workbook.worksheet_range(sheet_name) {
                     text_content.push_str(&format!("=== Sheet: {} ===\n", sheet_name));
-
-                    let (height, _width) = range.get_size();
-                    total_rows += height;
 
                     // Extract cell values as text. `Data` replaces the older
                     // `DataType` enum in calamine 0.26.
@@ -341,11 +337,10 @@ impl DocumentProcessor for CsvProcessor {
 
             let mut text_content = String::new();
             let mut row_count = 0;
-            let mut headers = Vec::new();
 
             // Get headers
             if let Ok(header_record) = reader.headers() {
-                headers = header_record.iter().map(|h| h.to_string()).collect();
+                let headers: Vec<String> = header_record.iter().map(|h| h.to_string()).collect();
                 text_content.push_str(&headers.join("\t"));
                 text_content.push('\n');
             }
