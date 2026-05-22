@@ -220,7 +220,7 @@ mod test_process_plugin {
     #[tokio::test]
     async fn test_process_kill_on_shutdown() {
         // Test graceful shutdown of all processes
-        let processes = vec![
+        let processes = [
             MockProcessInfo::new("main"),
             MockProcessInfo::new("worker-1"),
             MockProcessInfo::new("worker-2"),
