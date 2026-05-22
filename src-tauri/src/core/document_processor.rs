@@ -173,20 +173,17 @@ impl DocumentProcessor for DocxProcessor {
 
                     // Extract text content from document
                     for child in &docx.document.children {
-                        match child {
-                            DocumentChild::Paragraph(p) => {
-                                for run_child in &p.children {
-                                    if let ParagraphChild::Run(run) = run_child {
-                                        for run_child in &run.children {
-                                            if let RunChild::Text(text) = run_child {
-                                                text_content.push_str(&text.text);
-                                            }
+                        if let DocumentChild::Paragraph(p) = child {
+                            for run_child in &p.children {
+                                if let ParagraphChild::Run(run) = run_child {
+                                    for run_child in &run.children {
+                                        if let RunChild::Text(text) = run_child {
+                                            text_content.push_str(&text.text);
                                         }
                                     }
                                 }
-                                text_content.push('\n');
                             }
-                            _ => {}
+                            text_content.push('\n');
                         }
                     }
 
