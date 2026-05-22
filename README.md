@@ -1,6 +1,8 @@
 <p align="center">
-  <img src="assets/logo-wordmark.svg" alt="Stratosort" width="380">
+  <img src="assets/logo.svg" alt="Stratosort" width="96" height="96">
 </p>
+
+<h1 align="center">Stratosort</h1>
 
 <p align="center">
   Local-first AI file organization. Vision, embeddings, and semantic search — all running on your machine via <a href="https://ollama.com/">Ollama</a>.
