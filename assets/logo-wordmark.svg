@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 380 88" width="380" height="88" fill="none">
+  <!--
+    Stratosort wordmark — logo glyph + name + tagline.
+    Composed for use as a hero header in README.md and on the docs site.
+  -->
+  <g>
+    <!-- Logo glyph (same shapes as logo.svg, repositioned at left). -->
+    <rect x="6" y="12" width="64" height="64" rx="14" fill="#0f172a"/>
+    <rect x="17" y="25" width="33" height="8" rx="4" fill="#93c5fd"/>
+    <rect x="24" y="38" width="31" height="8" rx="4" fill="#3b82f6"/>
+    <rect x="17" y="51" width="33" height="8" rx="4" fill="#1d4ed8"/>
+  </g>
+
+  <!-- Wordmark + tagline. -->
+  <text x="90" y="48" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, system-ui, sans-serif"
+        font-size="36" font-weight="700" fill="#0f172a">Stratosort</text>
+  <text x="90" y="70" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, system-ui, sans-serif"
+        font-size="14" font-weight="500" fill="#475569">Local-first AI file organization</text>
+</svg>
