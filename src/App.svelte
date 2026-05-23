@@ -259,7 +259,7 @@
         <a href="#main-content" data-testid="skip-to-content" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 bg-primary text-primary-foreground px-3 py-2 rounded">Skip to content</a>
         <div class="flex h-screen bg-background" data-testid="app-container">
             <Sidebar />
-            <main id="main-content" data-testid="main-content" role="main" class="flex-1 overflow-hidden">
+            <main id="main-content" data-testid="main-content" class="flex-1 overflow-hidden">
 				<!-- Header with Global Progress and Notification Center -->
 				<div class="flex items-center justify-between p-4 border-b">
 					<div class="flex-1">
