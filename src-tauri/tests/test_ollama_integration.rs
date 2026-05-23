@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod ollama_tests {
     use stratosort::ai::ollama::OllamaClient;
-    use stratosort::ai::AiEngine;
     use stratosort::error::Result;
 
     #[tokio::test]
@@ -50,16 +49,17 @@ mod ollama_tests {
         println!("Available models: {:?}", models);
 
         // Test generating embeddings (if model is available)
-        let embeddings = client.generate_embeddings("test text").await;
-        if embeddings.is_ok() {
-            let emb = embeddings.unwrap();
-            assert!(!emb.is_empty());
-            println!("Generated {} embeddings", emb.len());
-        } else {
-            println!(
-                "Embeddings generation failed (model may not be installed): {:?}",
-                embeddings
-            );
+        match client.generate_embeddings("test text").await {
+            Ok(emb) => {
+                assert!(!emb.is_empty());
+                println!("Generated {} embeddings", emb.len());
+            }
+            Err(e) => {
+                println!(
+                    "Embeddings generation failed (model may not be installed): {:?}",
+                    e
+                );
+            }
         }
 
         // Test connection pool stats
@@ -77,22 +77,20 @@ mod ollama_tests {
         let client = OllamaClient::new("http://localhost:11434").await?;
 
         // Test file analysis with retry (simulate by using small text)
-        let analysis = client
+        match client
             .analyze_file("Test document content", "text/plain")
-            .await;
-
-        if analysis.is_ok() {
-            let result = analysis.unwrap();
-            assert!(!result.category.is_empty());
-            println!(
-                "Analysis result: category={}, tags={:?}",
-                result.category, result.tags
-            );
-        } else {
-            println!(
-                "Analysis failed (model may not be installed): {:?}",
-                analysis
-            );
+            .await
+        {
+            Ok(result) => {
+                assert!(!result.category.is_empty());
+                println!(
+                    "Analysis result: category={}, tags={:?}",
+                    result.category, result.tags
+                );
+            }
+            Err(e) => {
+                println!("Analysis failed (model may not be installed): {:?}", e);
+            }
         }
 
         Ok(())

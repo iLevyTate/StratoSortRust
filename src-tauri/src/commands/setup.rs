@@ -25,7 +25,7 @@ pub struct FirstRunSetup {
 #[tauri::command]
 pub async fn check_first_run_status(
     app_handle: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, std::sync::Arc<AppState>>,
 ) -> Result<FirstRunStatus> {
     let is_first_run = Config::is_first_run(&app_handle)?;
     let config_exists = !is_first_run;
@@ -60,7 +60,7 @@ pub async fn check_first_run_status(
 pub async fn complete_first_run_setup(
     setup: FirstRunSetup,
     app_handle: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, std::sync::Arc<AppState>>,
 ) -> Result<String> {
     tracing::info!("Completing first-run setup: {:?}", setup);
 

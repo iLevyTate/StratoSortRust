@@ -4,15 +4,18 @@
   "version": "0.1.0",
   "identifier": "com.stratosort.app",
   "build": {
-    "beforeDevCommand": null,
-    "beforeBuildCommand": null,
-    "frontendDist": "../dist"
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1431"
   },
   "plugins": {
+    "shell": {
+      "open": true
+    },
     "updater": {
       "active": true,
-      "endpoints": ["https://releases.myapp.com/{{target}}/{{current_version}}"],
-      "dialog": true
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI1NURDNEUzNEJGQTlCQzEKUldUQm0vcEw0OFJkdFRweXRkbm9PTXRxMWZJS1RJUHlVSGcxVlVpb2ViN09Ob042VUZOOUpKcDYK"
     }
   },
   "app": {
@@ -34,21 +37,12 @@
         "decorations": true,
         "transparent": false,
         "skipTaskbar": false,
-        "visible": true
+        "visible": true,
+        "dragDropEnabled": true
       }
     ],
     "security": {
-      "csp": {
-        "default-src": "'self' customprotocol: asset: tauri: http://localhost:*",
-        "script-src": "'self' 'unsafe-eval' http://localhost:*",
-        "style-src": "'self' 'unsafe-inline' http://localhost:*",
-        "img-src": "'self' asset: data: blob: tauri: http://localhost:*",
-        "font-src": "'self' data: http://localhost:*",
-        "connect-src": "'self' ipc: http://localhost:* ws://localhost:* http://127.0.0.1:11434",
-        "frame-src": "'none'",
-        "object-src": "'none'",
-        "base-uri": "'self'"
-      },
+      "csp": "default-src 'self' customprotocol: asset: tauri:; script-src 'self' http://localhost:* https://localhost:*; style-src 'self' 'unsafe-inline' http://localhost:* https://localhost:*; img-src 'self' asset: data: blob: tauri: http://localhost:* https://localhost:*; font-src 'self' data: http://localhost:* https://localhost:*; connect-src 'self' ipc: http://localhost:* https://localhost:* ws://localhost:* wss://localhost:* http://127.0.0.1:11434 https://127.0.0.1:11434 http://127.0.0.1:* https://127.0.0.1:*; media-src 'self' blob: data:; worker-src 'self' blob:; child-src 'none'; frame-src 'none'; frame-ancestors 'none'; object-src 'none'; embed-src 'none'; base-uri 'self'; form-action 'self'; manifest-src 'self'",
       "assetProtocol": {
         "enable": true,
         "scope": [

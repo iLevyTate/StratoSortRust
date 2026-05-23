@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use stratosort::ai::ollama::OllamaClient;
-use stratosort::ai::AiEngine;
 use stratosort::error::Result;
 
 #[derive(Debug, Serialize, Deserialize)]

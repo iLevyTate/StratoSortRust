@@ -70,6 +70,36 @@ pub enum ActionType {
     Tag,
 }
 
+/// Sanity-check a SmartFolder.target_path. The path itself may not yet exist
+/// (user is configuring future destination), so we skip canonicalize, but the
+/// obvious attack shapes — empty, null bytes, control chars, `..` components
+/// — are always rejected.
+fn validate_smart_folder_target(path: &str) -> Result<()> {
+    if path.is_empty() {
+        return Err(crate::error::AppError::SecurityError {
+            message: "Smart folder target_path cannot be empty".to_string(),
+        });
+    }
+    if path.contains('\0')
+        || path
+            .chars()
+            .any(|c| c.is_control() && c != '\r' && c != '\n')
+    {
+        return Err(crate::error::AppError::SecurityError {
+            message: "target_path contains null or control characters".to_string(),
+        });
+    }
+    if std::path::Path::new(path)
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(crate::error::AppError::SecurityError {
+            message: "target_path traversal (..) rejected".to_string(),
+        });
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn create_smart_folder(
     name: String,
@@ -79,6 +109,11 @@ pub async fn create_smart_folder(
     state: State<'_, std::sync::Arc<AppState>>,
     app: AppHandle,
 ) -> Result<SmartFolder> {
+    // Lightweight shape check — target_path may legitimately not exist yet
+    // (user is configuring where to put future files), so we don't
+    // canonicalize. But empty / null / `..` is always rejected.
+    validate_smart_folder_target(&target_path)?;
+
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now();
 
@@ -149,6 +184,7 @@ pub async fn update_smart_folder(
         smart_folder.description = Some(d);
     }
     if let Some(tp) = target_path {
+        validate_smart_folder_target(&tp)?;
         smart_folder.target_path = tp;
     }
     if let Some(r) = rules {
@@ -297,6 +333,11 @@ pub async fn apply_smart_folder_rules(
                     action: rule.action.action_type.clone(),
                     rule_id: rule.id.clone(),
                     confidence: 1.0, // Rule-based, so high confidence
+                    rename_pattern: if rule.action.action_type == ActionType::Rename {
+                        rule.action.rename_pattern.clone()
+                    } else {
+                        None
+                    },
                 };
 
                 previews.push(preview);
@@ -317,8 +358,15 @@ pub async fn apply_smart_folder_rules(
                             let _ = tokio::fs::copy(&file_path, &target_path).await;
                         }
                         ActionType::Rename => {
-                            // For rename, construct new filename based on pattern
-                            let new_name = rule.action.target_folder.clone(); // Target folder is used as rename pattern
+                            // Use the rename_pattern if provided, otherwise fall back to target_folder
+                            let rename_pattern = rule
+                                .action
+                                .rename_pattern
+                                .as_ref()
+                                .unwrap_or(&rule.action.target_folder);
+
+                            // Process rename pattern with placeholders
+                            let new_name = apply_rename_pattern(&file_path, rename_pattern);
                             let parent = std::path::Path::new(&file_path)
                                 .parent()
                                 .unwrap_or(std::path::Path::new("."));
@@ -352,6 +400,12 @@ pub async fn auto_organize_directory(
     use_ai: bool,
     state: State<'_, std::sync::Arc<AppState>>,
 ) -> Result<Vec<OrganizationPreview>> {
+    // Validate the directory before we hand it to tokio::fs::read_dir.
+    // Rejects empty, null bytes, `..`, nonexistent paths, and system dirs.
+    let directory_path = crate::utils::security::validate_directory_path(&directory_path)?
+        .to_string_lossy()
+        .to_string();
+
     // Start progress tracking for organization
     let operation_id = state.start_operation(
         crate::state::OperationType::Organization,
@@ -500,6 +554,7 @@ pub async fn auto_organize_directory(
                 action: ActionType::Move,
                 rule_id: "ai-suggestion".to_string(),
                 confidence: suggestion.confidence,
+                rename_pattern: None, // AI suggestions don't use rename patterns by default
             });
         }
     }
@@ -525,6 +580,7 @@ pub struct OrganizationPreview {
     pub action: ActionType,
     pub rule_id: String,
     pub confidence: f32,
+    pub rename_pattern: Option<String>, // Optional rename pattern for preview
 }
 
 #[tauri::command]
@@ -569,6 +625,32 @@ pub async fn apply_organization(
         return Err(crate::error::AppError::SecurityError {
             message: "Too many operations requested (max 500)".to_string(),
         });
+    }
+
+    // Validate every source path before we touch the filesystem. We validate
+    // source (must exist) but only sanity-check target paths (parent must be
+    // safe, target itself may not exist yet — we'll create it). A `..` in
+    // either field or a system-dir target is grounds for rejecting the whole
+    // batch — partial application leaves the user with half-moved files and
+    // a stale undo log.
+    for op in &operations {
+        crate::utils::security::validate_user_path(&op.source_path)?;
+        // For the target we only enforce the lightweight shape checks: a
+        // nonexistent target file is normal (that's the whole point of a
+        // move), but `..` traversal or a system path is not.
+        if op.target_path.is_empty() || op.target_path.contains('\0') {
+            return Err(crate::error::AppError::SecurityError {
+                message: "Invalid target path".to_string(),
+            });
+        }
+        if std::path::Path::new(&op.target_path)
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(crate::error::AppError::SecurityError {
+                message: "Target path traversal rejected".to_string(),
+            });
+        }
     }
 
     let mut results = Vec::new();
@@ -733,6 +815,7 @@ pub struct OrganizationOperation {
     pub source_path: String,
     pub target_path: String,
     pub action: ActionType,
+    pub rename_pattern: Option<String>, // Optional rename pattern for Rename actions
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -755,7 +838,29 @@ pub struct FolderMatch {
 
 async fn perform_organization_operation(op: &OrganizationOperation) -> Result<()> {
     let source = std::path::Path::new(&op.source_path);
-    let target = std::path::Path::new(&op.target_path);
+
+    // For rename operations with a pattern, calculate the new name
+    let target_path = match (&op.action, op.rename_pattern.as_ref()) {
+        (ActionType::Rename, Some(pattern)) => {
+            let new_name = apply_rename_pattern(&op.source_path, pattern);
+
+            // If target_path is a directory, append the new name; otherwise
+            // use the file's parent directory; fall back to the source's
+            // parent if neither is available.
+            let target = std::path::Path::new(&op.target_path);
+            if target.is_dir() || op.target_path.ends_with('/') || op.target_path.ends_with('\\') {
+                target.join(&new_name)
+            } else if let Some(parent) = target.parent() {
+                parent.join(&new_name)
+            } else {
+                source
+                    .parent()
+                    .unwrap_or(std::path::Path::new("."))
+                    .join(&new_name)
+            }
+        }
+        _ => std::path::Path::new(&op.target_path).to_path_buf(),
+    };
 
     if !source.exists() {
         return Err(crate::error::AppError::FileNotFound {
@@ -764,23 +869,23 @@ async fn perform_organization_operation(op: &OrganizationOperation) -> Result<()
     }
 
     // Create target directory if needed
-    if let Some(parent) = target.parent() {
+    if let Some(parent) = target_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
 
     match op.action {
         ActionType::Move => {
-            tokio::fs::rename(source, target).await?;
+            tokio::fs::rename(source, &target_path).await?;
         }
         ActionType::Copy => {
             if source.is_dir() {
-                copy_dir_all(source, target).await?;
+                copy_dir_all(source, &target_path).await?;
             } else {
-                tokio::fs::copy(source, target).await?;
+                tokio::fs::copy(source, &target_path).await?;
             }
         }
         ActionType::Rename => {
-            tokio::fs::rename(source, target).await?;
+            tokio::fs::rename(source, &target_path).await?;
         }
         _ => {
             return Err(crate::error::AppError::InvalidInput {
@@ -1019,6 +1124,7 @@ async fn apply_smart_folder_rules_enhanced(
                 action: ActionType::Move,
                 rule_id: folder_id.clone(),
                 confidence,
+                rename_pattern: None, // This function uses Move action by default
             });
         }
     }
@@ -1061,6 +1167,318 @@ async fn calculate_folder_match_confidence_with_ai(
     } else {
         base_confidence
     }
+}
+
+/// Preview how files would be renamed with a given pattern
+#[tauri::command]
+pub async fn preview_rename_pattern(
+    file_paths: Vec<String>,
+    pattern: String,
+    options: Option<RenameOptions>,
+) -> Result<Vec<RenamePreview>> {
+    let mut previews = Vec::new();
+    let options = options.unwrap_or_default();
+
+    // Reset counter for this preview session
+    if options.reset_counter {
+        RENAME_COUNTER.store(options.counter_start, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    for file_path in file_paths.iter().take(100) {
+        // Limit preview to 100 files
+        let new_name = apply_rename_pattern_with_options(file_path, &pattern, &options);
+
+        let valid = validate_filename(&new_name);
+        let full_new_path = if let Some(parent) = std::path::Path::new(file_path).parent() {
+            parent.join(&new_name).display().to_string()
+        } else {
+            new_name.clone()
+        };
+
+        previews.push(RenamePreview {
+            original_path: file_path.clone(),
+            new_name: new_name.clone(),
+            full_new_path,
+            valid,
+            error: if !valid {
+                Some(get_filename_error(&new_name))
+            } else {
+                None
+            },
+        });
+    }
+
+    Ok(previews)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RenamePreview {
+    pub original_path: String,
+    pub new_name: String,
+    pub full_new_path: String,
+    pub valid: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RenameOptions {
+    pub lowercase: bool,
+    pub uppercase: bool,
+    pub capitalize_words: bool,
+    pub replace_spaces: Option<String>,
+    pub remove_special_chars: bool,
+    pub counter_start: usize,
+    pub counter_padding: usize,
+    pub reset_counter: bool,
+    pub custom_text: Option<String>,
+}
+
+impl Default for RenameOptions {
+    fn default() -> Self {
+        Self {
+            lowercase: false,
+            uppercase: false,
+            capitalize_words: false,
+            replace_spaces: None,
+            remove_special_chars: false,
+            counter_start: 1,
+            counter_padding: 4,
+            reset_counter: true,
+            custom_text: None,
+        }
+    }
+}
+
+// Global counter for rename operations
+static RENAME_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+
+/// Apply rename pattern with additional options
+fn apply_rename_pattern_with_options(
+    file_path: &str,
+    pattern: &str,
+    options: &RenameOptions,
+) -> String {
+    let path = std::path::Path::new(file_path);
+
+    // Extract file components
+    let name_without_ext = path
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unnamed");
+    let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+    // Apply text transformations to name if requested
+    let mut processed_name = name_without_ext.to_string();
+
+    if options.lowercase {
+        processed_name = processed_name.to_lowercase();
+    } else if options.uppercase {
+        processed_name = processed_name.to_uppercase();
+    } else if options.capitalize_words {
+        processed_name = capitalize_words(&processed_name);
+    }
+
+    if let Some(ref replacement) = options.replace_spaces {
+        processed_name = processed_name.replace(' ', replacement);
+    }
+
+    if options.remove_special_chars {
+        processed_name = processed_name
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == ' ')
+            .collect();
+    }
+
+    // Get current date/time components
+    let now = chrono::Local::now();
+
+    // Replace placeholders in pattern
+    let mut result = pattern.to_string();
+
+    // Basic placeholders with processed name
+    result = result.replace("{name}", &processed_name);
+    result = result.replace("{ext}", extension);
+    result = result.replace("{filename}", &format!("{}.{}", processed_name, extension));
+
+    // Date/time placeholders
+    result = result.replace("{year}", &now.format("%Y").to_string());
+    result = result.replace("{month}", &now.format("%m").to_string());
+    result = result.replace("{day}", &now.format("%d").to_string());
+    result = result.replace("{date}", &now.format("%Y-%m-%d").to_string());
+    result = result.replace("{time}", &now.format("%H-%M-%S").to_string());
+    result = result.replace("{timestamp}", &now.format("%Y%m%d-%H%M%S").to_string());
+
+    // Counter placeholders with configurable padding
+    let count = RENAME_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let padded_counter = format!("{:0width$}", count, width = options.counter_padding);
+    result = result.replace("{counter}", &padded_counter);
+    result = result.replace("{count}", &count.to_string());
+
+    // Custom text placeholder
+    if let Some(ref custom) = options.custom_text {
+        result = result.replace("{custom}", custom);
+    }
+
+    // Clean up the result - remove any invalid characters for filenames
+    result = result.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+
+    // Ensure extension is added if not included in pattern
+    if !result.contains('.') && !extension.is_empty() {
+        result.push('.');
+        result.push_str(extension);
+    }
+
+    // Apply final case transformation to entire result if needed
+    if options.lowercase && extension.is_empty() {
+        result = result.to_lowercase();
+    }
+
+    result
+}
+
+/// Helper function to capitalize words
+fn capitalize_words(s: &str) -> String {
+    s.split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+            }
+        })
+        .collect::<Vec<String>>()
+        .join(" ")
+}
+
+/// Get detailed error message for invalid filename
+fn get_filename_error(name: &str) -> String {
+    if name.is_empty() {
+        return "Filename cannot be empty".to_string();
+    }
+
+    if name.len() > 255 {
+        return format!("Filename too long ({} characters, max 255)", name.len());
+    }
+
+    // Check for invalid characters
+    let invalid_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|', '\0'];
+    for c in name.chars() {
+        if invalid_chars.contains(&c) {
+            return format!("Invalid character '{}' in filename", c);
+        }
+    }
+
+    // Check for reserved Windows names
+    let reserved_names = [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+
+    let name_upper = name.to_uppercase();
+    let base_name = if let Some(dot_pos) = name_upper.find('.') {
+        &name_upper[..dot_pos]
+    } else {
+        &name_upper
+    };
+
+    if reserved_names.contains(&base_name) {
+        return format!("'{}' is a reserved filename on Windows", base_name);
+    }
+
+    if name.ends_with(' ') {
+        return "Filename cannot end with a space".to_string();
+    }
+
+    if name.ends_with('.') {
+        return "Filename cannot end with a period".to_string();
+    }
+
+    "Unknown filename validation error".to_string()
+}
+
+/// Validate filename for invalid characters
+fn validate_filename(name: &str) -> bool {
+    // Check for empty or too long names
+    if name.is_empty() || name.len() > 255 {
+        return false;
+    }
+
+    // Check for invalid characters
+    let invalid_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|', '\0'];
+    if name.chars().any(|c| invalid_chars.contains(&c)) {
+        return false;
+    }
+
+    // Check for reserved Windows names
+    let reserved_names = [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+
+    let name_upper = name.to_uppercase();
+    let base_name = if let Some(dot_pos) = name_upper.find('.') {
+        &name_upper[..dot_pos]
+    } else {
+        &name_upper
+    };
+
+    if reserved_names.contains(&base_name) {
+        return false;
+    }
+
+    // Check for names ending with space or period
+    if name.ends_with(' ') || name.ends_with('.') {
+        return false;
+    }
+
+    true
+}
+
+/// Apply rename pattern with placeholders to generate new filename
+fn apply_rename_pattern(file_path: &str, pattern: &str) -> String {
+    let path = std::path::Path::new(file_path);
+
+    // Extract file components
+    let name_without_ext = path
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unnamed");
+    let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+    // Get current date/time components
+    let now = chrono::Local::now();
+
+    // Replace placeholders in pattern
+    let mut result = pattern.to_string();
+
+    // Basic placeholders
+    result = result.replace("{name}", name_without_ext);
+    result = result.replace("{ext}", extension);
+    result = result.replace("{filename}", &format!("{}.{}", name_without_ext, extension));
+
+    // Date/time placeholders
+    result = result.replace("{year}", &now.format("%Y").to_string());
+    result = result.replace("{month}", &now.format("%m").to_string());
+    result = result.replace("{day}", &now.format("%d").to_string());
+    result = result.replace("{date}", &now.format("%Y-%m-%d").to_string());
+    result = result.replace("{time}", &now.format("%H-%M-%S").to_string());
+    result = result.replace("{timestamp}", &now.format("%Y%m%d-%H%M%S").to_string());
+
+    // Counter placeholder (uses global RENAME_COUNTER)
+    let count = RENAME_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    result = result.replace("{counter}", &format!("{:04}", count));
+    result = result.replace("{count}", &count.to_string());
+
+    // Clean up the result - remove any invalid characters for filenames
+    result = result.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+
+    // Ensure extension is added if not included in pattern
+    if !result.contains('.') && !extension.is_empty() {
+        result.push('.');
+        result.push_str(extension);
+    }
+
+    result
 }
 
 /// Infer file category from extension and path patterns for AI-enhanced matching
@@ -1516,4 +1934,303 @@ async fn test_rule_against_single_file(
     };
 
     Ok((matches, match_value))
+}
+
+/// Test a smart folder's rules against sample files
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RenamePatternInfo {
+    pub placeholders: Vec<PatternPlaceholder>,
+    pub examples: Vec<RenameExample>,
+    pub presets: Vec<NamingPreset>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PatternPlaceholder {
+    pub placeholder: String,
+    pub description: String,
+    pub example: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RenameExample {
+    pub pattern: String,
+    pub description: String,
+    pub before: String,
+    pub after: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NamingPreset {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub pattern: String,
+    pub category: String,
+    pub example_before: String,
+    pub example_after: String,
+}
+
+/// Get information about available rename pattern placeholders
+#[tauri::command]
+pub async fn get_rename_pattern_info() -> Result<RenamePatternInfo> {
+    Ok(RenamePatternInfo {
+        placeholders: vec![
+            PatternPlaceholder {
+                placeholder: "{name}".to_string(),
+                description: "Original filename without extension".to_string(),
+                example: "document".to_string(),
+            },
+            PatternPlaceholder {
+                placeholder: "{ext}".to_string(),
+                description: "File extension".to_string(),
+                example: "pdf".to_string(),
+            },
+            PatternPlaceholder {
+                placeholder: "{filename}".to_string(),
+                description: "Full original filename with extension".to_string(),
+                example: "document.pdf".to_string(),
+            },
+            PatternPlaceholder {
+                placeholder: "{year}".to_string(),
+                description: "Current year (4 digits)".to_string(),
+                example: "2024".to_string(),
+            },
+            PatternPlaceholder {
+                placeholder: "{month}".to_string(),
+                description: "Current month (2 digits)".to_string(),
+                example: "03".to_string(),
+            },
+            PatternPlaceholder {
+                placeholder: "{day}".to_string(),
+                description: "Current day (2 digits)".to_string(),
+                example: "15".to_string(),
+            },
+            PatternPlaceholder {
+                placeholder: "{date}".to_string(),
+                description: "Current date in YYYY-MM-DD format".to_string(),
+                example: "2024-03-15".to_string(),
+            },
+            PatternPlaceholder {
+                placeholder: "{time}".to_string(),
+                description: "Current time in HH-MM-SS format".to_string(),
+                example: "14-30-45".to_string(),
+            },
+            PatternPlaceholder {
+                placeholder: "{timestamp}".to_string(),
+                description: "Full timestamp YYYYMMDD-HHMMSS".to_string(),
+                example: "20240315-143045".to_string(),
+            },
+            PatternPlaceholder {
+                placeholder: "{counter}".to_string(),
+                description: "Incrementing counter with padding (0001, 0002...)".to_string(),
+                example: "0001".to_string(),
+            },
+            PatternPlaceholder {
+                placeholder: "{count}".to_string(),
+                description: "Incrementing counter without padding".to_string(),
+                example: "1".to_string(),
+            },
+        ],
+        examples: vec![
+            RenameExample {
+                pattern: "{date}_{name}.{ext}".to_string(),
+                description: "Add date prefix to files".to_string(),
+                before: "report.pdf".to_string(),
+                after: "2024-03-15_report.pdf".to_string(),
+            },
+            RenameExample {
+                pattern: "{name}_{counter}.{ext}".to_string(),
+                description: "Add sequential numbering".to_string(),
+                before: "photo.jpg".to_string(),
+                after: "photo_0001.jpg".to_string(),
+            },
+            RenameExample {
+                pattern: "archive_{timestamp}_{name}.{ext}".to_string(),
+                description: "Archive files with timestamp".to_string(),
+                before: "data.csv".to_string(),
+                after: "archive_20240315-143045_data.csv".to_string(),
+            },
+            RenameExample {
+                pattern: "{year}/{month}/{name}.{ext}".to_string(),
+                description: "Organize by year and month folders".to_string(),
+                before: "invoice.pdf".to_string(),
+                after: "2024/03/invoice.pdf".to_string(),
+            },
+        ],
+        presets: get_naming_presets(),
+    })
+}
+
+/// Get preset naming conventions
+fn get_naming_presets() -> Vec<NamingPreset> {
+    vec![
+        // Date-based formats
+        NamingPreset {
+            id: "date_prefix".to_string(),
+            name: "Date Prefix".to_string(),
+            description: "Add date at the beginning of filename".to_string(),
+            pattern: "{date}_{name}.{ext}".to_string(),
+            category: "Date-based".to_string(),
+            example_before: "report.pdf".to_string(),
+            example_after: "2024-03-15_report.pdf".to_string(),
+        },
+        NamingPreset {
+            id: "date_suffix".to_string(),
+            name: "Date Suffix".to_string(),
+            description: "Add date at the end of filename".to_string(),
+            pattern: "{name}_{date}.{ext}".to_string(),
+            category: "Date-based".to_string(),
+            example_before: "report.pdf".to_string(),
+            example_after: "report_2024-03-15.pdf".to_string(),
+        },
+        NamingPreset {
+            id: "timestamp_archive".to_string(),
+            name: "Timestamp Archive".to_string(),
+            description: "Archive format with full timestamp".to_string(),
+            pattern: "archive_{timestamp}_{name}.{ext}".to_string(),
+            category: "Date-based".to_string(),
+            example_before: "data.csv".to_string(),
+            example_after: "archive_20240315-143045_data.csv".to_string(),
+        },
+        // Sequential formats
+        NamingPreset {
+            id: "sequential_numbered".to_string(),
+            name: "Sequential Numbering".to_string(),
+            description: "Add sequential numbers to files".to_string(),
+            pattern: "{name}_{counter}.{ext}".to_string(),
+            category: "Sequential".to_string(),
+            example_before: "photo.jpg".to_string(),
+            example_after: "photo_0001.jpg".to_string(),
+        },
+        NamingPreset {
+            id: "numbered_prefix".to_string(),
+            name: "Number Prefix".to_string(),
+            description: "Sequential number at the beginning".to_string(),
+            pattern: "{counter}_{name}.{ext}".to_string(),
+            category: "Sequential".to_string(),
+            example_before: "document.txt".to_string(),
+            example_after: "0001_document.txt".to_string(),
+        },
+        // Organization formats
+        NamingPreset {
+            id: "year_month_folders".to_string(),
+            name: "Year/Month Folders".to_string(),
+            description: "Organize into year and month subdirectories".to_string(),
+            pattern: "{year}/{month}/{name}.{ext}".to_string(),
+            category: "Folder Organization".to_string(),
+            example_before: "invoice.pdf".to_string(),
+            example_after: "2024/03/invoice.pdf".to_string(),
+        },
+        NamingPreset {
+            id: "date_folders".to_string(),
+            name: "Date Folders".to_string(),
+            description: "Organize into date-named folders".to_string(),
+            pattern: "{date}/{name}.{ext}".to_string(),
+            category: "Folder Organization".to_string(),
+            example_before: "photo.jpg".to_string(),
+            example_after: "2024-03-15/photo.jpg".to_string(),
+        },
+        // Professional formats
+        NamingPreset {
+            id: "project_versioned".to_string(),
+            name: "Project Version".to_string(),
+            description: "Project files with version numbers".to_string(),
+            pattern: "{name}_v{counter}.{ext}".to_string(),
+            category: "Professional".to_string(),
+            example_before: "design.psd".to_string(),
+            example_after: "design_v0001.psd".to_string(),
+        },
+        NamingPreset {
+            id: "client_dated".to_string(),
+            name: "Client Date Format".to_string(),
+            description: "Professional format with date".to_string(),
+            pattern: "{date}-{name}-FINAL.{ext}".to_string(),
+            category: "Professional".to_string(),
+            example_before: "proposal.docx".to_string(),
+            example_after: "2024-03-15-proposal-FINAL.docx".to_string(),
+        },
+        // Photo/Media formats
+        NamingPreset {
+            id: "photo_datetime".to_string(),
+            name: "Photo DateTime".to_string(),
+            description: "Photography naming with date and time".to_string(),
+            pattern: "IMG_{date}_{time}_{counter}.{ext}".to_string(),
+            category: "Photography".to_string(),
+            example_before: "photo.jpg".to_string(),
+            example_after: "IMG_2024-03-15_14-30-45_0001.jpg".to_string(),
+        },
+        NamingPreset {
+            id: "camera_roll".to_string(),
+            name: "Camera Roll".to_string(),
+            description: "Camera-style naming".to_string(),
+            pattern: "DSC_{counter}.{ext}".to_string(),
+            category: "Photography".to_string(),
+            example_before: "image.jpg".to_string(),
+            example_after: "DSC_0001.jpg".to_string(),
+        },
+        // Simple formats
+        NamingPreset {
+            id: "keep_original".to_string(),
+            name: "Keep Original".to_string(),
+            description: "Keep original filename".to_string(),
+            pattern: "{name}.{ext}".to_string(),
+            category: "Simple".to_string(),
+            example_before: "document.pdf".to_string(),
+            example_after: "document.pdf".to_string(),
+        },
+        NamingPreset {
+            id: "lowercase".to_string(),
+            name: "Lowercase".to_string(),
+            description: "Convert to lowercase (requires additional processing)".to_string(),
+            pattern: "{name}.{ext}".to_string(),
+            category: "Simple".to_string(),
+            example_before: "MyDocument.PDF".to_string(),
+            example_after: "mydocument.pdf".to_string(),
+        },
+    ]
+}
+
+#[tauri::command]
+pub async fn test_smart_folder_rule(
+    rule: OrganizationRule,
+    state: State<'_, std::sync::Arc<AppState>>,
+) -> Result<RuleValidationResult> {
+    // First validate the rule structure
+    let validation = validate_rule(rule.clone(), state.clone()).await?;
+
+    // If there are errors, return immediately
+    if !validation.errors.is_empty() {
+        return Ok(validation);
+    }
+
+    // Test the rule against some sample files to provide feedback
+    let sample_files = vec![
+        "document.pdf".to_string(),
+        "image.jpg".to_string(),
+        "video.mp4".to_string(),
+        "presentation.pptx".to_string(),
+        "spreadsheet.xlsx".to_string(),
+    ];
+
+    let test_result = test_rule_against_files(rule, sample_files, state).await?;
+
+    // Add suggestions based on test results
+    let mut suggestions = validation.suggestions;
+    if test_result.matched_files == 0 {
+        suggestions.push(
+            "This rule didn't match any sample files. Consider adjusting the conditions."
+                .to_string(),
+        );
+    } else if test_result.matched_files == test_result.total_files {
+        suggestions.push(
+            "This rule matches all sample files. Consider making it more specific.".to_string(),
+        );
+    }
+
+    Ok(RuleValidationResult {
+        valid: validation.valid,
+        errors: validation.errors,
+        warnings: validation.warnings,
+        suggestions,
+    })
 }

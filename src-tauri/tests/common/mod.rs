@@ -1,5 +1,4 @@
 // Common test utilities and fixtures
-use mockito;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -10,8 +9,10 @@ use tempfile::{tempdir, TempDir};
 use uuid::Uuid;
 
 // Test data builders
+#[allow(dead_code)]
 pub struct TestDataBuilder;
 
+#[allow(dead_code)]
 impl TestDataBuilder {
     pub fn file_analysis() -> FileAnalysisBuilder {
         FileAnalysisBuilder::new()
@@ -26,10 +27,12 @@ impl TestDataBuilder {
     }
 }
 
+#[allow(dead_code)]
 pub struct FileAnalysisBuilder {
     analysis: FileAnalysis,
 }
 
+#[allow(dead_code)]
 impl FileAnalysisBuilder {
     fn new() -> Self {
         Self {
@@ -71,10 +74,12 @@ impl FileAnalysisBuilder {
     }
 }
 
+#[allow(dead_code)]
 pub struct ConfigBuilder {
     config: Config,
 }
 
+#[allow(dead_code)]
 impl ConfigBuilder {
     fn new() -> Self {
         Self {
@@ -102,12 +107,14 @@ impl ConfigBuilder {
     }
 }
 
+#[allow(dead_code)]
 pub struct TestFileBuilder {
     path: Option<PathBuf>,
     content: String,
     file_type: String,
 }
 
+#[allow(dead_code)]
 impl TestFileBuilder {
     fn new() -> Self {
         Self {
@@ -144,11 +151,13 @@ impl TestFileBuilder {
 }
 
 // Mock services
+#[allow(dead_code)]
 pub struct MockAiService {
     responses: Vec<FileAnalysis>,
     current_index: usize,
 }
 
+#[allow(dead_code)]
 impl MockAiService {
     pub fn new() -> Self {
         Self {
@@ -174,12 +183,14 @@ impl MockAiService {
 }
 
 // Test environment setup
+#[allow(dead_code)]
 pub struct TestEnvironment {
     pub temp_dir: TempDir,
     pub config: Config,
     pub database: Option<Database>,
 }
 
+#[allow(dead_code)]
 impl TestEnvironment {
     pub async fn new() -> Self {
         let temp_dir = tempdir().unwrap();
@@ -216,10 +227,12 @@ impl TestEnvironment {
 }
 
 // Mock Ollama server
+#[allow(dead_code)]
 pub struct MockOllamaServer {
     server: mockito::ServerGuard,
 }
 
+#[allow(dead_code)]
 impl MockOllamaServer {
     pub fn new() -> Self {
         Self {
@@ -261,8 +274,10 @@ impl MockOllamaServer {
 }
 
 // Test assertions
+#[allow(dead_code)]
 pub struct TestAssertions;
 
+#[allow(dead_code)]
 impl TestAssertions {
     pub fn assert_file_analysis(actual: &FileAnalysis, expected: &FileAnalysis) {
         assert_eq!(actual.path, expected.path, "Path mismatch");
@@ -285,11 +300,13 @@ impl TestAssertions {
 }
 
 // Performance measurement
+#[allow(dead_code)]
 pub struct PerformanceTimer {
     start: std::time::Instant,
     name: String,
 }
 
+#[allow(dead_code)]
 impl PerformanceTimer {
     pub fn start(name: &str) -> Self {
         Self {
@@ -315,8 +332,10 @@ impl PerformanceTimer {
 }
 
 // Test data generators
+#[allow(dead_code)]
 pub struct TestDataGenerator;
 
+#[allow(dead_code)]
 impl TestDataGenerator {
     pub fn random_path() -> String {
         format!("/test/{}.txt", Uuid::new_v4())
@@ -338,8 +357,10 @@ impl TestDataGenerator {
 }
 
 // Database test helpers
+#[allow(dead_code)]
 pub struct DatabaseTestHelper;
 
+#[allow(dead_code)]
 impl DatabaseTestHelper {
     pub async fn create_temp_database() -> Result<Database> {
         let temp_dir = tempdir()?;
@@ -363,8 +384,10 @@ impl DatabaseTestHelper {
 }
 
 // Concurrency test helpers
+#[allow(dead_code)]
 pub struct ConcurrencyTestHelper;
 
+#[allow(dead_code)]
 impl ConcurrencyTestHelper {
     pub async fn run_concurrent_tasks<F, T>(task_count: usize, task_fn: F) -> Vec<T>
     where

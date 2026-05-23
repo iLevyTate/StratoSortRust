@@ -188,7 +188,7 @@ pub async fn set_setting_value(
 
     // Emit event for specific setting
     app.emit(
-        "setting-changed",
+        "settings-value-changed",
         serde_json::json!({
             "key": key,
             "value": value
@@ -204,6 +204,13 @@ pub async fn add_watch_path(
     state: State<'_, std::sync::Arc<AppState>>,
     app: AppHandle,
 ) -> Result<()> {
+    // Validate before mutating config — reject empty, null bytes, `..`,
+    // system directories, and nonexistent paths. Canonicalize so the stored
+    // form is absolute and stable across user shell cwd changes.
+    let path = crate::utils::security::validate_directory_path(&path)?
+        .to_string_lossy()
+        .to_string();
+
     let mut config = state.config.read().clone();
 
     if !config.watch_paths.contains(&path) {
@@ -225,7 +232,7 @@ pub async fn add_watch_path(
             }
         }
 
-        app.emit("watch-path-added", &path)?;
+        app.emit("settings-watch-path-added", &path)?;
     }
 
     Ok(())
@@ -257,7 +264,7 @@ pub async fn remove_watch_path(
         }
     }
 
-    app.emit("watch-path-removed", &path)?;
+    app.emit("settings-watch-path-removed", &path)?;
 
     Ok(())
 }
@@ -637,8 +644,15 @@ pub async fn update_category_settings(
 #[tauri::command]
 pub async fn test_ai_connection(
     state: State<'_, std::sync::Arc<AppState>>,
+    config: Option<serde_json::Value>,
 ) -> Result<serde_json::Value> {
-    let host = {
+    // Allow optional override of host via provided config
+    let host = if let Some(cfg) = &config {
+        cfg.get("host")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| state.config.read().ollama_host.clone())
+    } else {
         let config = state.config.read();
         config.ollama_host.clone()
     };

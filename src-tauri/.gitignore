@@ -3,7 +3,9 @@
 # Build outputs
 target/
 gen/
-data/
+# Anchor `/data` to the crate root — the unanchored form was also matching
+# `tests/fixtures/data/`, hiding the demo fixture files from git.
+/data/
 
 # Test executables and debugging files
 *.exe
