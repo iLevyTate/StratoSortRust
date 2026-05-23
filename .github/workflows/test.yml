@@ -1,5 +1,16 @@
-name: Test Suite (manual only)
+name: Test Suite (manual only — needs rewrite)
 
+# This workflow predates the current code: it pins deprecated actions
+# (actions/upload-artifact@v3, codecov/codecov-action@v3, both hard-fail
+# since 2025), references `libwebkit2gtk-4.0-dev` (gone from ubuntu-24.04),
+# and runs `cargo test --features "test"` against a feature that doesn't
+# exist in Cargo.toml. Until those are fixed it MUST stay
+# workflow_dispatch-only — flipping it to PR/push triggers cascades into a
+# 16-job failure storm with no real signal.
+#
+# The PR-gating frontend + backend + bundle gates live in ci.yml. The
+# follow-up to actually make this matrix viable (bump action versions,
+# fix deps, restore real PR triggers) is tracked in a separate issue.
 on:
   workflow_dispatch:
 
