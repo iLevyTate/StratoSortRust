@@ -5,6 +5,10 @@ import { defineConfig, devices } from '@playwright/test';
  */
 export default defineConfig({
 	testDir: './e2e',
+	/* Accessibility specs are owned by playwright.accessibility.config.ts.
+	 * Without this exclusion, both configs would run them and the e2e job
+	 * would fail on a11y issues that aren't its responsibility. */
+	testIgnore: '**/*.accessibility.spec.ts',
 	/* Run tests in files in parallel */
 	fullyParallel: true,
 	/* Fail the build on CI if you accidentally left test.only in the source code */
