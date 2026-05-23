@@ -54,6 +54,21 @@ jobs:
             librsvg2-dev \
             patchelf
 
+      # `generate_context!()` in src-tauri/src/lib.rs reads tauri.conf.json
+      # at proc-macro expansion time and asserts that `frontendDist`
+      # (`../dist`) exists on disk. Without a prior `npm run build` the
+      # directory is missing on a fresh checkout and `cargo clippy` panics
+      # before producing any lints. The build is cheap (~2s) and shared
+      # with backend-tests in cache anyway.
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Build frontend (populates ../dist for generate_context!)
+        run: npm ci && npm run build
+
       - name: Check formatting
         working-directory: src-tauri
         run: cargo fmt -- --check
@@ -95,6 +110,18 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
+
+      # `generate_context!()` reads tauri.conf.json at compile time and
+      # requires `frontendDist` (`../dist`) to exist on disk — `cargo build`
+      # / `cargo test --lib` will panic without it on a fresh checkout.
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Build frontend (populates ../dist for generate_context!)
+        run: npm ci && npm run build
 
       - name: Build (default features)
         working-directory: src-tauri
