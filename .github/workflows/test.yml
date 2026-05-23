@@ -1,6 +1,14 @@
-name: Test Suite (manual only)
+name: Test Suite (full matrix)
 
+# Runs the full 3-OS frontend + e2e + a11y matrix on every PR to main and on
+# pushes to main. Kept separate from ci.yml so the basic gates (rustfmt,
+# clippy, backend tests, frontend type check, Linux bundle build) stay fast
+# while the heavyweight suites still get exercised before merge.
 on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main]
   workflow_dispatch:
 
 env:
