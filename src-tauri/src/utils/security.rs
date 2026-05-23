@@ -264,33 +264,49 @@ pub fn validate_user_path(path: &str) -> Result<PathBuf> {
         }
     }
 
-    let canonical = path_buf.canonicalize().map_err(|e| AppError::SecurityError {
-        message: format!("Path does not exist or cannot be resolved: {}", e),
-    })?;
-
-    let canonical_str = canonical.to_string_lossy();
+    // System-path blocklist. We list both the Linux canonical forms and the
+    // macOS canonical forms (/etc → /private/etc; modern macOS with firmlinks
+    // may further resolve to /System/Volumes/Data/private/etc, so we also keep
+    // the un-canonicalized check below as a backstop).
     let blocked = [
         "/etc/",
         "/proc/",
         "/sys/",
         "/dev/",
         "/root/",
-        // macOS symlinks /etc → /private/etc, /var → /private/var, /tmp →
-        // /private/tmp. After canonicalize() the path comes back via the
-        // /private/* form, so we need the canonical equivalents in the
-        // blocklist or the test (and the real defense) fails on Darwin.
-        // We only list ones whose Linux counterpart we already block — /tmp
-        // is legitimately user-writable so it stays absent here.
         "/private/etc/",
+        "/System/Volumes/Data/private/etc/",
         "C:\\Windows\\System32\\",
         "C:\\System Volume Information\\",
     ];
-    for prefix in &blocked {
-        if canonical_str.starts_with(prefix) || canonical_str == prefix.trim_end_matches('/') {
-            return Err(AppError::SecurityError {
-                message: format!("Refusing to operate on system path: {}", canonical_str),
-            });
-        }
+
+    let matches_blocklist = |s: &str| -> bool {
+        blocked
+            .iter()
+            .any(|p| s.starts_with(*p) || s == p.trim_end_matches('/'))
+    };
+
+    // First pass: check the literal input. Catches `/etc` directly without
+    // depending on what canonicalize() decides to return on this OS — macOS
+    // firmlink resolution in particular makes the canonical form hard to
+    // enumerate. The canonical check below is still needed to defeat symlink
+    // dodges (e.g. ln -s /etc /tmp/safe; pass /tmp/safe).
+    let raw_str = path_buf.to_string_lossy();
+    if matches_blocklist(&raw_str) {
+        return Err(AppError::SecurityError {
+            message: format!("Refusing to operate on system path: {}", raw_str),
+        });
+    }
+
+    let canonical = path_buf.canonicalize().map_err(|e| AppError::SecurityError {
+        message: format!("Path does not exist or cannot be resolved: {}", e),
+    })?;
+
+    let canonical_str = canonical.to_string_lossy();
+    if matches_blocklist(&canonical_str) {
+        return Err(AppError::SecurityError {
+            message: format!("Refusing to operate on system path: {}", canonical_str),
+        });
     }
 
     Ok(canonical)
