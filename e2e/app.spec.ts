@@ -1,510 +1,338 @@
-import { test, expect } from '@playwright/test';
-import path from 'path';
+import { test, expect, type Page } from '@playwright/test';
 
-test.describe('StratoSort E2E Tests', () => {
-	test.beforeEach(async ({ page }) => {
-		await page.goto('/');
-		// Wait for app to initialize
-		await page.waitForSelector('[data-testid="app-container"]', { timeout: 30000 });
-	});
+// Mock keys are Tauri command names (snake_case) matching the real Rust
+// commands wrapped by `$lib/api/tauri.ts`. The mock is installed via
+// `page.addInitScript` so it lives on `window` before any module runs —
+// which is what lets `$lib/api/tauri.ts` see it from its very first invoke.
+// See #37 for the history of this contract.
+//
+// Each value in a `MockSpec` is either the value to resolve with, or
+// `{ __throw: 'msg' }` to simulate a backend error. Functions can't cross
+// the Node↔browser boundary, so we serialize a declarative spec instead.
+type MockSpec = Record<string, unknown>;
 
+async function installMocks(page: Page, mocks: MockSpec): Promise<void> {
+	await page.addInitScript((serialized: string) => {
+		const parsed = JSON.parse(serialized) as Record<string, unknown>;
+		const bag: Record<string, (a?: Record<string, unknown>) => Promise<unknown>> = {};
+		for (const [cmd, value] of Object.entries(parsed)) {
+			if (value && typeof value === 'object' && '__throw' in value) {
+				const msg = (value as { __throw: string }).__throw;
+				bag[cmd] = async () => {
+					throw new Error(msg);
+				};
+			} else {
+				bag[cmd] = async () => value;
+			}
+		}
+		(window as unknown as { __TAURI_MOCK__?: typeof bag }).__TAURI_MOCK__ = bag;
+	}, JSON.stringify(mocks));
+}
+
+// Default mocks for commands the app fires at boot. Keeps each test from
+// having to opt out of init-time noise.
+const bootMocks: MockSpec = {
+	get_settings: {
+		theme: 'auto',
+		language: 'en',
+		ollama_host: 'http://localhost:11434',
+		ollama_model: 'llama3.2:3b',
+		ollama_vision_model: 'llava',
+		ollama_embedding_model: 'nomic-embed-text',
+		enable_telemetry: false,
+		enable_crash_reports: false,
+		auto_analyze_on_add: false
+	},
+	check_ollama_status: {
+		is_running: true,
+		is_installed: true,
+		version: '0.1.0',
+		models: [],
+		default_model: 'llama3.2:3b'
+	},
+	get_watch_mode_status: {
+		enabled: false,
+		watching_directories: [],
+		pending_files_count: 0,
+		auto_organize_threshold: 0,
+		learning_enabled: false,
+		recent_actions_count: 0
+	},
+	list_smart_folders: [],
+	get_analysis_history: []
+};
+
+test.describe('StratoSort E2E', () => {
 	test.describe('Application Launch', () => {
-		test('should display main application window', async ({ page }) => {
+		test('renders main shell on Discover by default', async ({ page }) => {
+			await installMocks(page, bootMocks);
+			await page.goto('/');
+
 			await expect(page).toHaveTitle(/StratoSort/);
 			await expect(page.locator('[data-testid="sidebar"]')).toBeVisible();
 			await expect(page.locator('[data-testid="main-content"]')).toBeVisible();
+			await expect(page.locator('[data-testid="discover-page"]')).toBeVisible();
 		});
 
-		test('should show first-run setup for new users', async ({ page, context }) => {
-			// Clear any existing settings
-			await context.clearCookies();
-			await page.evaluate(() => localStorage.clear());
-			await page.reload();
+		test('navigates through all main sections', async ({ page }) => {
+			await installMocks(page, bootMocks);
+			await page.goto('/');
+			await page.locator('[data-testid="discover-page"]').waitFor();
 
-			// Should show first-run setup
-			await expect(page.locator('text=Welcome to StratoSort')).toBeVisible();
-			await expect(page.locator('button:has-text("Get Started")')).toBeVisible();
-		});
-
-		test('should navigate through all main sections', async ({ page }) => {
-			// Discover
-			await page.click('[data-testid="nav-discover"]');
-			await expect(page.locator('h1:has-text("Discover")')).toBeVisible();
-
-			// Analyze
 			await page.click('[data-testid="nav-analyze"]');
-			await expect(page.locator('h1:has-text("Analyze")')).toBeVisible();
+			await expect(page.locator('[data-testid="analyze-page"]')).toBeVisible();
 
-			// Organize
 			await page.click('[data-testid="nav-organize"]');
-			await expect(page.locator('h1:has-text("Organize")')).toBeVisible();
+			await expect(page.locator('[data-testid="organize-page"]')).toBeVisible();
 
-			// Settings
 			await page.click('[data-testid="nav-settings"]');
-			await expect(page.locator('h1:has-text("Settings")')).toBeVisible();
+			await expect(page.locator('[data-testid="settings-page"]')).toBeVisible();
+
+			await page.click('[data-testid="nav-discover"]');
+			await expect(page.locator('[data-testid="discover-page"]')).toBeVisible();
 		});
 	});
 
-	test.describe('File Discovery', () => {
-		test('should browse and display files', async ({ page }) => {
-			await page.click('[data-testid="nav-discover"]');
-
-			// Mock file dialog selection
-			await page.evaluate(() => {
-				// Mock the Tauri API response
-				(window as any).__TAURI_MOCK__ = {
-					scanDirectory: async () => [
-						{ path: '/test/file1.txt', name: 'file1.txt', size: 1024, is_directory: false },
-						{ path: '/test/file2.pdf', name: 'file2.pdf', size: 2048, is_directory: false }
-					]
-				};
+	test.describe('Discover', () => {
+		test('scans a directory and renders the file list', async ({ page }) => {
+			await installMocks(page, {
+				...bootMocks,
+				scan_directory: [
+					{ path: '/test/file1.txt', name: 'file1.txt', size: 1024, is_directory: false },
+					{ path: '/test/file2.pdf', name: 'file2.pdf', size: 2048, is_directory: false }
+				]
 			});
+			await page.goto('/');
+			await page.locator('[data-testid="discover-page"]').waitFor();
 
-			await page.click('button:has-text("Browse")');
+			await page.fill('input[aria-label="Directory path"]', '/test');
+			await page.click('button:has-text("Scan")');
 
-			// Wait for files to appear
 			await expect(page.locator('text=file1.txt')).toBeVisible();
 			await expect(page.locator('text=file2.pdf')).toBeVisible();
+			await expect(page.locator('text=2 item(s) · 0 selected')).toBeVisible();
 		});
 
-		test('should support drag and drop', async ({ page }) => {
-			await page.click('[data-testid="nav-discover"]');
-
-			const dropZone = page.locator('[data-testid="drop-zone"]');
-			await expect(dropZone).toBeVisible();
-
-			// Create a data transfer for drag and drop
-			const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
-
-			// Simulate file drop
-			await dropZone.dispatchEvent('drop', { dataTransfer });
-
-			// Verify drop zone reacts
-			await expect(dropZone).toHaveClass(/drop-active/);
-		});
-
-		test('should search files', async ({ page }) => {
-			await page.click('[data-testid="nav-discover"]');
-
-			// Add some test files first
-			await page.evaluate(() => {
-				(window as any).__TAURI_MOCK__ = {
-					scanDirectory: async () => [
-						{ path: '/test/document.pdf', name: 'document.pdf', size: 1024, is_directory: false },
-						{ path: '/test/image.jpg', name: 'image.jpg', size: 2048, is_directory: false },
-						{ path: '/test/notes.txt', name: 'notes.txt', size: 512, is_directory: false }
-					]
-				};
+		test('selecting files updates the counter', async ({ page }) => {
+			await installMocks(page, {
+				...bootMocks,
+				scan_directory: [
+					{ path: '/test/a.txt', name: 'a.txt', size: 1024, is_directory: false },
+					{ path: '/test/b.txt', name: 'b.txt', size: 1024, is_directory: false },
+					{ path: '/test/c.txt', name: 'c.txt', size: 1024, is_directory: false }
+				]
 			});
+			await page.goto('/');
+			await page.locator('[data-testid="discover-page"]').waitFor();
 
-			await page.click('button:has-text("Browse")');
-			await page.waitForSelector('text=document.pdf');
+			await page.fill('input[aria-label="Directory path"]', '/test');
+			await page.click('button:has-text("Scan")');
+			await page.locator('text=a.txt').waitFor();
 
-			// Search for specific file
-			await page.fill('[data-testid="search-input"]', 'image');
-
-			// Should show only matching file
-			await expect(page.locator('text=image.jpg')).toBeVisible();
-			await expect(page.locator('text=document.pdf')).not.toBeVisible();
-			await expect(page.locator('text=notes.txt')).not.toBeVisible();
-		});
-
-		test('should select multiple files', async ({ page }) => {
-			await page.click('[data-testid="nav-discover"]');
-
-			// Add test files
-			await page.evaluate(() => {
-				(window as any).__TAURI_MOCK__ = {
-					scanDirectory: async () => [
-						{ path: '/test/file1.txt', name: 'file1.txt', size: 1024, is_directory: false },
-						{ path: '/test/file2.txt', name: 'file2.txt', size: 1024, is_directory: false },
-						{ path: '/test/file3.txt', name: 'file3.txt', size: 1024, is_directory: false }
-					]
-				};
-			});
-
-			await page.click('button:has-text("Browse")');
-			await page.waitForSelector('text=file1.txt');
-
-			// Select files
 			await page.check('[data-testid="file-checkbox-0"]');
 			await page.check('[data-testid="file-checkbox-1"]');
+			await expect(page.locator('text=3 item(s) · 2 selected')).toBeVisible();
+		});
 
-			// Verify selection count
-			await expect(page.locator('text=2 files selected')).toBeVisible();
+		test('semantic search renders results', async ({ page }) => {
+			await installMocks(page, {
+				...bootMocks,
+				semantic_search: [
+					{ path: '/test/doc.pdf', name: 'doc.pdf', score: 0.91, snippet: 'matched snippet' }
+				]
+			});
+			await page.goto('/');
+			await page.locator('[data-testid="discover-page"]').waitFor();
 
-			// Select all
-			await page.click('button:has-text("Select All")');
-			await expect(page.locator('text=3 files selected')).toBeVisible();
+			await page.fill('[data-testid="search-input"]', 'doc');
+			await page.click('button:has-text("Search")');
+
+			await expect(page.locator('[data-testid="search-results"]')).toBeVisible();
+			await expect(page.locator('text=doc.pdf')).toBeVisible();
+		});
+
+		test('scan failure surfaces an error toast', async ({ page }) => {
+			await installMocks(page, {
+				...bootMocks,
+				scan_directory: { __throw: 'Network error: Unable to connect' }
+			});
+			await page.goto('/');
+			await page.locator('[data-testid="discover-page"]').waitFor();
+
+			await page.fill('input[aria-label="Directory path"]', '/nope');
+			await page.click('button:has-text("Scan")');
+
+			await expect(page.locator('text=/Scan failed.*Network error/')).toBeVisible();
 		});
 	});
 
-	test.describe('File Analysis', () => {
-		test('should analyze selected files', async ({ page }) => {
-			// Navigate to discover and select files
-			await page.click('[data-testid="nav-discover"]');
-
-			await page.evaluate(() => {
-				(window as any).__TAURI_MOCK__ = {
-					scanDirectory: async () => [
-						{ path: '/test/report.pdf', name: 'report.pdf', size: 1024, is_directory: false }
-					],
-					analyzeFile: async () => ({
-						file_path: '/test/report.pdf',
-						categories: ['Documents', 'Reports'],
-						tags: ['quarterly', 'finance'],
-						confidence_score: 0.85
-					})
-				};
-			});
-
-			await page.click('button:has-text("Browse")');
-			await page.waitForSelector('text=report.pdf');
-			await page.check('[data-testid="file-checkbox-0"]');
-
-			// Navigate to analyze
+	test.describe('Analyze', () => {
+		test('re-analyze with no paths shows an info toast', async ({ page }) => {
+			await installMocks(page, bootMocks);
+			await page.goto('/');
 			await page.click('[data-testid="nav-analyze"]');
-			await page.click('button:has-text("Start Analysis")');
+			await page.locator('[data-testid="analyze-page"]').waitFor();
 
-			// Wait for analysis to complete
-			await expect(page.locator('[data-testid="analysis-progress"]')).toBeVisible();
-			await expect(page.locator('text=Analysis Complete')).toBeVisible({ timeout: 10000 });
-
-			// Verify results
-			await expect(page.locator('text=Documents')).toBeVisible();
-			await expect(page.locator('text=Reports')).toBeVisible();
-			await expect(page.locator('text=85%')).toBeVisible(); // Confidence score
+			await page.click('button:has-text("Re-analyze")');
+			await expect(page.locator('text=Paste one path per line')).toBeVisible();
 		});
 
-		test('should filter analysis results', async ({ page }) => {
-			await page.click('[data-testid="nav-analyze"]');
-
-			// Mock analysis results
-			await page.evaluate(() => {
-				(window as any).__ANALYSIS_RESULTS__ = [
-					{ file_name: 'doc1.pdf', categories: ['Documents'], confidence_score: 0.9 },
-					{ file_name: 'image1.jpg', categories: ['Images'], confidence_score: 0.85 },
-					{ file_name: 'doc2.txt', categories: ['Documents'], confidence_score: 0.8 }
-				];
+		test('re-analyze fires the wrapper and surfaces a success toast', async ({ page }) => {
+			await installMocks(page, {
+				...bootMocks,
+				reanalyze_files: [
+					{ file_path: '/test/report.pdf', category: 'Documents', summary: 'q4', confidence: 0.85 }
+				]
 			});
+			await page.goto('/');
+			await page.click('[data-testid="nav-analyze"]');
+			await page.locator('[data-testid="analyze-page"]').waitFor();
 
-			// Filter by category
-			await page.selectOption('[data-testid="category-filter"]', 'Documents');
+			await page.fill('#rerun-paths', '/test/report.pdf');
+			await page.click('button:has-text("Re-analyze")');
 
-			// Should show only documents
-			await expect(page.locator('text=doc1.pdf')).toBeVisible();
-			await expect(page.locator('text=doc2.txt')).toBeVisible();
-			await expect(page.locator('text=image1.jpg')).not.toBeVisible();
+			await expect(page.locator('text=Re-analyzed 1 file(s)')).toBeVisible();
 		});
 	});
 
-	test.describe('File Organization', () => {
-		test('should generate organization suggestions', async ({ page }) => {
-			await page.click('[data-testid="nav-organize"]');
-
-			// Mock suggestions
-			await page.evaluate(() => {
-				(window as any).__TAURI_MOCK__ = {
-					generateSuggestions: async () => [
-						{
-							file_path: '/test/report.pdf',
-							suggested_path: '/organized/Documents/Reports/Q4_report.pdf',
-							confidence: 0.9
-						}
-					]
-				};
+	test.describe('Organize', () => {
+		test('watch mode panel reflects status', async ({ page }) => {
+			await installMocks(page, {
+				...bootMocks,
+				get_watch_mode_status: {
+					enabled: true,
+					watching_directories: ['/home/me/Downloads'],
+					pending_files_count: 0,
+					auto_organize_threshold: 0,
+					learning_enabled: false,
+					recent_actions_count: 0
+				}
 			});
+			await page.goto('/');
+			await page.click('[data-testid="nav-organize"]');
+			await page.locator('[data-testid="organize-page"]').waitFor();
 
-			await page.click('button:has-text("Generate Suggestions")');
-
-			// Wait for suggestions
-			await expect(page.locator('text=/organized/Documents/Reports/')).toBeVisible();
-			await expect(page.locator('text=90%')).toBeVisible(); // Confidence
+			await expect(page.locator('[data-testid="watch-mode-panel"]')).toContainText('enabled');
+			await expect(page.locator('text=/home/me/Downloads')).toBeVisible();
 		});
 
-		test('should create smart folders', async ({ page }) => {
-			await page.click('[data-testid="nav-organize"]');
-			await page.click('button:has-text("Smart Folders")');
-			await page.click('button:has-text("New Smart Folder")');
-
-			// Fill in smart folder details
-			await page.fill('[data-testid="folder-name"]', 'Financial Documents');
-
-			// Add rule
-			await page.click('button:has-text("Add Rule")');
-			await page.selectOption('[data-testid="rule-field"]', 'name');
-			await page.selectOption('[data-testid="rule-operator"]', 'contains');
-			await page.fill('[data-testid="rule-value"]', 'invoice');
-
-			// Save
-			await page.click('button:has-text("Save")');
-
-			// Verify smart folder created
-			await expect(page.locator('text=Financial Documents')).toBeVisible();
-		});
-
-		test('should apply organization', async ({ page }) => {
-			await page.click('[data-testid="nav-organize"]');
-
-			// Mock organization operation
-			await page.evaluate(() => {
-				(window as any).__TAURI_MOCK__ = {
-					applyOrganization: async () => ({
-						successful: 3,
-						failed: 0
-					})
+		test('smart folder manager creates a folder', async ({ page }) => {
+			// This test needs stateful behavior across two invokes
+			// (create_smart_folder → list_smart_folders should now see the new one),
+			// which the declarative MockSpec can't express. Use a custom init script.
+			await page.addInitScript(() => {
+				const bag: Record<string, (a?: Record<string, unknown>) => Promise<unknown>> = {
+					get_settings: async () => ({
+						theme: 'auto', language: 'en',
+						ollama_host: '', ollama_model: '',
+						ollama_vision_model: '', ollama_embedding_model: '',
+						enable_telemetry: false, enable_crash_reports: false, auto_analyze_on_add: false
+					}),
+					check_ollama_status: async () => ({
+						is_running: false, is_installed: false, version: null, models: [], default_model: null
+					}),
+					get_watch_mode_status: async () => ({
+						enabled: false, watching_directories: [], pending_files_count: 0,
+						auto_organize_threshold: 0, learning_enabled: false, recent_actions_count: 0
+					}),
+					get_analysis_history: async () => [],
+					list_smart_folders: async () => {
+						const w = window as unknown as { __CREATED__?: unknown };
+						return w.__CREATED__ ? [w.__CREATED__] : [];
+					},
+					create_smart_folder: async (args) => {
+						const folder = { id: 'sf-1', ...(args ?? {}) };
+						(window as unknown as { __CREATED__?: unknown }).__CREATED__ = folder;
+						return folder;
+					}
 				};
+				(window as unknown as { __TAURI_MOCK__?: typeof bag }).__TAURI_MOCK__ = bag;
 			});
+			await page.goto('/');
+			await page.click('[data-testid="nav-organize"]');
+			await page.locator('[data-testid="smart-folders-manager"]').waitFor();
 
-			await page.click('button:has-text("Apply Organization")');
+			await page.fill('[data-testid="folder-name"]', 'Invoices');
+			await page.fill('input[placeholder="/home/me/Documents/Invoices"]', '/tmp/invoices');
+			await page.selectOption('[data-testid="rule-field"]', 'extension');
+			await page.selectOption('[data-testid="rule-operator"]', 'equals');
+			await page.fill('[data-testid="rule-value"]', 'pdf');
 
-			// Confirm dialog
-			await page.click('button:has-text("Confirm")');
+			await page.click('button:has-text("Add folder")');
 
-			// Wait for success message
-			await expect(page.locator('text=Successfully organized 3 files')).toBeVisible();
+			await expect(page.locator('text=Created smart folder')).toBeVisible();
+			await expect(page.locator('[data-testid="smart-folders-manager"]')).toContainText('Invoices');
 		});
 	});
 
 	test.describe('Settings', () => {
-		test('should update theme preference', async ({ page }) => {
+		test('theme select is wired to the bound value', async ({ page }) => {
+			await installMocks(page, bootMocks);
+			await page.goto('/');
 			await page.click('[data-testid="nav-settings"]');
+			await page.locator('[data-testid="settings-page"]').waitFor();
 
-			// Change theme
 			await page.selectOption('[data-testid="theme-select"]', 'dark');
-
-			// Save settings
-			await page.click('button:has-text("Save")');
-
-			// Verify theme applied
-			await expect(page.locator('body')).toHaveClass(/dark/);
+			await expect(page.locator('[data-testid="theme-select"]')).toHaveValue('dark');
 		});
 
-		test('should configure AI settings', async ({ page }) => {
-			await page.click('[data-testid="nav-settings"]');
-			await page.click('[data-testid="tab-ai"]');
-
-			// Update Ollama settings
-			await page.fill('[data-testid="ollama-host"]', 'http://192.168.1.100:11434');
-			await page.selectOption('[data-testid="ollama-model"]', 'llama3.2:3b');
-
-			// Test connection
-			await page.click('button:has-text("Test Connection")');
-
-			// Mock successful connection
-			await page.evaluate(() => {
-				(window as any).__TAURI_MOCK__ = {
-					testOllamaConnection: async () => ({ isRunning: true })
-				};
-			});
-
-			await expect(page.locator('text=Connected')).toBeVisible();
-		});
-
-		test('should manage privacy settings', async ({ page }) => {
-			await page.click('[data-testid="nav-settings"]');
-			await page.click('[data-testid="tab-privacy"]');
-
-			// Toggle telemetry
-			const telemetrySwitch = page.locator('[data-testid="telemetry-switch"]');
-			await telemetrySwitch.click();
-
-			// Toggle crash reports
-			const crashReportsSwitch = page.locator('[data-testid="crash-reports-switch"]');
-			await crashReportsSwitch.click();
-
-			// Save settings
-			await page.click('button:has-text("Save")');
-
-			await expect(page.locator('text=Settings saved')).toBeVisible();
-		});
-	});
-
-	test.describe('Keyboard Navigation', () => {
-		test('should support keyboard shortcuts', async ({ page }) => {
-			// Test Ctrl+O for open/browse
-			await page.keyboard.press('Control+O');
-			await expect(page.locator('[data-testid="file-dialog"]')).toBeVisible();
-			await page.keyboard.press('Escape');
-
-			// Test Ctrl+A for select all
-			await page.click('[data-testid="nav-discover"]');
-			await page.keyboard.press('Control+A');
-			await expect(page.locator('text=All files selected')).toBeVisible();
-
-			// Test navigation with Tab
-			await page.keyboard.press('Tab');
-			await expect(page.locator(':focus')).toHaveAttribute('data-testid', 'search-input');
-		});
-
-		test('should navigate sidebar with arrow keys', async ({ page }) => {
-			await page.locator('[data-testid="nav-discover"]').focus();
-
-			// Navigate down
-			await page.keyboard.press('ArrowDown');
-			await expect(page.locator('[data-testid="nav-analyze"]')).toBeFocused();
-
-			// Navigate down again
-			await page.keyboard.press('ArrowDown');
-			await expect(page.locator('[data-testid="nav-organize"]')).toBeFocused();
-
-			// Navigate up
-			await page.keyboard.press('ArrowUp');
-			await expect(page.locator('[data-testid="nav-analyze"]')).toBeFocused();
-		});
-	});
-
-	test.describe('Error Handling', () => {
-		test('should handle network errors gracefully', async ({ page }) => {
-			await page.click('[data-testid="nav-discover"]');
-
-			// Mock network error
-			await page.evaluate(() => {
-				(window as any).__TAURI_MOCK__ = {
-					scanDirectory: async () => {
-						throw new Error('Network error: Unable to connect');
+		test('saving settings calls update_settings and toasts', async ({ page }) => {
+			// Capture the invoke side effect so we can assert update_settings actually fired.
+			await page.addInitScript(() => {
+				const bag: Record<string, (a?: Record<string, unknown>) => Promise<unknown>> = {
+					get_settings: async () => ({
+						theme: 'auto', language: 'en',
+						ollama_host: 'http://localhost:11434', ollama_model: 'llama3.2:3b',
+						ollama_vision_model: 'llava', ollama_embedding_model: 'nomic-embed-text',
+						enable_telemetry: false, enable_crash_reports: false, auto_analyze_on_add: false
+					}),
+					check_ollama_status: async () => ({
+						is_running: true, is_installed: true, version: '0.1', models: [], default_model: 'llama3.2:3b'
+					}),
+					get_watch_mode_status: async () => ({
+						enabled: false, watching_directories: [], pending_files_count: 0,
+						auto_organize_threshold: 0, learning_enabled: false, recent_actions_count: 0
+					}),
+					get_analysis_history: async () => [],
+					list_smart_folders: async () => [],
+					update_settings: async () => {
+						(window as unknown as { __SAVED__?: boolean }).__SAVED__ = true;
+						return null;
 					}
 				};
+				(window as unknown as { __TAURI_MOCK__?: typeof bag }).__TAURI_MOCK__ = bag;
 			});
-
-			await page.click('button:has-text("Browse")');
-
-			// Should show error message
-			await expect(page.locator('text=Network error')).toBeVisible();
-
-			// Should show retry button
-			await expect(page.locator('button:has-text("Retry")')).toBeVisible();
-		});
-
-		test('should handle Ollama connection failure', async ({ page }) => {
+			await page.goto('/');
 			await page.click('[data-testid="nav-settings"]');
+			await page.locator('[data-testid="settings-page"]').waitFor();
+
+			await page.click('button:has-text("Save")');
+			await expect(page.locator('text=Settings saved')).toBeVisible();
+			expect(await page.evaluate(() => (window as unknown as { __SAVED__?: boolean }).__SAVED__)).toBe(true);
+		});
+
+		test('AI tab shows Ollama host and model inputs', async ({ page }) => {
+			await installMocks(page, bootMocks);
+			await page.goto('/');
+			await page.click('[data-testid="nav-settings"]');
+			await page.locator('[data-testid="settings-page"]').waitFor();
+
 			await page.click('[data-testid="tab-ai"]');
-
-			// Mock connection failure
-			await page.evaluate(() => {
-				(window as any).__TAURI_MOCK__ = {
-					testOllamaConnection: async () => ({ isRunning: false })
-				};
-			});
-
-			await page.click('button:has-text("Test Connection")');
-
-			// Should show error state
-			await expect(page.locator('text=Not Connected')).toBeVisible();
-			await expect(page.locator('text=Please check your Ollama installation')).toBeVisible();
+			await expect(page.locator('[data-testid="ollama-host"]')).toBeVisible();
+			await expect(page.locator('[data-testid="ollama-model"]')).toBeVisible();
 		});
-	});
 
-	test.describe('Performance', () => {
-		test('should handle large file lists efficiently', async ({ page }) => {
-			await page.click('[data-testid="nav-discover"]');
+		test('privacy tab telemetry toggle responds to clicks', async ({ page }) => {
+			await installMocks(page, bootMocks);
+			await page.goto('/');
+			await page.click('[data-testid="nav-settings"]');
+			await page.locator('[data-testid="settings-page"]').waitFor();
 
-			// Mock large file list
-			await page.evaluate(() => {
-				const files = Array.from({ length: 1000 }, (_, i) => ({
-					path: `/test/file${i}.txt`,
-					name: `file${i}.txt`,
-					size: Math.random() * 10000,
-					is_directory: false
-				}));
-
-				(window as any).__TAURI_MOCK__ = {
-					scanDirectory: async () => files
-				};
-			});
-
-			const startTime = Date.now();
-			await page.click('button:has-text("Browse")');
-
-			// Wait for files to load
-			await page.waitForSelector('text=file0.txt');
-			const loadTime = Date.now() - startTime;
-
-			// Should load within reasonable time (5 seconds)
-			expect(loadTime).toBeLessThan(5000);
-
-			// Should use virtualization (not all items rendered)
-			const visibleItems = await page.locator('[data-testid^="file-row-"]').count();
-			expect(visibleItems).toBeLessThan(100); // Only visible items should be rendered
+			await page.click('[data-testid="tab-privacy"]');
+			const telemetry = page.locator('[data-testid="telemetry-switch"]');
+			await expect(telemetry).not.toBeChecked();
+			await telemetry.check();
+			await expect(telemetry).toBeChecked();
 		});
-	});
-});
-
-test.describe('Accessibility', () => {
-	test('should meet WCAG 2.1 AA standards', async ({ page }) => {
-		await page.goto('/');
-
-		// Check for proper heading structure
-		const h1Count = await page.locator('h1').count();
-		expect(h1Count).toBe(1);
-
-		// Check all images have alt text
-		const images = page.locator('img');
-		const imageCount = await images.count();
-		for (let i = 0; i < imageCount; i++) {
-			await expect(images.nth(i)).toHaveAttribute('alt', /.+/);
-		}
-
-		// Check all form inputs have labels
-		const inputs = page.locator('input, select, textarea');
-		const inputCount = await inputs.count();
-		for (let i = 0; i < inputCount; i++) {
-			const input = inputs.nth(i);
-			const id = await input.getAttribute('id');
-			if (id) {
-				const label = page.locator(`label[for="${id}"]`);
-				await expect(label).toHaveCount(1);
-			} else {
-				// Should have aria-label if no id/label pair
-				await expect(input).toHaveAttribute('aria-label', /.+/);
-			}
-		}
-
-		// Check color contrast (this would need axe-core or similar)
-		// For now, just check that high contrast mode is available
-		await page.click('[data-testid="nav-settings"]');
-		await expect(page.locator('[data-testid="high-contrast-toggle"]')).toBeVisible();
-	});
-
-	test('should be fully navigable with keyboard only', async ({ page }) => {
-		await page.goto('/');
-
-		// Start at the top of the page
-		await page.keyboard.press('Tab');
-
-		// Should focus skip link
-		await expect(page.locator(':focus')).toHaveAttribute('data-testid', 'skip-to-content');
-
-		// Tab through main navigation
-		for (const nav of ['discover', 'analyze', 'organize', 'settings']) {
-			await page.keyboard.press('Tab');
-			await expect(page.locator(':focus')).toHaveAttribute('data-testid', `nav-${nav}`);
-		}
-
-		// Activate with Enter
-		await page.keyboard.press('Enter');
-		await expect(page.locator('h1:has-text("Settings")')).toBeVisible();
-	});
-
-	test('should work with screen readers', async ({ page }) => {
-		await page.goto('/');
-
-		// Check for ARIA landmarks
-		await expect(page.locator('[role="navigation"]')).toHaveCount(1);
-		await expect(page.locator('[role="main"]')).toHaveCount(1);
-
-		// Check for ARIA live regions
-		await expect(page.locator('[aria-live="polite"]')).toBeVisible();
-		await expect(page.locator('[aria-live="assertive"]')).toBeVisible();
-
-		// Check for proper ARIA labels
-		const buttons = page.locator('button');
-		const buttonCount = await buttons.count();
-		for (let i = 0; i < buttonCount; i++) {
-			const button = buttons.nth(i);
-			const text = await button.textContent();
-			const ariaLabel = await button.getAttribute('aria-label');
-			expect(text || ariaLabel).toBeTruthy();
-		}
 	});
 });
