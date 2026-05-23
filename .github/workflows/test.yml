@@ -163,9 +163,13 @@ jobs:
           sudo apt-get install -y xvfb
 
       - name: Install dependencies
+        # The a11y config runs chromium + firefox + webkit (see
+        # playwright.accessibility.config.ts), so we install all three.
+        # The per-browser e2e matrix above installs one at a time because
+        # each matrix entry only runs its own --project.
         run: |
           npm ci
-          npx playwright install --with-deps chromium
+          npx playwright install --with-deps chromium firefox webkit
 
       - name: Build frontend
         run: npm run build
