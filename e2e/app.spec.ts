@@ -12,21 +12,44 @@ import { test, expect, type Page } from '@playwright/test';
 type MockSpec = Record<string, unknown>;
 
 async function installMocks(page: Page, mocks: MockSpec): Promise<void> {
-	await page.addInitScript((serialized: string) => {
-		const parsed = JSON.parse(serialized) as Record<string, unknown>;
-		const bag: Record<string, (a?: Record<string, unknown>) => Promise<unknown>> = {};
-		for (const [cmd, value] of Object.entries(parsed)) {
-			if (value && typeof value === 'object' && '__throw' in value) {
-				const msg = (value as { __throw: string }).__throw;
-				bag[cmd] = async () => {
-					throw new Error(msg);
-				};
-			} else {
-				bag[cmd] = async () => value;
+	// Use a plain-string script rather than a function callback. Playwright
+	// passes function callbacks via `fn.toString()`, which on a .ts file
+	// can leak un-stripped TypeScript annotations into the browser parser
+	// (Function.toString returns the *source*; the TS→JS strip is a
+	// best-effort pass that doesn't always touch types inside arrow bodies).
+	// Strings round-trip safely — they're handed straight to the page.
+	const json = JSON.stringify(mocks);
+	const script = `
+		(function () {
+			try {
+				var mocks = ${json};
+				var bag = {};
+				var keys = Object.keys(mocks);
+				for (var i = 0; i < keys.length; i++) {
+					var cmd = keys[i];
+					var val = mocks[cmd];
+					if (val && typeof val === 'object' && '__throw' in val) {
+						(function (msg) {
+							bag[cmd] = function () {
+								return Promise.reject(new Error(msg));
+							};
+						})(val.__throw);
+					} else {
+						(function (v) {
+							bag[cmd] = function () {
+								return Promise.resolve(v);
+							};
+						})(val);
+					}
+				}
+				window.__TAURI_MOCK__ = bag;
+				console.log('[e2e-mock] installed', keys.length, 'mocks:', keys.join(','));
+			} catch (e) {
+				console.error('[e2e-mock] install failed:', e && e.message, e && e.stack);
 			}
-		}
-		(window as unknown as { __TAURI_MOCK__?: typeof bag }).__TAURI_MOCK__ = bag;
-	}, JSON.stringify(mocks));
+		})();
+	`;
+	await page.addInitScript(script);
 }
 
 // Default mocks for commands the app fires at boot. Keeps each test from
