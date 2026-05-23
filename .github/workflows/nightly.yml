@@ -87,7 +87,7 @@ jobs:
         cat outdated_deps.txt
 
     - name: Upload dependency report
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: dependency-report-${{ github.run_number }}
         path: src-tauri/outdated_deps.txt
@@ -183,7 +183,7 @@ jobs:
           || echo "Extended clippy analysis completed with warnings"
 
     - name: Upload quality reports
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: code-quality-${{ github.run_number }}
         path: |
@@ -230,7 +230,7 @@ jobs:
         fi
 
     - name: Upload security reports
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: security-scan-${{ github.run_number }}
         path: |

@@ -135,7 +135,7 @@ jobs:
         run: npm run test:e2e -- --project=${{ matrix.browser }}
 
       - name: Upload Playwright artifacts on failure
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: e2e-artifacts-${{ matrix.os }}-${{ matrix.browser }}
@@ -178,7 +178,7 @@ jobs:
         run: xvfb-run -a npx playwright test --config=playwright.accessibility.config.ts
 
       - name: Upload accessibility report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: accessibility-report
