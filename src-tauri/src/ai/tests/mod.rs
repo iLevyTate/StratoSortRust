@@ -6,3 +6,12 @@ mod sanitization_tests;
 
 #[cfg(test)]
 mod fallback_tests;
+
+#[cfg(test)]
+mod json_extract_tests;
+
+#[cfg(test)]
+mod dispatcher_tests;
+
+#[cfg(test)]
+mod vision_parse_tests;

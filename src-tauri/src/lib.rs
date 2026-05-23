@@ -3,6 +3,7 @@ pub mod commands;
 pub mod config;
 pub mod core;
 pub mod error;
+pub mod events;
 pub mod services;
 pub mod state;
 pub mod storage;
@@ -53,6 +54,20 @@ async fn initialize_app_state_with_retry(
                     retry_count, e
                 );
 
+                // Send notification about initialization retry
+                if retry_count == 1 {
+                    // Only notify on first failure to avoid spam
+                    crate::emit_event!(
+                        handle,
+                        crate::events::app::INITIALIZATION_RETRY,
+                        serde_json::json!({
+                            "attempt": retry_count,
+                            "error": format!("{}", e),
+                            "message": "Application is retrying initialization..."
+                        })
+                    );
+                }
+
                 // For database errors, ensure directories exist before retry
                 if matches!(e, crate::error::AppError::DatabaseError { .. }) {
                     if let Ok(app_data_dir) = handle.path().app_data_dir() {
@@ -74,6 +89,18 @@ async fn initialize_app_state_with_retry(
                     "AppState initialization failed after {} retries: {}",
                     MAX_RETRIES, e
                 );
+
+                // Send final failure notification
+                crate::emit_event!(
+                    handle,
+                    crate::events::app::INITIALIZATION_FAILED,
+                    serde_json::json!({
+                        "error": format!("{}", e),
+                        "retries": MAX_RETRIES,
+                        "message": "Application failed to initialize after multiple attempts"
+                    })
+                );
+
                 return Err(e);
             }
             Err(_) if retry_count < MAX_RETRIES => {
@@ -102,15 +129,52 @@ async fn initialize_app_state_with_retry(
 }
 
 pub fn run() -> crate::error::Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(
+    // Load environment variables from .env file if it exists
+    match dotenv::dotenv() {
+        Ok(path) => {
+            println!("Loaded environment from: {:?}", path);
+        }
+        Err(e) => {
+            // It's ok if .env doesn't exist, we'll use defaults
+            if e.not_found() {
+                println!("No .env file found, using default configuration");
+            } else {
+                eprintln!("Error loading .env file: {}", e);
+            }
+        }
+    }
+
+    // Initialize logging — stdout + a daily-rotated file under the platform
+    // data dir so users hitting a problem have a log to attach to a bug report.
+    // The non-blocking guard must outlive the writer; we leak it on purpose
+    // because logging needs to be available for the entire process lifetime.
+    let log_dir = dirs::data_local_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("stratosort")
+        .join("logs");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "stratosort.log");
+    let (file_writer, file_guard) = tracing_appender::non_blocking(file_appender);
+    // Leak the guard — we want the appender alive for the full process lifetime.
+    Box::leak(Box::new(file_guard));
+
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    tracing_subscriber::registry()
+        .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "stratosort=debug,tauri=info".into()),
+        )
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stdout))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(file_writer)
+                .with_ansi(false),
         )
         .init();
 
     info!("Starting StratoSort...");
+    info!(log_dir = %log_dir.display(), "Log file location");
 
     // Initialize sqlite-vec extension early in the startup process
     info!("Initializing sqlite-vec extension...");
@@ -136,17 +200,9 @@ pub fn run() -> crate::error::Result<()> {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_os::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_localhost::Builder::new(3030).build())
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            // Focus the existing window when another instance tries to start
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-        }))
         .plugin(tauri_plugin_http::init())
         .setup(|app| {
             let handle = app.handle().clone();
@@ -176,74 +232,113 @@ pub fn run() -> crate::error::Result<()> {
             // Initialize background services
             initialize_services(app, state.clone())?;
 
-            // Initialize file watcher with proper synchronization
-            if config.watch_folders {
+            // Initialize file watcher with proper deadlock prevention.
+            //
+            // We always create + start the watcher (even when watch mode is off
+            // in config) so the runtime is available the moment the user
+            // toggles watch mode on from the UI — without this, the
+            // watch-mode commands would all silently no-op until the next
+            // restart. Whether files actually get processed is gated by
+            // `WatchModeConfig.enabled` inside the watcher; we seed that from
+            // the persisted Config so previously-saved settings survive
+            // restarts.
+            {
                 info!("Initializing file watcher...");
 
-                // Create watcher with proper synchronization using a synchronization channel
-                let (watcher_ready_tx, watcher_ready_rx) = tokio::sync::oneshot::channel();
+                // Use a separate task to avoid blocking the setup and prevent deadlocks
                 let state_for_watcher = state.clone();
+                let handle_for_watcher = handle.clone();
+                let watch_enabled_at_boot = config.watch_folders;
+                let watch_paths_at_boot = config.watch_paths.clone();
 
-                // Initialize the file watcher synchronously
-                {
-                    let mut watcher_guard = state.file_watcher.write();
-                    watcher_guard.replace(Arc::new(FileWatcher::new(state.clone())));
-                }
-
-                // Start watcher in background with proper error handling and synchronization
                 async_runtime::spawn(async move {
-                    // Get the watcher reference
-                    let watcher_to_start = {
-                        let watcher_guard = state_for_watcher.file_watcher.read();
-                        watcher_guard.as_ref().map(Arc::clone)
-                    };
+                    // Wait for app to be fully initialized to prevent race conditions
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-                    if let Some(watcher) = watcher_to_start {
-                        // Wait for app to be fully initialized
-                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    // Create and initialize the file watcher with timeout protection
+                    let watcher_init_result = tokio::time::timeout(
+                        tokio::time::Duration::from_secs(10),
+                        async {
+                            // Create the FileWatcher instance
+                            let file_watcher = Arc::new(FileWatcher::new(state_for_watcher.clone()));
 
-                        match watcher.start().await {
-                            Ok(_) => {
-                                info!("File watcher started successfully");
-                                let _ = watcher_ready_tx.send(Ok(()));
-                                let _ = state_for_watcher.handle.emit("file-watcher-started", serde_json::json!({
-                                    "status": "active",
-                                    "message": "File monitoring is now active"
-                                }));
+                            // Store it in the state using a non-blocking write
+                            {
+                                let mut watcher_guard = state_for_watcher.file_watcher.write();
+                                *watcher_guard = Some(file_watcher.clone());
                             }
-                            Err(e) => {
-                                error!("Failed to start file watcher: {}", e);
-                                let _ = watcher_ready_tx.send(Err(e.to_string()));
-                                let _ = state_for_watcher.handle.emit("file-watcher-error", serde_json::json!({
-                                    "error": format!("{}", e),
-                                    "message": "File monitoring could not be started"
-                                }));
+
+                            // Start the watcher with timeout protection
+                            let start_result = tokio::time::timeout(
+                                tokio::time::Duration::from_secs(5),
+                                file_watcher.start()
+                            ).await;
+
+                            // Bridge persisted Config -> WatchModeConfig so the
+                            // user's previous settings take effect on startup.
+                            // configure_watch_mode also registers the
+                            // directories with notify and triggers an initial
+                            // scan of existing files.
+                            if let Ok(Ok(_)) = &start_result {
+                                let mut wm_config = file_watcher.get_watch_config().await;
+                                wm_config.enabled = watch_enabled_at_boot;
+                                wm_config.watch_directories = watch_paths_at_boot;
+                                if let Err(e) = file_watcher.configure_watch_mode(wm_config).await {
+                                    warn!("Failed to apply persisted watch config: {}", e);
+                                }
                             }
+
+                            start_result
                         }
-                    } else {
-                        let error_msg = "File watcher initialization failed";
-                        error!("{}", error_msg);
-                        let _ = watcher_ready_tx.send(Err(error_msg.to_string()));
-                    }
-                });
-
-                // Optionally wait for watcher to be ready (with timeout) - do this in a background task
-                async_runtime::spawn(async move {
-                    let _watcher_result = tokio::time::timeout(
-                        tokio::time::Duration::from_secs(5),
-                        watcher_ready_rx
                     ).await;
 
-                    // Don't fail startup if watcher fails - just log and continue
-                    match _watcher_result {
-                        Ok(Ok(Ok(_))) => info!("File watcher initialized and ready"),
-                        Ok(Ok(Err(e))) => warn!("File watcher failed to start: {}", e),
-                        Ok(Err(_)) => warn!("File watcher initialization channel closed"),
-                        Err(_) => warn!("File watcher initialization timed out"),
+                    match watcher_init_result {
+                        Ok(Ok(Ok(_))) => {
+                            info!("File watcher initialized and started successfully");
+                            crate::emit_event!(
+                                handle_for_watcher,
+                                crate::events::file::WATCHER_STARTED,
+                                serde_json::json!({
+                                    "status": "active",
+                                    "message": "File monitoring is now active"
+                                })
+                            );
+                        }
+                        Ok(Ok(Err(e))) => {
+                            error!("Failed to start file watcher: {}", e);
+                            crate::emit_event!(
+                                handle_for_watcher,
+                                crate::events::file::WATCHER_ERROR,
+                                serde_json::json!({
+                                    "error": format!("{}", e),
+                                    "message": "File monitoring could not be started"
+                                })
+                            );
+                        }
+                        Ok(Err(_)) => {
+                            error!("File watcher start operation timed out");
+                            crate::emit_event!(
+                                handle_for_watcher,
+                                crate::events::file::WATCHER_ERROR,
+                                serde_json::json!({
+                                    "error": "Timeout during file watcher startup",
+                                    "message": "File monitoring startup timed out"
+                                })
+                            );
+                        }
+                        Err(_) => {
+                            error!("File watcher initialization timed out");
+                            crate::emit_event!(
+                                handle_for_watcher,
+                                crate::events::file::WATCHER_ERROR,
+                                serde_json::json!({
+                                    "error": "Timeout during file watcher initialization",
+                                    "message": "File monitoring initialization timed out"
+                                })
+                            );
+                        }
                     }
                 });
-            } else {
-                info!("File watching disabled in configuration");
             }
 
             // Try to connect to Ollama in background with retry logic
@@ -275,10 +370,14 @@ pub fn run() -> crate::error::Result<()> {
                             connection_successful = true;
 
                             // Emit success event to frontend
-                            let _ = state_for_ollama.handle.emit("ollama-connected", serde_json::json!({
-                                "host": host,
-                                "status": status
-                            }));
+                            crate::emit_event!(
+                                state_for_ollama.handle,
+                                crate::events::ai::OLLAMA_CONNECTED,
+                                serde_json::json!({
+                                    "host": host,
+                                    "status": status
+                                })
+                            );
                             break;
                         }
                         Err(e) => {
@@ -297,10 +396,14 @@ pub fn run() -> crate::error::Result<()> {
                     let status = state_for_ollama.ai_service.use_fallback();
                     info!("Successfully switched to fallback AI mode: {:?}", status);
                     // Emit fallback success event to frontend
-                    let _ = state_for_ollama.handle.emit("ollama-fallback-active", serde_json::json!({
-                        "message": "AI features are now using fallback analysis. Performance may be limited.",
-                        "status": "fallback"
-                    }));
+                    crate::emit_event!(
+                        state_for_ollama.handle,
+                        crate::events::ai::OLLAMA_FALLBACK_ACTIVE,
+                        serde_json::json!({
+                            "message": "AI features are now using fallback analysis. Performance may be limited.",
+                            "status": "fallback"
+                        })
+                    );
                 }
             });
 
@@ -310,6 +413,7 @@ pub fn run() -> crate::error::Result<()> {
         .invoke_handler(generate_handler![
             // File commands
             commands::files::scan_directory,
+            commands::files::scan_directory_stream,
             commands::files::analyze_files,
             commands::files::get_file_content,
             commands::files::move_files,
@@ -320,6 +424,7 @@ pub fn run() -> crate::error::Result<()> {
             commands::files::delete_file,
             commands::files::create_directory,
             commands::files::get_file_info_command,
+            commands::files::get_file_info_cmd,
             commands::files::set_file_permissions,
             commands::files::batch_file_operations,
             commands::files::move_file,
@@ -328,6 +433,8 @@ pub fn run() -> crate::error::Result<()> {
             commands::files::browse_files,
             commands::files::browse_folder,
             commands::files::process_dropped_paths,
+            commands::files::file_exists,
+            commands::files::get_file_size_info,
             commands::cancel_operation,
             commands::get_active_operations,
             commands::get_operation_progress,
@@ -344,6 +451,8 @@ pub fn run() -> crate::error::Result<()> {
             commands::ai::get_search_history,
             commands::ai::clear_search_history,
             commands::ai::batch_analyze_files,
+            commands::ai::reanalyze_files,
+            commands::ai::clear_stale_analyses,
             commands::ai::get_analysis_history,
 
             // AI Status commands
@@ -367,6 +476,10 @@ pub fn run() -> crate::error::Result<()> {
             commands::organization::match_to_folders,
             commands::organization::validate_rule,
             commands::organization::test_rule_against_files,
+            commands::organization::test_smart_folder_rule,
+            commands::organization::get_rename_pattern_info,
+            commands::organization::preview_rename_pattern,
+
 
             // Settings commands
             commands::settings::get_settings,
@@ -451,6 +564,14 @@ pub fn run() -> crate::error::Result<()> {
             commands::watch_mode::trigger_auto_organization,
             commands::watch_mode::add_watch_directory,
             commands::watch_mode::remove_watch_directory,
+
+            // Diagnostics commands
+            commands::diagnostics::run_diagnostics,
+            commands::diagnostics::test_ai_service,
+            commands::diagnostics::check_database_health,
+            commands::diagnostics::validate_config_paths,
+            commands::diagnostics::get_diagnostics_resource_usage,
+            commands::diagnostics::clear_caches,
         ])
         .on_window_event(|_window, event| if let tauri::WindowEvent::CloseRequested { api, .. } = event {
             #[cfg(not(target_os = "macos"))]

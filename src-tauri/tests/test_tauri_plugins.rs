@@ -13,7 +13,7 @@ mod tauri_plugin_tests {
     fn test_all_plugins_load() {
         // This test ensures all plugin test modules compile and load correctly
         // Individual tests are in the respective plugin test files
-        assert!(true, "All plugin test modules loaded successfully");
+        // All plugin test modules loaded successfully
     }
 
     #[tokio::test]
