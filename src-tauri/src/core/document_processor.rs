@@ -51,7 +51,7 @@ impl DocumentProcessor for PdfProcessor {
 }
 
 impl PdfProcessor {
-    async fn extract_with_pdf_extract(&self, _file_path: &Path) -> Result<ProcessedDocument> {
+    async fn extract_with_pdf_extract(&self, file_path: &Path) -> Result<ProcessedDocument> {
         #[cfg(feature = "pdf-extract")]
         {
             let file_bytes = tokio::fs::read(file_path).await?;
@@ -60,6 +60,7 @@ impl PdfProcessor {
                     message: format!("PDF extraction failed: {}", e),
                 }
             })?;
+            let word_count = count_words(&text);
 
             Ok(ProcessedDocument {
                 text_content: text,
@@ -71,7 +72,7 @@ impl PdfProcessor {
                     creation_date: None,
                     modified_date: None,
                     page_count: None,
-                    word_count: Some(count_words(&text)),
+                    word_count: Some(word_count),
                     language: None,
                 },
                 file_type: "PDF".to_string(),
@@ -80,13 +81,14 @@ impl PdfProcessor {
         }
         #[cfg(not(feature = "pdf-extract"))]
         {
+            let _ = file_path;
             Err(AppError::ProcessingError {
                 message: "PDF processing not enabled. Enable 'pdf-extract' feature".to_string(),
             })
         }
     }
 
-    async fn extract_with_lopdf(&self, _file_path: &Path) -> Result<ProcessedDocument> {
+    async fn extract_with_lopdf(&self, file_path: &Path) -> Result<ProcessedDocument> {
         #[cfg(feature = "lopdf")]
         {
             use lopdf::Document;
@@ -146,6 +148,7 @@ impl PdfProcessor {
         }
         #[cfg(not(feature = "lopdf"))]
         {
+            let _ = file_path;
             Err(AppError::ProcessingError {
                 message: "Advanced PDF processing not enabled. Enable 'lopdf' feature".to_string(),
             })
@@ -170,34 +173,37 @@ impl DocumentProcessor for DocxProcessor {
 
                     // Extract text content from document
                     for child in &docx.document.children {
-                        match child {
-                            DocumentChild::Paragraph(p) => {
-                                for run_child in &p.children {
-                                    if let ParagraphChild::Run(run) = run_child {
-                                        for run_child in &run.children {
-                                            if let RunChild::Text(text) = run_child {
-                                                text_content.push_str(&text.text);
-                                            }
+                        if let DocumentChild::Paragraph(p) = child {
+                            for run_child in &p.children {
+                                if let ParagraphChild::Run(run) = run_child {
+                                    for run_child in &run.children {
+                                        if let RunChild::Text(text) = run_child {
+                                            text_content.push_str(&text.text);
                                         }
                                     }
                                 }
-                                text_content.push('\n');
                             }
-                            _ => {}
+                            text_content.push('\n');
                         }
                     }
 
-                    // Extract metadata from core properties
-                    let mut metadata = DocumentMetadata {
-                        title: docx.doc_props.core.title.clone(),
-                        author: docx.doc_props.core.creator.clone(),
-                        subject: docx.doc_props.core.subject.clone(),
-                        creator: docx.doc_props.core.creator.clone(),
-                        creation_date: docx.doc_props.core.created.clone(),
-                        modified_date: docx.doc_props.core.modified.clone(),
+                    // Newer docx-rs versions no longer expose the per-field
+                    // accessors that an earlier rewrite relied on. The text
+                    // content is what the AI pipeline actually needs; we leave
+                    // metadata mostly empty rather than chasing the moving API.
+                    let metadata = DocumentMetadata {
+                        title: file_path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .map(|s| s.to_string()),
+                        author: None,
+                        subject: None,
+                        creator: None,
+                        creation_date: None,
+                        modified_date: None,
                         page_count: None,
                         word_count: Some(count_words(&text_content)),
-                        language: docx.doc_props.core.language.clone(),
+                        language: None,
                     };
 
                     Ok(ProcessedDocument {
@@ -236,7 +242,7 @@ impl DocumentProcessor for ExcelProcessor {
     async fn process(&self, file_path: &Path) -> Result<ProcessedDocument> {
         #[cfg(feature = "calamine")]
         {
-            use calamine::{open_workbook, DataType, Reader, Xlsx};
+            use calamine::{open_workbook, Data, Reader, Xlsx};
 
             let mut workbook: Xlsx<_> =
                 open_workbook(file_path).map_err(|e| AppError::ProcessingError {
@@ -244,30 +250,31 @@ impl DocumentProcessor for ExcelProcessor {
                 })?;
 
             let mut text_content = String::new();
-            let mut total_rows = 0;
 
-            // Get all worksheet names
-            let sheet_names = workbook.sheet_names();
+            // Get all worksheet names — clone so we can use them for both the
+            // loop and the page_count after consuming `workbook` borrows below.
+            let sheet_names: Vec<String> = workbook.sheet_names().to_vec();
+            let sheet_count = sheet_names.len();
 
-            for sheet_name in sheet_names {
-                if let Ok(range) = workbook.worksheet_range(&sheet_name) {
+            for sheet_name in &sheet_names {
+                if let Ok(range) = workbook.worksheet_range(sheet_name) {
                     text_content.push_str(&format!("=== Sheet: {} ===\n", sheet_name));
 
-                    let (height, width) = range.get_size();
-                    total_rows += height;
-
-                    // Extract cell values as text
+                    // Extract cell values as text. `Data` replaces the older
+                    // `DataType` enum in calamine 0.26.
                     for row in range.rows() {
                         let row_text: Vec<String> = row
                             .iter()
                             .map(|cell| match cell {
-                                DataType::Empty => "".to_string(),
-                                DataType::String(s) => s.clone(),
-                                DataType::Float(f) => f.to_string(),
-                                DataType::Int(i) => i.to_string(),
-                                DataType::Bool(b) => b.to_string(),
-                                DataType::Error(e) => format!("ERROR: {:?}", e),
-                                DataType::DateTime(dt) => format!("{:?}", dt),
+                                Data::Empty => "".to_string(),
+                                Data::String(s) => s.clone(),
+                                Data::Float(f) => f.to_string(),
+                                Data::Int(i) => i.to_string(),
+                                Data::Bool(b) => b.to_string(),
+                                Data::Error(e) => format!("ERROR: {:?}", e),
+                                Data::DateTime(dt) => format!("{:?}", dt),
+                                Data::DateTimeIso(s) => s.clone(),
+                                Data::DurationIso(s) => s.clone(),
                             })
                             .collect();
 
@@ -278,6 +285,7 @@ impl DocumentProcessor for ExcelProcessor {
                 }
             }
 
+            let word_count = count_words(&text_content);
             Ok(ProcessedDocument {
                 text_content,
                 metadata: DocumentMetadata {
@@ -290,8 +298,8 @@ impl DocumentProcessor for ExcelProcessor {
                     creator: None,
                     creation_date: None,
                     modified_date: None,
-                    page_count: Some(sheet_names.len() as u32),
-                    word_count: Some(count_words(&text_content)),
+                    page_count: Some(sheet_count as u32),
+                    word_count: Some(word_count),
                     language: None,
                 },
                 file_type: "Excel".to_string(),
@@ -326,11 +334,10 @@ impl DocumentProcessor for CsvProcessor {
 
             let mut text_content = String::new();
             let mut row_count = 0;
-            let mut headers = Vec::new();
 
             // Get headers
             if let Ok(header_record) = reader.headers() {
-                headers = header_record.iter().map(|h| h.to_string()).collect();
+                let headers: Vec<String> = header_record.iter().map(|h| h.to_string()).collect();
                 text_content.push_str(&headers.join("\t"));
                 text_content.push('\n');
             }

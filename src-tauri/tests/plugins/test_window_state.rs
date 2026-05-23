@@ -51,7 +51,7 @@ mod test_window_state_plugin {
     #[test]
     fn test_multi_monitor_support() {
         // Test window state across multiple monitors
-        let monitors = vec![
+        let _monitors = [
             json!({"id": 0, "width": 1920, "height": 1080, "x": 0, "y": 0}),
             json!({"id": 1, "width": 2560, "height": 1440, "x": 1920, "y": 0}),
         ];
@@ -184,7 +184,7 @@ mod test_window_state_plugin {
     #[test]
     fn test_window_minimize_restore() {
         // Test minimize and restore functionality
-        let mut state = MockWindowState::default();
+        let state = MockWindowState::default();
         let original_state = state.clone();
 
         // Minimize window (not tracked in our mock, but in real implementation)
@@ -219,7 +219,7 @@ mod test_window_state_plugin {
         let mut save_count = 0;
 
         // Simulate window movements
-        let movements = vec![(150, 150), (200, 200), (250, 250)];
+        let movements = [(150, 150), (200, 200), (250, 250)];
 
         for (x, y) in movements {
             state.x = x;
@@ -231,16 +231,20 @@ mod test_window_state_plugin {
         }
 
         assert_eq!(save_count, 3, "State should be saved after movements");
+        // Verify the last movement was actually applied so the loop body isn't
+        // accidentally elided as dead code by a future cleanup.
+        assert_eq!(state.x, 250);
+        assert_eq!(state.y, 250);
     }
 
     #[test]
     fn test_fullscreen_mode_handling() {
         // Test fullscreen mode state management
-        let mut state = MockWindowState::default();
-
-        // Enter fullscreen
-        state.fullscreen = true;
-        state.maximized = false; // Can't be both
+        let mut state = MockWindowState {
+            fullscreen: true,
+            maximized: false, // Can't be both
+            ..Default::default()
+        };
 
         PluginAssertions::assert_window_state_valid(&state);
 
@@ -277,7 +281,7 @@ mod test_window_state_plugin {
     #[test]
     fn test_window_snap_zones() {
         // Test window snapping to screen edges
-        let screen_width = 1920;
+        let _screen_width = 1920;
         let screen_height = 1080;
         let snap_threshold = 20;
 

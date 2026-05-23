@@ -4,31 +4,23 @@ use tracing::{debug, info, warn};
 /// Initialize sqlite-vec extension at the SQLite connection level
 /// This should be called early in the application lifecycle
 pub fn initialize_sqlite_vec() -> Result<()> {
-    use crate::error::AppError;
-
     // Register sqlite-vec extension with SQLite
     // Note: sqlite-vec init function returns void, so we handle errors differently
+    // SAFETY: This call initializes the sqlite-vec extension in the SQLite library.
+    // The function is provided by the sqlite-vec crate and follows SQLite's standard
+    // extension initialization pattern. No memory management is required here as
+    // SQLite handles the extension lifecycle internally.
     unsafe {
         // This registers the extension globally for all new SQLite connections
         sqlite_vec::sqlite3_vec_init();
         debug!("sqlite-vec extension initialization called");
     }
 
-    // Verify the extension was loaded by testing it
-    let rt = tokio::runtime::Handle::try_current().map_err(|_| AppError::DatabaseError {
-        message: "No async runtime available for sqlite-vec verification".to_string(),
-    })?;
+    // Skip runtime verification since it causes runtime conflicts
+    // The extension availability will be verified later during actual database operations
 
-    let is_available = rt.block_on(async { check_vec_extension_availability().await });
-
-    if is_available {
-        info!("sqlite-vec extension initialized and verified successfully");
-        Ok(())
-    } else {
-        warn!("sqlite-vec extension initialization called but verification failed");
-        // Don't fail hard here, allow fallback to manual vector search
-        Ok(())
-    }
+    info!("sqlite-vec extension initialization completed");
+    Ok(())
 }
 
 /// Check if sqlite-vec extension can be loaded
@@ -71,6 +63,11 @@ pub fn initialize_with_rusqlite() -> Result<()> {
     use rusqlite::{ffi::sqlite3_auto_extension, Connection};
 
     // Register sqlite-vec extension to auto-load with new connections
+    // SAFETY: This transmute is required for SQLite's C FFI auto-extension mechanism.
+    // The sqlite3_vec_init function has the correct signature for SQLite extensions,
+    // but Rust's type system requires explicit casting. This is a well-established
+    // pattern in SQLite extension loading. The function pointer remains valid for
+    // the lifetime of the application.
     unsafe {
         let result = sqlite3_auto_extension(Some(std::mem::transmute(
             sqlite_vec::sqlite3_vec_init as *const (),

@@ -22,6 +22,5 @@ mod plugin_test_setup {
     fn test_plugin_modules_compile() {
         // Smoke test to ensure all plugin test modules compile correctly
         // This test passes if all modules are properly structured
-        assert!(true);
     }
 }

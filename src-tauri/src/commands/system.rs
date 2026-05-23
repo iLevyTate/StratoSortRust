@@ -407,7 +407,7 @@ pub async fn show_in_folder(path: String, app: AppHandle) -> Result<()> {
         });
     }
 
-    let _parent = sanitized_path
+    let parent = sanitized_path
         .parent()
         .ok_or_else(|| crate::error::AppError::InvalidPath {
             message: "Cannot get parent directory".to_string(),

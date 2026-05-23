@@ -4,10 +4,15 @@ mod validate_test_structure {
     use std::fs;
     use std::path::Path;
 
-    const TEST_FIXTURES_PATH: &str =
-        r"C:\Users\benja\Documents\GitHub\StratoRust\src-tauri\tests\fixtures\data";
+    // Resolved relative to CARGO_MANIFEST_DIR (the src-tauri crate root) so
+    // the test runs on any machine, not just the original author's Windows box.
+    const TEST_FIXTURES_PATH: &str = "tests/fixtures/data";
     const SAMPLE_FILES_DIR: &str = "sample_demo_files";
     const SMART_FOLDERS_DIR: &str = "sample_demo_smart_folders";
+
+    fn fixtures_root() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(TEST_FIXTURES_PATH)
+    }
 
     #[derive(Debug)]
     struct TestStructureValidation {
@@ -75,7 +80,8 @@ mod validate_test_structure {
         let mut validation = TestStructureValidation::new();
 
         // Check if main directories exist
-        let fixtures_path = Path::new(TEST_FIXTURES_PATH);
+        let fixtures_path = fixtures_root();
+        let fixtures_path = fixtures_path.as_path();
         if !fixtures_path.exists() {
             validation.add_issue(format!(
                 "Test fixtures directory does not exist: {}",
@@ -348,12 +354,16 @@ mod validate_test_structure {
 
     #[test]
     fn test_file_movement_simulation() {
-        let fixtures_path = Path::new(TEST_FIXTURES_PATH);
+        let fixtures_path = fixtures_root();
+        let fixtures_path = fixtures_path.as_path();
         let sample_files = fixtures_path.join(SAMPLE_FILES_DIR);
         let smart_folders = fixtures_path.join(SMART_FOLDERS_DIR);
 
-        // Create a temporary test file
-        let test_file_name = "test_movement_file.txt";
+        // Create a temporary test file. Prefix with a dot so the parallel
+        // `test_reset_capability` test (which filters dotfiles from its
+        // empty-folder check) doesn't false-fail if it samples the smart
+        // folder while a move-simulation copy still exists.
+        let test_file_name = ".test_movement_file.txt";
         let test_file_path = sample_files.join(test_file_name);
 
         // Write test file
@@ -389,7 +399,8 @@ mod validate_test_structure {
 
     #[test]
     fn test_reset_capability() {
-        let fixtures_path = Path::new(TEST_FIXTURES_PATH);
+        let fixtures_path = fixtures_root();
+        let fixtures_path = fixtures_path.as_path();
         let smart_folders_path = fixtures_path.join(SMART_FOLDERS_DIR);
 
         // Check that all smart folders are empty (ready for testing)
@@ -404,7 +415,17 @@ mod validate_test_structure {
         for folder_name in folders {
             let folder_path = smart_folders_path.join(folder_name);
             if let Ok(entries) = fs::read_dir(&folder_path) {
-                let count = entries.count();
+                // Ignore hidden files (e.g. `.gitkeep` placeholders used to
+                // keep otherwise-empty fixture directories tracked by git).
+                let count = entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| {
+                        e.file_name()
+                            .to_str()
+                            .map(|n| !n.starts_with('.'))
+                            .unwrap_or(true)
+                    })
+                    .count();
                 if count > 0 {
                     println!(
                         "⚠️ Smart folder '{}' is not empty ({} items)",

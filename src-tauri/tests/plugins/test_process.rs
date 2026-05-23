@@ -40,7 +40,7 @@ mod test_process_plugin {
         let mock_app = MockAppHandle::new();
 
         // Create test file for analysis
-        let test_file = mock_app.create_test_file("document.pdf", "Test PDF content");
+        let _test_file = mock_app.create_test_file("document.pdf", "Test PDF content");
 
         // Simulate spawning AI analysis subprocess
         let ai_process = MockProcessInfo {
@@ -163,7 +163,7 @@ mod test_process_plugin {
         let worker_process = MockProcessInfo::new("stratosort-worker");
 
         // Simulate IPC message
-        let ipc_message = json!({
+        let _ipc_message = json!({
             "type": "file_analysis",
             "payload": {
                 "file": "/test/document.pdf",
@@ -220,7 +220,7 @@ mod test_process_plugin {
     #[tokio::test]
     async fn test_process_kill_on_shutdown() {
         // Test graceful shutdown of all processes
-        let processes = vec![
+        let processes = [
             MockProcessInfo::new("main"),
             MockProcessInfo::new("worker-1"),
             MockProcessInfo::new("worker-2"),

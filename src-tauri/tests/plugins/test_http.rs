@@ -27,7 +27,7 @@ mod test_http_plugin {
     #[tokio::test]
     async fn test_http_post_ai_request() {
         // Test POST request to AI service
-        let request_body = json!({
+        let _request_body = json!({
             "model": "llama2",
             "prompt": "Analyze this document for categorization",
             "temperature": 0.7,
@@ -58,7 +58,7 @@ mod test_http_plugin {
     async fn test_http_multipart_upload() {
         // Test multipart file upload for AI analysis
         let file_content = b"PDF file content here";
-        let boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
+        let _boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
 
         // Simulate multipart request
         let response = MockHttpResponse::ok_json(json!({
@@ -161,7 +161,7 @@ mod test_http_plugin {
     #[tokio::test]
     async fn test_http_streaming_response() {
         // Test streaming responses for large AI responses
-        let chunks: Vec<&[u8]> = vec![
+        let chunks: [&[u8]; 3] = [
             b"First chunk of data",
             b"Second chunk of data",
             b"Third chunk of data",
@@ -176,7 +176,8 @@ mod test_http_plugin {
             assert!(!chunk.is_empty(), "Chunk should contain data");
         }
 
-        assert_eq!(received_data.len(), 57, "Should receive all chunks");
+        // 19 + 20 + 19 = 58 bytes total across the three chunks.
+        assert_eq!(received_data.len(), 58, "Should receive all chunks");
     }
 
     #[tokio::test]
@@ -192,20 +193,26 @@ mod test_http_plugin {
             let connections = active_connections.clone();
 
             let handle = tokio::spawn(async move {
-                let mut conn_count = connections.write().await;
-
-                // Use connection from pool or create new if pool not full
-                if *conn_count < pool_size {
-                    *conn_count += 1;
+                // Acquire and immediately release the write guard so it doesn't
+                // live across the `await` below — without the explicit drop,
+                // every task held its own write lock across the sleep, then
+                // tried to reacquire on line 206, deadlocking the suite.
+                {
+                    let mut conn_count = connections.write().await;
+                    if *conn_count < pool_size {
+                        *conn_count += 1;
+                    }
                 }
 
                 // Simulate request
                 tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
                 // Return connection to pool
-                let mut conn_count = connections.write().await;
-                if *conn_count > 0 {
-                    *conn_count -= 1;
+                {
+                    let mut conn_count = connections.write().await;
+                    if *conn_count > 0 {
+                        *conn_count -= 1;
+                    }
                 }
 
                 i
@@ -229,7 +236,7 @@ mod test_http_plugin {
     #[tokio::test]
     async fn test_http_proxy_support() {
         // Test proxy support for corporate environments
-        let proxy_config = json!({
+        let _proxy_config = json!({
             "http_proxy": "http://proxy.company.com:8080",
             "https_proxy": "https://proxy.company.com:8080",
             "no_proxy": "localhost,127.0.0.1,*.local"
@@ -282,7 +289,7 @@ mod test_http_plugin {
     #[test]
     fn test_http_error_handling() {
         // Test handling various HTTP errors
-        let error_responses = vec![
+        let error_responses = [
             (400, "Bad Request"),
             (401, "Unauthorized"),
             (403, "Forbidden"),
@@ -323,6 +330,13 @@ mod test_http_plugin {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         request_handle.abort();
 
-        assert!(request_handle.is_finished(), "Request should be cancelled");
+        // `abort()` only signals — the task may not be marked finished until
+        // the runtime actually unschedules it. Awaiting the handle blocks
+        // until the abort is observed and returns a `JoinError::is_cancelled()`.
+        let join_result = request_handle.await;
+        assert!(
+            join_result.is_err() && join_result.unwrap_err().is_cancelled(),
+            "Request should be cancelled"
+        );
     }
 }
