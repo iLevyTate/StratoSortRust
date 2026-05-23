@@ -3,9 +3,9 @@
 // bindings later without touching components.
 //
 // In non-Tauri contexts (vitest jsdom, Playwright without the webview),
-// `window.__TAURI_INTERNALS__` is absent and `invoke()` throws. Each wrapper
-// guards on `isTauri()` and returns a safe default so a developer running
-// `npm run dev` in a plain browser still gets a usable shell.
+// `window.__TAURI_INTERNALS__` is absent and `invoke()` would throw. Each
+// wrapper either falls back to a safe default or, when an e2e test has
+// installed `window.__TAURI_MOCK__[cmd]`, routes the call through the mock.
 
 import type {
 	AppSettings,
@@ -22,7 +22,25 @@ export function isTauri(): boolean {
 	return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
+// Mock hook for Playwright. Tests set `window.__TAURI_MOCK__[command_name] =
+// async (args) => ...` (snake_case command names matching the Rust side) via
+// `page.addInitScript` before navigation. When set, the mock takes precedence
+// over both real Tauri invokes and the per-wrapper safe defaults — that's
+// what lets data-driven e2e tests actually exercise UI paths.
+type MockFn = (args?: Record<string, unknown>) => Promise<unknown>;
+function getMock(cmd: string): MockFn | undefined {
+	if (typeof window === 'undefined') return undefined;
+	const bag = (window as unknown as { __TAURI_MOCK__?: Record<string, MockFn> }).__TAURI_MOCK__;
+	return bag?.[cmd];
+}
+
+function hasInvocationPath(cmd: string): boolean {
+	return isTauri() || getMock(cmd) !== undefined;
+}
+
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+	const mock = getMock(cmd);
+	if (mock) return (await mock(args)) as T;
 	if (!isTauri()) {
 		throw new Error(`Tauri invoke called outside Tauri context: ${cmd}`);
 	}
@@ -45,7 +63,7 @@ export async function listenEvent<T>(
 // --- Lifecycle ---------------------------------------------------------------
 
 export async function frontendReady(): Promise<void> {
-	if (!isTauri()) return;
+	if (!hasInvocationPath('frontend_ready')) return;
 	try {
 		await invoke<void>('frontend_ready');
 	} catch (e) {
@@ -54,7 +72,7 @@ export async function frontendReady(): Promise<void> {
 }
 
 export async function getSystemInfo(): Promise<SystemInfo | null> {
-	if (!isTauri()) {
+	if (!hasInvocationPath('get_system_info') && !hasInvocationPath('get_basic_system_info')) {
 		return { os: 'web', version: '0', arch: 'unknown' };
 	}
 	try {
@@ -72,7 +90,7 @@ export async function getSystemInfo(): Promise<SystemInfo | null> {
 // --- Settings & first-run ----------------------------------------------------
 
 export async function getAppSettings(): Promise<AppSettings | null> {
-	if (!isTauri()) return null;
+	if (!hasInvocationPath('get_settings')) return null;
 	try {
 		return await invoke<AppSettings>('get_settings');
 	} catch (e) {
@@ -86,7 +104,7 @@ export async function updateAppSettings(settings: Partial<AppSettings>): Promise
 }
 
 export async function checkFirstRunStatus(): Promise<FirstRunStatus> {
-	if (!isTauri()) {
+	if (!hasInvocationPath('check_first_run_status')) {
 		return { is_first_run: false };
 	}
 	try {
@@ -103,7 +121,7 @@ export async function completeFirstRunSetup(): Promise<void> {
 // --- AI / Ollama -------------------------------------------------------------
 
 export async function checkOllamaStatus(): Promise<OllamaStatus | null> {
-	if (!isTauri()) return null;
+	if (!hasInvocationPath('check_ollama_status')) return null;
 	try {
 		const raw = await invoke<Record<string, unknown>>('check_ollama_status');
 		return {
@@ -152,7 +170,7 @@ export interface WatchModeStatus {
 }
 
 export async function getWatchModeStatus(): Promise<WatchModeStatus | null> {
-	if (!isTauri()) return null;
+	if (!hasInvocationPath('get_watch_mode_status')) return null;
 	try {
 		return await invoke<WatchModeStatus>('get_watch_mode_status');
 	} catch (e) {
@@ -176,6 +194,7 @@ export async function scanDirectory(path: string): Promise<FileInfo[]> {
 }
 
 export async function browseFolder(): Promise<string | null> {
+	if (!hasInvocationPath('browse_folder')) return null;
 	try {
 		return await invoke<string | null>('browse_folder');
 	} catch (e) {
@@ -187,7 +206,7 @@ export async function browseFolder(): Promise<string | null> {
 // --- Smart folders -----------------------------------------------------------
 
 export async function listSmartFolders(): Promise<SmartFolder[]> {
-	if (!isTauri()) return [];
+	if (!hasInvocationPath('list_smart_folders')) return [];
 	try {
 		return await invoke<SmartFolder[]>('list_smart_folders');
 	} catch (e) {
