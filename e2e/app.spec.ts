@@ -62,6 +62,20 @@ const bootMocks: MockSpec = {
 	get_analysis_history: []
 };
 
+// Capture browser-side errors so CI logs show *why* the app didn't render,
+// instead of just "locator timeout after 5s". Set on every test via a fixture-
+// like beforeEach so all 16 tests get the same diagnostic if they fail.
+test.beforeEach(async ({ page }) => {
+	page.on('pageerror', (err) => {
+		console.log(`[browser pageerror] ${err.message}\n${err.stack ?? ''}`);
+	});
+	page.on('console', (msg) => {
+		if (msg.type() === 'error' || msg.type() === 'warning') {
+			console.log(`[browser ${msg.type()}] ${msg.text()}`);
+		}
+	});
+});
+
 test.describe('StratoSort E2E', () => {
 	test.describe('Application Launch', () => {
 		test('renders main shell on Discover by default', async ({ page }) => {
@@ -71,7 +85,31 @@ test.describe('StratoSort E2E', () => {
 			await expect(page).toHaveTitle(/StratoSort/);
 			await expect(page.locator('[data-testid="sidebar"]')).toBeVisible();
 			await expect(page.locator('[data-testid="main-content"]')).toBeVisible();
-			await expect(page.locator('[data-testid="discover-page"]')).toBeVisible();
+
+			// If `[data-testid="discover-page"]` doesn't show up, dump the page
+			// HTML so CI logs reveal whether we're stuck on the "Initializing
+			// StratoSort..." spinner (App.svelte's !initialized branch) or
+			// somewhere else entirely. The a11y suite passes without ever
+			// reaching this branch, so a11y green ≠ this passing.
+			const discover = page.locator('[data-testid="discover-page"]');
+			try {
+				await expect(discover).toBeVisible({ timeout: 10000 });
+			} catch (e) {
+				const html = await page.locator('body').innerHTML();
+				const mockState = await page.evaluate(() => ({
+					hasMockBag: typeof (window as unknown as { __TAURI_MOCK__?: unknown })
+						.__TAURI_MOCK__ !== 'undefined',
+					mockKeys: Object.keys(
+						(window as unknown as { __TAURI_MOCK__?: Record<string, unknown> })
+							.__TAURI_MOCK__ ?? {}
+					),
+					hasTauri: '__TAURI__' in window,
+					hasTauriInternals: '__TAURI_INTERNALS__' in window
+				}));
+				console.log('[diag] mock/window state:', JSON.stringify(mockState));
+				console.log('[diag] body html (first 2000 chars):', html.slice(0, 2000));
+				throw e;
+			}
 		});
 
 		test('navigates through all main sections', async ({ page }) => {
