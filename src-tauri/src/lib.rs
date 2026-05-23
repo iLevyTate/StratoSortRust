@@ -144,15 +144,37 @@ pub fn run() -> crate::error::Result<()> {
         }
     }
 
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(
+    // Initialize logging — stdout + a daily-rotated file under the platform
+    // data dir so users hitting a problem have a log to attach to a bug report.
+    // The non-blocking guard must outlive the writer; we leak it on purpose
+    // because logging needs to be available for the entire process lifetime.
+    let log_dir = dirs::data_local_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("stratosort")
+        .join("logs");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "stratosort.log");
+    let (file_writer, file_guard) = tracing_appender::non_blocking(file_appender);
+    // Leak the guard — we want the appender alive for the full process lifetime.
+    Box::leak(Box::new(file_guard));
+
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    tracing_subscriber::registry()
+        .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "stratosort=debug,tauri=info".into()),
+        )
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stdout))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(file_writer)
+                .with_ansi(false),
         )
         .init();
 
     info!("Starting StratoSort...");
+    info!(log_dir = %log_dir.display(), "Log file location");
 
     // Initialize sqlite-vec extension early in the startup process
     info!("Initializing sqlite-vec extension...");

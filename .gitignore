@@ -162,6 +162,7 @@ tauri-signing-key*
 
 # Test results
 test-results/
+test-results.json
 coverage/
 *.cover
 .pytest_cache/
