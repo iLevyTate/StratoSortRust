@@ -5,7 +5,7 @@
 <h1 align="center">Stratosort</h1>
 
 <p align="center">
-  Local-first AI file organization. Vision, embeddings, and semantic search — all running on your machine via <a href="https://ollama.com/">Ollama</a>.
+  Local-first AI file organization. Vision, embeddings, and semantic search all running on your machine via <a href="https://ollama.com/">Ollama</a>.
 </p>
 
 <p align="center">
