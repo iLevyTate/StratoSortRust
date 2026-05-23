@@ -1,21 +1,21 @@
-name: Test Suite (full matrix — dispatch + push to main)
+name: Test Suite (full matrix — PR + push to main)
 
 # Broader-than-ci.yml matrix:
 #  * Backend tests across all 3 OSes (ci.yml only covers Linux)
 #  * Playwright e2e across browsers
 #  * axe-core accessibility check
 #
-# Runs on push to main + manual dispatch. NOT on PRs yet — the e2e suite
-# mocks via `window.__TAURI_MOCK__` while $lib/api/tauri.ts gates on
-# `window.__TAURI_INTERNALS__`, so the mocks don't actually intercept the
-# wrapper calls. Until that's reconciled (see issue tracker), data-driven
-# e2e tests would pass/fail on cosmetics rather than real regressions and
-# wouldn't be safe to gate merges on. Navigation-only tests still get
-# signal, which is why we keep the workflow runnable.
+# With #37 resolved (the e2e suite now installs mocks via
+# `page.addInitScript` before navigation, and `$lib/api/tauri.ts` routes
+# invokes through `window.__TAURI_MOCK__` when set), data-driven e2e tests
+# actually exercise wrapper code paths. The matrix is safe to gate PRs on.
 #
 # The PR gate (lint, frontend type check + unit, backend tests, Linux
-# bundle build) lives in ci.yml and is what blocks merges.
+# bundle build) still lives in ci.yml; this workflow stacks on top with
+# the cross-platform / cross-browser surface.
 on:
+  pull_request:
+    branches: [main, develop]
   push:
     branches: [main]
   workflow_dispatch:
@@ -79,10 +79,9 @@ jobs:
         run: cargo test --lib --no-fail-fast
 
   # Playwright e2e across browser × OS. The webServer is `npm run preview`
-  # (per playwright.config.ts), so this hits a static vite preview, not a
-  # real Tauri runtime. Navigation works; data-driven assertions that
-  # depend on backend mocks may not (see workflow header). Treat as
-  # informational until the mock layer is reconciled.
+  # (per playwright.config.ts), so this hits a static vite preview. Tests
+  # use the `window.__TAURI_MOCK__` hook in `$lib/api/tauri.ts` to mock
+  # backend commands, so data-driven assertions work without a Tauri runtime.
   e2e-tests:
     name: E2E Tests
     runs-on: ${{ matrix.os }}
@@ -130,14 +129,10 @@ jobs:
       - name: Run E2E tests (Linux, headless via xvfb)
         if: matrix.os == 'ubuntu-latest'
         run: xvfb-run -a npm run test:e2e -- --project=${{ matrix.browser }}
-        # Mock layer mismatch — see header. Surfacing failures but not
-        # blocking the broader matrix.
-        continue-on-error: true
 
       - name: Run E2E tests (Windows/macOS)
         if: matrix.os != 'ubuntu-latest'
         run: npm run test:e2e -- --project=${{ matrix.browser }}
-        continue-on-error: true
 
       - name: Upload Playwright artifacts on failure
         uses: actions/upload-artifact@v4
@@ -176,12 +171,7 @@ jobs:
         run: npm run build
 
       - name: Run accessibility tests
-        # playwright.accessibility.config.ts originally pointed webServer at
-        # `npm run tauri:dev`, which won't work in pure-frontend CI. The
-        # config has since been updated to use `npm run preview` — same as
-        # the e2e config. Same mock-layer caveat applies.
         run: xvfb-run -a npx playwright test --config=playwright.accessibility.config.ts
-        continue-on-error: true
 
       - name: Upload accessibility report
         uses: actions/upload-artifact@v4
