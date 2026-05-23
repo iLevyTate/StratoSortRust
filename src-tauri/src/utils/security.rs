@@ -275,6 +275,13 @@ pub fn validate_user_path(path: &str) -> Result<PathBuf> {
         "/sys/",
         "/dev/",
         "/root/",
+        // macOS symlinks /etc → /private/etc, /var → /private/var, /tmp →
+        // /private/tmp. After canonicalize() the path comes back via the
+        // /private/* form, so we need the canonical equivalents in the
+        // blocklist or the test (and the real defense) fails on Darwin.
+        // We only list ones whose Linux counterpart we already block — /tmp
+        // is legitimately user-writable so it stays absent here.
+        "/private/etc/",
         "C:\\Windows\\System32\\",
         "C:\\System Volume Information\\",
     ];
