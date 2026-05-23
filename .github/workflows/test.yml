@@ -1,73 +1,33 @@
-name: Test Suite (manual only — needs rewrite)
+name: Test Suite (full matrix — dispatch + push to main)
 
-# This workflow predates the current code: it pins deprecated actions
-# (actions/upload-artifact@v3, codecov/codecov-action@v3, both hard-fail
-# since 2025), references `libwebkit2gtk-4.0-dev` (gone from ubuntu-24.04),
-# and runs `cargo test --features "test"` against a feature that doesn't
-# exist in Cargo.toml. Until those are fixed it MUST stay
-# workflow_dispatch-only — flipping it to PR/push triggers cascades into a
-# 16-job failure storm with no real signal.
+# Broader-than-ci.yml matrix:
+#  * Backend tests across all 3 OSes (ci.yml only covers Linux)
+#  * Playwright e2e across browsers
+#  * axe-core accessibility check
 #
-# The PR-gating frontend + backend + bundle gates live in ci.yml. The
-# follow-up to actually make this matrix viable (bump action versions,
-# fix deps, restore real PR triggers) is tracked in a separate issue.
+# Runs on push to main + manual dispatch. NOT on PRs yet — the e2e suite
+# mocks via `window.__TAURI_MOCK__` while $lib/api/tauri.ts gates on
+# `window.__TAURI_INTERNALS__`, so the mocks don't actually intercept the
+# wrapper calls. Until that's reconciled (see issue tracker), data-driven
+# e2e tests would pass/fail on cosmetics rather than real regressions and
+# wouldn't be safe to gate merges on. Navigation-only tests still get
+# signal, which is why we keep the workflow runnable.
+#
+# The PR gate (lint, frontend type check + unit, backend tests, Linux
+# bundle build) lives in ci.yml and is what blocks merges.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
   NODE_VERSION: '20'
-  RUST_VERSION: 'stable'
 
 jobs:
-  frontend-tests:
-    name: Frontend Tests
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run type checking
-        run: npm run check
-
-      - name: Run unit tests
-        run: npm run test:ci
-        continue-on-error: true  # Allow frontend tests to fail without blocking
-
-      - name: Run test coverage
-        run: npm run test:coverage
-
-      - name: Upload coverage reports
-        uses: codecov/codecov-action@v3
-        if: matrix.os == 'ubuntu-latest'
-        with:
-          files: ./coverage/lcov.info
-          flags: frontend
-          name: frontend-coverage
-
-      - name: Upload test results
-        uses: actions/upload-artifact@v3
-        if: always()
-        with:
-          name: test-results-frontend-${{ matrix.os }}
-          path: |
-            test-results.json
-            coverage/
-
+  # Cross-platform backend tests. ci.yml only runs these on Linux; this
+  # job exists to catch platform-specific regressions (Windows path
+  # quirks, macOS file watcher behavior, etc.).
   backend-tests:
     name: Backend Tests
     runs-on: ${{ matrix.os }}
@@ -77,98 +37,52 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
 
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-
-      - name: Run backend tests
-        working-directory: src-tauri
-        run: |
-          # Run lib tests first (fastest)
-          cargo test --lib --no-fail-fast
-          # Run integration tests separately
-          cargo test --test '*' --no-default-features --features "test" || true
-
-      - name: Run backend tests with coverage
-        if: matrix.os == 'ubuntu-latest'
-        working-directory: src-tauri
-        run: |
-          cargo install cargo-tarpaulin
-          cargo tarpaulin --out Xml --output-dir ../coverage
-
-      - name: Upload backend coverage
-        uses: codecov/codecov-action@v3
-        if: matrix.os == 'ubuntu-latest'
-        with:
-          files: ./coverage/cobertura.xml
-          flags: backend
-          name: backend-coverage
-
-  integration-tests:
-    name: Integration Tests
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-
-      - name: Cache Rust dependencies
+      - name: Cache Rust
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
       - name: Install system dependencies (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
+        # See ci.yml for the per-package rationale. The 4.1 stack is what
+        # ships on ubuntu-22.04 + ubuntu-24.04 runners.
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libgtk-3-dev \
-            libwebkit2gtk-4.0-dev \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
 
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Build application
-        run: npm run build
-
-      - name: Run integration tests
-        run: npm run test:integration
-        continue-on-error: true  # Integration tests may fail without Tauri runtime
-
-      - name: Upload integration test results
-        uses: actions/upload-artifact@v3
-        if: always()
+      # `generate_context!()` reads tauri.conf.json at compile time and
+      # requires `frontendDist` (`../dist`) to exist on disk. Mirrors the
+      # same prebuild step ci.yml uses for backend-tests + lint.
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          name: integration-test-results-${{ matrix.os }}
-          path: test-results/
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
 
+      - name: Build frontend (populates ../dist for generate_context!)
+        run: npm ci && npm run build
+
+      - name: Lib tests
+        working-directory: src-tauri
+        run: cargo test --lib --no-fail-fast
+
+  # Playwright e2e across browser × OS. The webServer is `npm run preview`
+  # (per playwright.config.ts), so this hits a static vite preview, not a
+  # real Tauri runtime. Navigation works; data-driven assertions that
+  # depend on backend mocks may not (see workflow header). Treat as
+  # informational until the mock layer is reconciled.
   e2e-tests:
     name: E2E Tests
     runs-on: ${{ matrix.os }}
@@ -178,12 +92,12 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
         browser: [chromium, firefox, webkit]
         exclude:
+          # Playwright doesn't ship webkit drivers on Windows runners.
           - os: windows-latest
             browser: webkit
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -191,23 +105,15 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-
       - name: Install system dependencies (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libgtk-3-dev \
-            libwebkit2gtk-4.0-dev \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf \
@@ -218,86 +124,36 @@ jobs:
           npm ci
           npx playwright install --with-deps ${{ matrix.browser }}
 
-      - name: Build application
+      - name: Build frontend
         run: npm run build
 
-      - name: Run E2E tests (Linux)
+      - name: Run E2E tests (Linux, headless via xvfb)
         if: matrix.os == 'ubuntu-latest'
         run: xvfb-run -a npm run test:e2e -- --project=${{ matrix.browser }}
+        # Mock layer mismatch — see header. Surfacing failures but not
+        # blocking the broader matrix.
+        continue-on-error: true
 
       - name: Run E2E tests (Windows/macOS)
         if: matrix.os != 'ubuntu-latest'
         run: npm run test:e2e -- --project=${{ matrix.browser }}
+        continue-on-error: true
 
-      - name: Upload E2E test artifacts
-        uses: actions/upload-artifact@v3
+      - name: Upload Playwright artifacts on failure
+        uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: e2e-artifacts-${{ matrix.os }}-${{ matrix.browser }}
           path: |
             test-results/
             playwright-report/
-            screenshots/
-            videos/
-
-  performance-tests:
-    name: Performance Tests
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run performance tests
-        run: npm run test:performance
-
-      - name: Upload performance results
-        uses: actions/upload-artifact@v3
-        with:
-          name: performance-results
-          path: performance-results/
-
-      - name: Comment on PR with performance results
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const results = JSON.parse(fs.readFileSync('performance-results/summary.json', 'utf8'));
-
-            const comment = `## Performance Test Results
-
-            | Metric | Value | Budget | Status |
-            |--------|-------|--------|--------|
-            | File Scan (1000 files) | ${results.fileScan}ms | 500ms | ${results.fileScan <= 500 ? '✅' : '❌'} |
-            | Analysis (100 files) | ${results.analysis}ms | 5000ms | ${results.analysis <= 5000 ? '✅' : '❌'} |
-            | Search (10k items) | ${results.search}ms | 50ms | ${results.search <= 50 ? '✅' : '❌'} |
-            | Memory Usage | ${results.memory}MB | 100MB | ${results.memory <= 100 ? '✅' : '❌'} |
-            `;
-
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: comment
-            });
 
   accessibility-tests:
     name: Accessibility Tests
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -305,66 +161,33 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Install system dependencies
+        # Headless Playwright still needs xvfb for the browser launches.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
 
-      - name: Build application
+      - name: Install dependencies
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Build frontend
         run: npm run build
 
       - name: Run accessibility tests
-        run: |
-          npm install -D @axe-core/playwright
-          npx playwright test --config=playwright.accessibility.config.ts
+        # playwright.accessibility.config.ts originally pointed webServer at
+        # `npm run tauri:dev`, which won't work in pure-frontend CI. The
+        # config has since been updated to use `npm run preview` — same as
+        # the e2e config. Same mock-layer caveat applies.
+        run: xvfb-run -a npx playwright test --config=playwright.accessibility.config.ts
+        continue-on-error: true
 
       - name: Upload accessibility report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: accessibility-report
-          path: accessibility-report/
-
-  test-matrix-summary:
-    name: Test Summary
-    runs-on: ubuntu-latest
-    needs: [frontend-tests, backend-tests, integration-tests, e2e-tests, performance-tests, accessibility-tests]
-    if: always()
-
-    steps:
-      - name: Check test results
-        run: |
-          if [ "${{ needs.frontend-tests.result }}" != "success" ] || \
-             [ "${{ needs.backend-tests.result }}" != "success" ] || \
-             [ "${{ needs.integration-tests.result }}" != "success" ] || \
-             [ "${{ needs.e2e-tests.result }}" != "success" ] || \
-             [ "${{ needs.performance-tests.result }}" != "success" ] || \
-             [ "${{ needs.accessibility-tests.result }}" != "success" ]; then
-            echo "Some tests failed!"
-            exit 1
-          fi
-          echo "All tests passed!"
-
-      - name: Create test summary
-        uses: actions/github-script@v7
-        if: github.event_name == 'pull_request'
-        with:
-          script: |
-            const summary = `## Test Results Summary
-
-            | Test Suite | Status |
-            |------------|--------|
-            | Frontend Tests | ${{ needs.frontend-tests.result == 'success' && '✅ Passed' || '❌ Failed' }} |
-            | Backend Tests | ${{ needs.backend-tests.result == 'success' && '✅ Passed' || '❌ Failed' }} |
-            | Integration Tests | ${{ needs.integration-tests.result == 'success' && '✅ Passed' || '❌ Failed' }} |
-            | E2E Tests | ${{ needs.e2e-tests.result == 'success' && '✅ Passed' || '❌ Failed' }} |
-            | Performance Tests | ${{ needs.performance-tests.result == 'success' && '✅ Passed' || '❌ Failed' }} |
-            | Accessibility Tests | ${{ needs.accessibility-tests.result == 'success' && '✅ Passed' || '❌ Failed' }} |
-
-            View detailed results in the [Actions tab](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
-            `;
-
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: summary
-            });
+          path: |
+            accessibility-report/
+            test-results/
