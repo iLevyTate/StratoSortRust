@@ -204,6 +204,13 @@ pub async fn add_watch_path(
     state: State<'_, std::sync::Arc<AppState>>,
     app: AppHandle,
 ) -> Result<()> {
+    // Validate before mutating config — reject empty, null bytes, `..`,
+    // system directories, and nonexistent paths. Canonicalize so the stored
+    // form is absolute and stable across user shell cwd changes.
+    let path = crate::utils::security::validate_directory_path(&path)?
+        .to_string_lossy()
+        .to_string();
+
     let mut config = state.config.read().clone();
 
     if !config.watch_paths.contains(&path) {

@@ -32,6 +32,9 @@
     "src-tauri",
     ".svelte-kit",
     "dist",
-    "build"
+    "build",
+    "src/tests/integration",
+    "src/tests/performance",
+    "src/tests/security"
   ]
 }
