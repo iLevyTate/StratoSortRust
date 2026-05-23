@@ -188,9 +188,8 @@ impl HealthChecker {
 
             #[cfg(unix)]
             {
-                use std::os::unix::fs::MetadataExt;
-                // On Unix systems, we'd use statvfs syscall
-                // For simplicity, we'll just check if we can access the directory
+                // On Unix systems, we'd use statvfs syscall.
+                // For simplicity, we'll just check if we can access the directory.
                 Ok("Unix disk space check - directory accessible".to_string())
             }
 

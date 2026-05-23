@@ -144,15 +144,37 @@ pub fn run() -> crate::error::Result<()> {
         }
     }
 
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(
+    // Initialize logging — stdout + a daily-rotated file under the platform
+    // data dir so users hitting a problem have a log to attach to a bug report.
+    // The non-blocking guard must outlive the writer; we leak it on purpose
+    // because logging needs to be available for the entire process lifetime.
+    let log_dir = dirs::data_local_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("stratosort")
+        .join("logs");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "stratosort.log");
+    let (file_writer, file_guard) = tracing_appender::non_blocking(file_appender);
+    // Leak the guard — we want the appender alive for the full process lifetime.
+    Box::leak(Box::new(file_guard));
+
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    tracing_subscriber::registry()
+        .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "stratosort=debug,tauri=info".into()),
+        )
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stdout))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(file_writer)
+                .with_ansi(false),
         )
         .init();
 
     info!("Starting StratoSort...");
+    info!(log_dir = %log_dir.display(), "Log file location");
 
     // Initialize sqlite-vec extension early in the startup process
     info!("Initializing sqlite-vec extension...");
@@ -210,13 +232,24 @@ pub fn run() -> crate::error::Result<()> {
             // Initialize background services
             initialize_services(app, state.clone())?;
 
-            // Initialize file watcher with proper deadlock prevention
-            if config.watch_folders {
+            // Initialize file watcher with proper deadlock prevention.
+            //
+            // We always create + start the watcher (even when watch mode is off
+            // in config) so the runtime is available the moment the user
+            // toggles watch mode on from the UI — without this, the
+            // watch-mode commands would all silently no-op until the next
+            // restart. Whether files actually get processed is gated by
+            // `WatchModeConfig.enabled` inside the watcher; we seed that from
+            // the persisted Config so previously-saved settings survive
+            // restarts.
+            {
                 info!("Initializing file watcher...");
 
                 // Use a separate task to avoid blocking the setup and prevent deadlocks
                 let state_for_watcher = state.clone();
                 let handle_for_watcher = handle.clone();
+                let watch_enabled_at_boot = config.watch_folders;
+                let watch_paths_at_boot = config.watch_paths.clone();
 
                 async_runtime::spawn(async move {
                     // Wait for app to be fully initialized to prevent race conditions
@@ -236,10 +269,26 @@ pub fn run() -> crate::error::Result<()> {
                             }
 
                             // Start the watcher with timeout protection
-                            tokio::time::timeout(
+                            let start_result = tokio::time::timeout(
                                 tokio::time::Duration::from_secs(5),
                                 file_watcher.start()
-                            ).await
+                            ).await;
+
+                            // Bridge persisted Config -> WatchModeConfig so the
+                            // user's previous settings take effect on startup.
+                            // configure_watch_mode also registers the
+                            // directories with notify and triggers an initial
+                            // scan of existing files.
+                            if let Ok(Ok(_)) = &start_result {
+                                let mut wm_config = file_watcher.get_watch_config().await;
+                                wm_config.enabled = watch_enabled_at_boot;
+                                wm_config.watch_directories = watch_paths_at_boot;
+                                if let Err(e) = file_watcher.configure_watch_mode(wm_config).await {
+                                    warn!("Failed to apply persisted watch config: {}", e);
+                                }
+                            }
+
+                            start_result
                         }
                     ).await;
 
@@ -290,8 +339,6 @@ pub fn run() -> crate::error::Result<()> {
                         }
                     }
                 });
-            } else {
-                info!("File watching disabled in configuration");
             }
 
             // Try to connect to Ollama in background with retry logic
@@ -404,6 +451,8 @@ pub fn run() -> crate::error::Result<()> {
             commands::ai::get_search_history,
             commands::ai::clear_search_history,
             commands::ai::batch_analyze_files,
+            commands::ai::reanalyze_files,
+            commands::ai::clear_stale_analyses,
             commands::ai::get_analysis_history,
 
             // AI Status commands
