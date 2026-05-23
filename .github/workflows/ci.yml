@@ -61,7 +61,7 @@ jobs:
       # before producing any lints. The build is cheap (~2s) and shared
       # with backend-tests in cache anyway.
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '20'
           cache: 'npm'
@@ -115,7 +115,7 @@ jobs:
       # requires `frontendDist` (`../dist`) to exist on disk — `cargo build`
       # / `cargo test --lib` will panic without it on a fresh checkout.
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '20'
           cache: 'npm'
@@ -178,7 +178,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '20'
           cache: 'npm'
@@ -213,7 +213,7 @@ jobs:
           workspaces: src-tauri
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '20'
           cache: 'npm'
