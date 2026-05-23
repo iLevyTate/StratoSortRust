@@ -2,11 +2,24 @@ use crate::{
     error::Result,
     services::file_watcher::{UserAction, UserActionType, WatchModeConfig},
     state::AppState,
+    utils::security::validate_directory_path,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::State;
 use tracing::{info, warn};
+
+/// Validate a batch of directory paths, returning the canonicalized list.
+/// First validation error stops the batch — partial enable would leave the
+/// config in a half-applied state.
+fn validate_directories(dirs: &[String]) -> Result<Vec<String>> {
+    let mut out = Vec::with_capacity(dirs.len());
+    for d in dirs {
+        let canonical = validate_directory_path(d)?;
+        out.push(canonical.to_string_lossy().to_string());
+    }
+    Ok(out)
+}
 
 /// Mirror watch-mode runtime state into the persisted Config so the user's
 /// choice survives a restart. Mutating the in-memory FileWatcher config without
@@ -81,13 +94,18 @@ pub async fn get_watch_mode_status(state: State<'_, Arc<AppState>>) -> Result<Wa
 /// Configure watch mode settings
 #[tauri::command]
 pub async fn configure_watch_mode(
-    config: WatchModeConfig,
+    mut config: WatchModeConfig,
     state: State<'_, Arc<AppState>>,
 ) -> Result<()> {
     info!(
         "Configuring watch mode: enabled={}, directories={:?}",
         config.enabled, config.watch_directories
     );
+
+    // Validate every directory before mutating runtime or persisted state. If
+    // any path is malformed/missing/system, the whole call is rejected so we
+    // never partially update the watcher.
+    config.watch_directories = validate_directories(&config.watch_directories)?;
 
     let watcher_arc = {
         let watcher_guard = state.file_watcher.read();
@@ -109,6 +127,8 @@ pub async fn enable_watch_mode(
     directories: Vec<String>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<()> {
+    let directories = validate_directories(&directories)?;
+
     let watcher_arc = {
         let watcher_guard = state.file_watcher.read();
         watcher_guard.as_ref().map(Arc::clone)
@@ -277,6 +297,10 @@ pub async fn add_watch_directory(
     directory_path: String,
     state: State<'_, Arc<AppState>>,
 ) -> Result<()> {
+    let directory_path = validate_directory_path(&directory_path)?
+        .to_string_lossy()
+        .to_string();
+
     let watcher_arc = {
         let watcher_guard = state.file_watcher.read();
         watcher_guard.as_ref().map(Arc::clone)

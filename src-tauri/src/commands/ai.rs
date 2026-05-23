@@ -1,8 +1,23 @@
-use crate::{error::Result, state::AppState};
+use crate::{error::Result, state::AppState, utils::security::validate_user_path};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use tauri::State;
 use tracing::error;
+
+/// Validate a batch of file paths before they're handed to the AI dispatcher.
+/// Rejects empty/null/control chars, `..` components, nonexistent files, and
+/// system paths. Canonicalizes so later cache lookups and DB rows use the
+/// same absolute form. Stops on the first invalid path — partial batch
+/// processing would leave the DB in an inconsistent state vs the caller's
+/// expected return.
+fn validate_paths(paths: &[String]) -> Result<Vec<String>> {
+    let mut out = Vec::with_capacity(paths.len());
+    for p in paths {
+        let canonical = validate_user_path(p)?;
+        out.push(canonical.to_string_lossy().to_string());
+    }
+    Ok(out)
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OllamaStatus {
@@ -767,6 +782,8 @@ pub async fn reanalyze_files(
         });
     }
 
+    let paths = validate_paths(&paths)?;
+
     let operation_id = state.start_operation(
         crate::state::OperationType::FileAnalysis,
         format!("Re-analyzing {} files", paths.len()),
@@ -1237,6 +1254,8 @@ pub async fn batch_analyze_files(
             message: "Too many files for batch analysis (max 1000)".to_string(),
         });
     }
+
+    let paths = validate_paths(&paths)?;
 
     let operation_id = state.start_operation(
         crate::state::OperationType::FileAnalysis,

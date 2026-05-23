@@ -70,6 +70,36 @@ pub enum ActionType {
     Tag,
 }
 
+/// Sanity-check a SmartFolder.target_path. The path itself may not yet exist
+/// (user is configuring future destination), so we skip canonicalize, but the
+/// obvious attack shapes — empty, null bytes, control chars, `..` components
+/// — are always rejected.
+fn validate_smart_folder_target(path: &str) -> Result<()> {
+    if path.is_empty() {
+        return Err(crate::error::AppError::SecurityError {
+            message: "Smart folder target_path cannot be empty".to_string(),
+        });
+    }
+    if path.contains('\0')
+        || path
+            .chars()
+            .any(|c| c.is_control() && c != '\r' && c != '\n')
+    {
+        return Err(crate::error::AppError::SecurityError {
+            message: "target_path contains null or control characters".to_string(),
+        });
+    }
+    if std::path::Path::new(path)
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(crate::error::AppError::SecurityError {
+            message: "target_path traversal (..) rejected".to_string(),
+        });
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn create_smart_folder(
     name: String,
@@ -79,6 +109,11 @@ pub async fn create_smart_folder(
     state: State<'_, std::sync::Arc<AppState>>,
     app: AppHandle,
 ) -> Result<SmartFolder> {
+    // Lightweight shape check — target_path may legitimately not exist yet
+    // (user is configuring where to put future files), so we don't
+    // canonicalize. But empty / null / `..` is always rejected.
+    validate_smart_folder_target(&target_path)?;
+
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now();
 
@@ -149,6 +184,7 @@ pub async fn update_smart_folder(
         smart_folder.description = Some(d);
     }
     if let Some(tp) = target_path {
+        validate_smart_folder_target(&tp)?;
         smart_folder.target_path = tp;
     }
     if let Some(r) = rules {
@@ -364,6 +400,12 @@ pub async fn auto_organize_directory(
     use_ai: bool,
     state: State<'_, std::sync::Arc<AppState>>,
 ) -> Result<Vec<OrganizationPreview>> {
+    // Validate the directory before we hand it to tokio::fs::read_dir.
+    // Rejects empty, null bytes, `..`, nonexistent paths, and system dirs.
+    let directory_path = crate::utils::security::validate_directory_path(&directory_path)?
+        .to_string_lossy()
+        .to_string();
+
     // Start progress tracking for organization
     let operation_id = state.start_operation(
         crate::state::OperationType::Organization,
@@ -583,6 +625,32 @@ pub async fn apply_organization(
         return Err(crate::error::AppError::SecurityError {
             message: "Too many operations requested (max 500)".to_string(),
         });
+    }
+
+    // Validate every source path before we touch the filesystem. We validate
+    // source (must exist) but only sanity-check target paths (parent must be
+    // safe, target itself may not exist yet — we'll create it). A `..` in
+    // either field or a system-dir target is grounds for rejecting the whole
+    // batch — partial application leaves the user with half-moved files and
+    // a stale undo log.
+    for op in &operations {
+        crate::utils::security::validate_user_path(&op.source_path)?;
+        // For the target we only enforce the lightweight shape checks: a
+        // nonexistent target file is normal (that's the whole point of a
+        // move), but `..` traversal or a system path is not.
+        if op.target_path.is_empty() || op.target_path.contains('\0') {
+            return Err(crate::error::AppError::SecurityError {
+                message: "Invalid target path".to_string(),
+            });
+        }
+        if std::path::Path::new(&op.target_path)
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(crate::error::AppError::SecurityError {
+                message: "Target path traversal rejected".to_string(),
+            });
+        }
     }
 
     let mut results = Vec::new();
