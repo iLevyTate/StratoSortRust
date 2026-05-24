@@ -17,7 +17,15 @@
 	async function finish(): Promise<void> {
 		saving = true;
 		try {
-			await completeFirstRunSetup();
+			// This wizard only walks through Ollama install/pull; watch mode,
+			// notifications and analysis are configured later under Settings,
+			// so we send conservative defaults here.
+			await completeFirstRunSetup({
+				enable_watch_mode: false,
+				watch_directories: [],
+				enable_notifications: true,
+				auto_analyze: false
+			});
 			toast.success('Setup complete');
 			onSetupComplete();
 		} catch (e) {

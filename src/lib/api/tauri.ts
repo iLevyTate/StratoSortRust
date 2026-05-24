@@ -114,8 +114,20 @@ export async function checkFirstRunStatus(): Promise<FirstRunStatus> {
 	}
 }
 
-export async function completeFirstRunSetup(): Promise<void> {
-	await invoke<void>('complete_first_run_setup');
+// Mirrors the Rust `FirstRunSetup` struct (src-tauri/src/commands/setup.rs).
+// `smart_folder_location` and `ollama_host` are Option<String> on the Rust
+// side, so they may be omitted (serde maps the absence to None).
+export interface FirstRunSetup {
+	smart_folder_location?: string | null;
+	enable_watch_mode: boolean;
+	watch_directories: string[];
+	enable_notifications: boolean;
+	auto_analyze: boolean;
+	ollama_host?: string | null;
+}
+
+export async function completeFirstRunSetup(setup: FirstRunSetup): Promise<void> {
+	await invoke<void>('complete_first_run_setup', { setup });
 }
 
 // --- AI / Ollama -------------------------------------------------------------
@@ -189,8 +201,12 @@ export async function disableWatchMode(): Promise<void> {
 
 // --- Files -------------------------------------------------------------------
 
-export async function scanDirectory(path: string): Promise<FileInfo[]> {
-	return invoke<FileInfo[]>('scan_directory', { path });
+// The Rust `scan_directory` command requires both `path` and `recursive`
+// (src-tauri/src/commands/files.rs). Default to a shallow scan — the Discover
+// page is a folder browser, so immediate children is the expected behavior;
+// callers that want a full tree walk pass `recursive: true`.
+export async function scanDirectory(path: string, recursive = false): Promise<FileInfo[]> {
+	return invoke<FileInfo[]>('scan_directory', { path, recursive });
 }
 
 export async function browseFolder(): Promise<string | null> {
