@@ -231,6 +231,10 @@ mod test_window_state_plugin {
         }
 
         assert_eq!(save_count, 3, "State should be saved after movements");
+        // Verify the last movement was actually applied so the loop body isn't
+        // accidentally elided as dead code by a future cleanup.
+        assert_eq!(state.x, 250);
+        assert_eq!(state.y, 250);
     }
 
     #[test]

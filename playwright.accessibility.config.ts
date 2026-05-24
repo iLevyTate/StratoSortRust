@@ -53,11 +53,15 @@ export default defineConfig({
 		}
 	],
 
-	/* Run your local dev server before starting the tests */
+	/* Run the static vite preview before tests. Matches playwright.config.ts
+	 * (the e2e config). The previous `npm run tauri:dev` setup required a
+	 * full Rust build + Ollama for tests to even start — not viable in CI
+	 * without a Tauri runtime, and unnecessary for a11y checks that just
+	 * need the rendered DOM. */
 	webServer: {
-		command: 'npm run tauri:dev',
+		command: 'npm run preview -- --port 1431',
 		url: 'http://localhost:1431',
 		reuseExistingServer: !process.env.CI,
-		timeout: 120000 // 2 minutes for Tauri to start
+		timeout: 120000
 	}
 });

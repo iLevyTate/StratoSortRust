@@ -188,9 +188,8 @@ impl HealthChecker {
 
             #[cfg(unix)]
             {
-                use std::os::unix::fs::MetadataExt;
-                // On Unix systems, we'd use statvfs syscall
-                // For simplicity, we'll just check if we can access the directory
+                // On Unix systems, we'd use statvfs syscall.
+                // For simplicity, we'll just check if we can access the directory.
                 Ok("Unix disk space check - directory accessible".to_string())
             }
 
@@ -323,11 +322,14 @@ impl HealthChecker {
             let common_hosts = vec!["http://localhost:11434", "http://127.0.0.1:11434"];
 
             if let Some(host) = common_hosts.into_iter().next() {
-                // Ollama::new doesn't return Result, it creates a client directly
-                let _client = ollama_rs::Ollama::new(host.to_string(), 11434);
-                // In a real implementation, we might try client.list_local_models()
-                // For now, just assume the endpoint is available if we can create a client
-                return Ok(format!("AI service endpoint available at {}", host));
+                match ollama_rs::Ollama::try_new(host) {
+                    Ok(_client) => {
+                        return Ok(format!("AI service endpoint available at {}", host));
+                    }
+                    Err(e) => {
+                        return Err(format!("AI service endpoint unavailable at {}: {}", host, e));
+                    }
+                }
             }
 
             Err("No AI service endpoints available - using fallback mode".to_string())

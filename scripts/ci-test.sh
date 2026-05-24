@@ -1,29 +1,35 @@
 #!/bin/bash
-# CI Test Runner Script
+# Local mirror of the PR-gating CI run in .github/workflows/ci.yml. Run this
+# before pushing to avoid round-tripping through GitHub Actions for trivial
+# breakages. Exits non-zero on the first failure — matches CI's gate
+# semantics, not a smoke run that swallows errors.
 
-set -e
+set -euo pipefail
 
-echo "🧪 Running CI Tests..."
+cd "$(dirname "$0")/.."
 
-# Backend tests
-echo "📦 Running backend library tests..."
-cd src-tauri
-cargo test --lib --release --quiet || {
-    echo "⚠️ Some library tests failed (non-critical)"
-}
+echo "==> rustfmt --check"
+(cd src-tauri && cargo fmt -- --check)
 
-# Only run critical integration tests
-echo "🔧 Running critical integration tests..."
-cargo test --test test_backend_fixes --release --quiet || {
-    echo "⚠️ Some integration tests failed (non-critical)"
-}
+echo "==> clippy"
+(cd src-tauri && cargo clippy --no-deps)
 
-cd ..
+echo "==> backend lib tests"
+(cd src-tauri && cargo test --lib --no-fail-fast -- --nocapture)
 
-# Frontend tests with CI config
-echo "🎨 Running frontend tests..."
-npm run test:ci || {
-    echo "⚠️ Some frontend tests failed (expected in CI without Tauri)"
-}
+echo "==> backend integration tests"
+(cd src-tauri && \
+  cargo test --test integration_tests --no-fail-fast -- --nocapture && \
+  cargo test --test test_backend_fixes --no-fail-fast -- --nocapture && \
+  cargo test --test test_smart_folder_integration --no-fail-fast -- --nocapture && \
+  cargo test --test comprehensive_database_test --no-fail-fast -- --nocapture && \
+  cargo test --test validate_test_structure --no-fail-fast -- --nocapture --test-threads=1 && \
+  cargo test --test test_tauri_plugins --no-fail-fast -- --nocapture)
 
-echo "✅ CI test run complete"
+echo "==> frontend type check"
+npm run check
+
+echo "==> frontend unit tests"
+npm run test:ci
+
+echo "==> all CI gates passed locally"
