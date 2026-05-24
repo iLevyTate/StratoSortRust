@@ -344,8 +344,10 @@ impl OllamaClient {
 
         info!("Ollama server is reachable at {}:{}", hostname, port);
 
-        // Create Ollama client - simplified approach
-        let client = Ollama::new(hostname.to_string(), port);
+        // ollama-rs expects a full base URL (e.g. http://127.0.0.1:11434), not a bare hostname.
+        let client = Ollama::try_new(url.as_str()).map_err(|e| AppError::InvalidInput {
+            message: format!("Invalid Ollama host URL '{}': {}", parsed_host, e),
+        })?;
 
         // Validate the client by making a test request
         let test_result = timeout(Duration::from_secs(3), client.list_local_models()).await;
