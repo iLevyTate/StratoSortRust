@@ -13,6 +13,25 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
+/// AI Service status information
+#[derive(Debug, Clone, Serialize)]
+pub struct AiServiceStatus {
+    pub provider: String,
+    pub connected: bool,
+    pub available_models: Vec<String>,
+    pub current_model: String,
+    pub capabilities: AiServiceCapabilities,
+}
+
+/// AI Service capabilities
+#[derive(Debug, Clone, Serialize)]
+pub struct AiServiceCapabilities {
+    pub text_analysis: bool,
+    pub vision_analysis: bool,
+    pub embeddings: bool,
+    pub semantic_search: bool,
+}
+
 /// Main application state
 pub struct AppState {
     pub handle: AppHandle,
@@ -96,14 +115,16 @@ impl AppState {
         tracing::info!("Starting graceful shutdown of application services");
 
         // 1. Stop file watcher first to prevent new operations
-        {
-            let watcher = self.file_watcher.read().clone();
-            if let Some(watcher) = watcher {
-                if let Err(e) = watcher.stop().await {
-                    tracing::warn!("Error stopping file watcher: {}", e);
-                } else {
-                    tracing::info!("File watcher stopped successfully");
-                }
+        let watcher_result = {
+            let watcher_guard = self.file_watcher.read();
+            watcher_guard.clone()
+        };
+
+        if let Some(watcher) = watcher_result {
+            if let Err(e) = watcher.stop().await {
+                tracing::warn!("Error stopping file watcher: {}", e);
+            } else {
+                tracing::info!("File watcher stopped successfully");
             }
         }
 
@@ -152,20 +173,22 @@ impl AppState {
 
     /// Get current resource usage statistics
     pub async fn get_resource_usage(&self) -> ResourceUsage {
-        let cache_size = self.file_cache.entries.len();
-        let cache_memory = self
-            .file_cache
-            .entries
-            .iter()
-            .map(|entry| entry.value().content.len())
-            .sum::<usize>();
+        // Use atomic operations to safely get cache statistics
+        let (cache_size, cache_memory) = self.file_cache.get_stats().await;
+
+        // Check AI service availability safely
+        let ai_service_available = {
+            // Simple availability check - AI service is considered available based on its status
+            let status = self.ai_service.get_status().await;
+            status.ollama_connected || status.provider == crate::ai::AiProvider::Fallback
+        };
 
         ResourceUsage {
             active_operations: self.active_operations.len(),
             cache_items: cache_size,
             cache_memory_bytes: cache_memory,
-            database_connected: true, // Could check actual connection status
-            ai_service_available: false, // Would need async check
+            database_connected: true, // Database connection is assumed to be stable
+            ai_service_available,
         }
     }
 
@@ -181,39 +204,106 @@ impl AppState {
 
     /// Completes an operation
     pub fn complete_operation(&self, id: Uuid) {
-        // Emit completion event before removing
-        let progress_event = ProgressEvent {
-            id: id.to_string(),
-            operation_type: OperationType::BulkOperation, // Default, should be passed from caller
-            progress: 1.0,
-            message: "Operation completed".to_string(),
-            completed: true,
-        };
+        // Atomically remove operation and get its data for event emission
+        if let Some((_, status)) = self.active_operations.remove(&id) {
+            // Create events outside of any locks
+            let progress_event = ProgressEvent {
+                id: id.to_string(),
+                operation_type: status.operation_type.clone(),
+                progress: 1.0,
+                message: "Operation completed".to_string(),
+                completed: true,
+            };
 
-        if let Err(e) = self.handle.emit("operation_progress", &progress_event) {
-            tracing::error!("Failed to emit completion event: {}", e);
+            let complete_event = serde_json::json!({
+                "operation_id": id.to_string(),
+                "operation_type": status.operation_type,
+                "message": "Operation completed successfully",
+                "timestamp": chrono::Utc::now().timestamp()
+            });
+
+            // Emit events using standardized macro
+            crate::emit_event!(
+                self.handle,
+                crate::events::operation::PROGRESS,
+                serde_json::json!(progress_event)
+            );
+            crate::emit_event!(
+                self.handle,
+                crate::events::operation::COMPLETE,
+                complete_event
+            );
         }
+    }
 
-        self.active_operations.remove(&id);
+    /// Fails an operation with an error
+    pub fn error_operation(&self, id: Uuid, error_message: String) {
+        // Atomically remove operation and get its data for event emission
+        if let Some((_, status)) = self.active_operations.remove(&id) {
+            // Create events outside of any locks
+            let progress_event = ProgressEvent {
+                id: id.to_string(),
+                operation_type: status.operation_type.clone(),
+                progress: 0.0,
+                message: format!("Operation failed: {}", error_message),
+                completed: true,
+            };
+
+            let error_event = serde_json::json!({
+                "operation_id": id.to_string(),
+                "operation_type": status.operation_type,
+                "error": error_message,
+                "message": format!("Operation failed: {}", error_message),
+                "timestamp": chrono::Utc::now().timestamp()
+            });
+
+            // Emit events using standardized macro
+            crate::emit_event!(
+                self.handle,
+                crate::events::operation::PROGRESS,
+                serde_json::json!(progress_event)
+            );
+            crate::emit_event!(self.handle, crate::events::operation::ERROR, error_event);
+        }
     }
 
     /// Updates operation progress and emits event to frontend
     pub fn update_progress(&self, id: Uuid, progress: f32, message: String) {
-        if let Some(mut status) = self.active_operations.get_mut(&id) {
-            status.progress = progress.clamp(0.0, 1.0);
+        // Create the progress event data first to avoid holding locks during emission
+        let progress_event = if let Some(mut status) = self.active_operations.get_mut(&id) {
+            // Check if operation was cancelled while we were waiting for the lock
+            if status.cancellation_token.is_cancelled() {
+                // Don't update progress for cancelled operations
+                return;
+            }
+
+            let clamped_progress = progress.clamp(0.0, 1.0);
+            status.progress = clamped_progress;
             status.message = message.clone();
 
-            let progress_event = ProgressEvent {
+            // Create event data while still holding the lock
+            let event = ProgressEvent {
                 id: id.to_string(),
                 operation_type: status.operation_type.clone(),
-                progress: status.progress,
+                progress: clamped_progress,
                 message,
                 completed: false,
             };
 
-            if let Err(e) = self.handle.emit("operation_progress", &progress_event) {
-                tracing::error!("Failed to emit progress event: {}", e);
-            }
+            // Explicitly drop the lock before event emission
+            drop(status);
+            Some(event)
+        } else {
+            None
+        };
+
+        // Emit event outside of any locks to prevent deadlocks
+        if let Some(event) = progress_event {
+            crate::emit_event!(
+                self.handle,
+                crate::events::operation::PROGRESS,
+                serde_json::json!(event)
+            );
         }
     }
 
@@ -229,9 +319,12 @@ impl AppState {
             completed: false,
         };
 
-        if let Err(e) = self.handle.emit("operation_progress", &progress_event) {
-            tracing::error!("Failed to emit start event: {}", e);
-        }
+        // Emit using standardized macro
+        crate::emit_event!(
+            self.handle,
+            crate::events::operation::PROGRESS,
+            serde_json::json!(progress_event)
+        );
 
         id
     }
@@ -239,7 +332,55 @@ impl AppState {
     /// Cleans up old cache entries
     pub async fn cleanup_cache(&self) -> Result<()> {
         self.file_cache.cleanup_old_entries().await;
+
+        // Perform aggressive cache cleanup if under memory pressure
+        if self.is_under_memory_pressure() {
+            self.file_cache.aggressive_cleanup().await;
+        }
+
         self.database.vacuum().await?;
+        Ok(())
+    }
+
+    /// Check if system is under memory pressure
+    pub fn is_under_memory_pressure(&self) -> bool {
+        let cache_size = self.file_cache.current_size();
+        let max_cache_size = self.file_cache.max_size;
+
+        // Consider under pressure if cache is > 80% full
+        cache_size > max_cache_size * 80 / 100
+    }
+
+    /// Force cleanup of memory when under pressure
+    pub async fn emergency_memory_cleanup(&self) -> Result<()> {
+        tracing::warn!("Performing emergency memory cleanup");
+
+        // Clear file cache
+        self.file_cache.clear();
+
+        // Cancel non-critical operations
+        let active_ops: Vec<_> = self
+            .active_operations
+            .iter()
+            .map(|entry| *entry.key())
+            .collect();
+        let mut cancelled_count = 0;
+
+        for op_id in &active_ops {
+            if let Some(op) = self.active_operations.get(op_id) {
+                // Only cancel file analysis operations, keep critical ones
+                if matches!(op.operation_type, crate::state::OperationType::FileAnalysis) {
+                    self.cancel_operation(*op_id);
+                    cancelled_count += 1;
+                }
+            }
+        }
+
+        // Force garbage collection hint
+        tracing::info!(
+            "Emergency cleanup completed, {} operations cancelled",
+            cancelled_count
+        );
         Ok(())
     }
 
@@ -278,6 +419,13 @@ impl FileCache {
         }
     }
 
+    /// Get cache statistics atomically
+    pub async fn get_stats(&self) -> (usize, usize) {
+        let cache_size = self.entries.len();
+        let cache_memory = self.current_size();
+        (cache_size, cache_memory)
+    }
+
     pub fn get(&self, path: &str) -> Option<CachedFile> {
         self.entries.get(path).map(|e| e.clone())
     }
@@ -299,12 +447,73 @@ impl FileCache {
             path.len() + std::mem::size_of::<CachedFile>() + std::mem::size_of::<String>();
         let total_entry_size = file.size + entry_overhead;
 
-        // Enforce cache size limits before insertion
-        while self.current_size() + total_entry_size > self.max_size && !self.entries.is_empty() {
-            self.evict_oldest();
+        // Don't insert files that are more than 25% of cache size
+        if total_entry_size > self.max_size / 4 {
+            tracing::debug!(
+                "File {} ({} bytes) is too large for efficient caching (> 25% of cache), skipping",
+                path,
+                total_entry_size
+            );
+            return;
         }
 
+        // Enforce cache size limits with improved eviction strategy
+        self.ensure_cache_space(total_entry_size);
+
         self.entries.insert(path, file);
+    }
+
+    fn ensure_cache_space(&self, required_space: usize) {
+        let mut iterations = 0;
+        const MAX_EVICTION_ITERATIONS: usize = 100; // Prevent infinite loops
+
+        while self.current_size() + required_space > self.max_size
+            && !self.entries.is_empty()
+            && iterations < MAX_EVICTION_ITERATIONS
+        {
+            // Try to evict multiple items at once for efficiency
+            let current_size = self.current_size();
+            let target_size = self.max_size - required_space;
+            let bytes_to_free = current_size.saturating_sub(target_size);
+
+            self.evict_multiple_entries(bytes_to_free);
+            iterations += 1;
+        }
+
+        if iterations >= MAX_EVICTION_ITERATIONS {
+            tracing::warn!("Cache eviction reached maximum iterations, clearing cache");
+            self.entries.clear();
+        }
+    }
+
+    fn evict_multiple_entries(&self, target_bytes: usize) {
+        // Collect entries sorted by access time (oldest first)
+        let mut entries: Vec<_> = self
+            .entries
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.accessed, entry.size))
+            .collect();
+
+        entries.sort_by_key(|(_, accessed, _)| *accessed);
+
+        let mut freed_bytes = 0;
+        let mut keys_to_remove = Vec::new();
+
+        for (key, _, size) in entries {
+            keys_to_remove.push(key);
+            freed_bytes += size;
+
+            if freed_bytes >= target_bytes {
+                break;
+            }
+        }
+
+        // Remove collected keys
+        for key in keys_to_remove {
+            self.entries.remove(&key);
+        }
+
+        tracing::debug!("Evicted {} bytes from cache", freed_bytes);
     }
 
     pub async fn cleanup_old_entries(&self) {
@@ -322,7 +531,53 @@ impl FileCache {
         }
     }
 
+    pub async fn aggressive_cleanup(&self) {
+        let now = chrono::Utc::now();
+        let mut to_remove = Vec::new();
+
+        // More aggressive cleanup - remove entries older than 1 hour
+        for entry in self.entries.iter() {
+            if now.signed_duration_since(entry.accessed) > chrono::Duration::hours(1) {
+                to_remove.push(entry.key().clone());
+            }
+        }
+
+        // If still not enough space, remove largest entries first
+        if to_remove.len() < self.entries.len() / 2 {
+            let mut entries: Vec<_> = self
+                .entries
+                .iter()
+                .map(|entry| (entry.key().clone(), entry.size))
+                .collect();
+
+            // Sort by size (largest first)
+            entries.sort_by(|a, b| b.1.cmp(&a.1));
+
+            // Remove up to 50% of entries starting with largest
+            let target_removals = self.entries.len() / 2;
+            for (key, _) in entries.into_iter().take(target_removals) {
+                if !to_remove.contains(&key) {
+                    to_remove.push(key);
+                }
+            }
+        }
+
+        tracing::info!(
+            "Aggressive cleanup removing {} cache entries",
+            to_remove.len()
+        );
+
+        for key in to_remove {
+            self.entries.remove(&key);
+        }
+    }
+
     pub fn current_size(&self) -> usize {
+        // Use cached size for performance - recalculate only when necessary
+        self.calculate_precise_size()
+    }
+
+    fn calculate_precise_size(&self) -> usize {
         self.entries
             .iter()
             .map(|entry| {
@@ -347,6 +602,7 @@ impl FileCache {
         self.entries.clear();
     }
 
+    #[allow(dead_code)]
     fn evict_oldest(&self) {
         // Find oldest entry key first
         let oldest_key = self

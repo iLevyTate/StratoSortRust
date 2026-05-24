@@ -1,8 +1,23 @@
-use crate::{error::Result, state::AppState};
+use crate::{error::Result, state::AppState, utils::security::validate_user_path};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use tauri::State;
 use tracing::error;
+
+/// Validate a batch of file paths before they're handed to the AI dispatcher.
+/// Rejects empty/null/control chars, `..` components, nonexistent files, and
+/// system paths. Canonicalizes so later cache lookups and DB rows use the
+/// same absolute form. Stops on the first invalid path — partial batch
+/// processing would leave the DB in an inconsistent state vs the caller's
+/// expected return.
+fn validate_paths(paths: &[String]) -> Result<Vec<String>> {
+    let mut out = Vec::with_capacity(paths.len());
+    for p in paths {
+        let canonical = validate_user_path(p)?;
+        out.push(canonical.to_string_lossy().to_string());
+    }
+    Ok(out)
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OllamaStatus {
@@ -25,6 +40,8 @@ pub struct ModelInfo {
 pub async fn check_ollama_status(
     state: State<'_, std::sync::Arc<AppState>>,
 ) -> Result<OllamaStatus> {
+    use tauri::Emitter;
+
     // Check if Ollama is available
     let is_running = state.ai_service.is_available().await;
 
@@ -52,7 +69,7 @@ pub async fn check_ollama_status(
         vec![]
     };
 
-    Ok(OllamaStatus {
+    let status = OllamaStatus {
         is_installed: is_running, // Simplified check
         is_running,
         version: if is_running {
@@ -63,7 +80,18 @@ pub async fn check_ollama_status(
         models,
         default_model: Some(state.config.read().ollama_model.clone()),
         host: state.config.read().ollama_host.clone(),
-    })
+    };
+
+    // Emit status event to frontend
+    let _ = state.handle.emit(
+        "ollama-status-checked",
+        serde_json::json!({
+            "status": &status,
+            "timestamp": chrono::Utc::now().timestamp()
+        }),
+    );
+
+    Ok(status)
 }
 
 #[tauri::command]
@@ -736,6 +764,86 @@ pub async fn get_ai_service_status(
     Ok(state.ai_service.get_status().await)
 }
 
+/// Force-reanalyze a list of files, bypassing the analysis cache. Used when
+/// upgrading from a build that wrote stub analyses for binary files: the rows
+/// would otherwise pin the bad data forever because every analysis path checks
+/// `database.get_analysis` first.
+#[tauri::command]
+pub async fn reanalyze_files(
+    paths: Vec<String>,
+    state: State<'_, std::sync::Arc<AppState>>,
+) -> Result<Vec<crate::ai::FileAnalysis>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    if paths.len() > 1000 {
+        return Err(crate::error::AppError::SecurityError {
+            message: "Too many files for reanalyze (max 1000)".to_string(),
+        });
+    }
+
+    let paths = validate_paths(&paths)?;
+
+    let operation_id = state.start_operation(
+        crate::state::OperationType::FileAnalysis,
+        format!("Re-analyzing {} files", paths.len()),
+    );
+
+    let mut results = Vec::new();
+    for (index, path) in paths.iter().enumerate() {
+        let progress = index as f32 / paths.len() as f32;
+        state.update_progress(operation_id, progress, format!("Re-analyzing {}", path));
+
+        // Clear any cached row so the dispatcher actually re-runs the model.
+        if let Err(e) = state.database.delete_analysis(path).await {
+            tracing::warn!("Failed to clear cached analysis for {}: {}", path, e);
+        }
+
+        match state.ai_service.analyze_path_with_ai(path).await {
+            Ok(mut analysis) => {
+                analysis.path = path.clone();
+                let _ = state.database.save_analysis(&analysis).await;
+
+                if let Ok(embedding) = state
+                    .ai_service
+                    .generate_embeddings(&format!(
+                        "{} {}",
+                        analysis.summary,
+                        analysis.tags.join(" ")
+                    ))
+                    .await
+                {
+                    let model_name = state.config.read().ollama_embedding_model.clone();
+                    let _ = state
+                        .database
+                        .save_embedding(&analysis.path, &embedding, Some(&model_name))
+                        .await;
+                }
+
+                results.push(analysis);
+            }
+            Err(e) => {
+                tracing::warn!("Re-analysis failed for {}: {}", path, e);
+            }
+        }
+    }
+
+    state.complete_operation(operation_id);
+    Ok(results)
+}
+
+/// Delete cached analysis rows that look like pre-fix fallback stubs
+/// (summary "File type: …" and confidence 0.5). Returns the count removed so
+/// the UI can show "purged N stale entries — drop your files in again".
+#[tauri::command]
+pub async fn clear_stale_analyses(
+    state: State<'_, std::sync::Arc<AppState>>,
+) -> Result<u64> {
+    let removed = state.database.delete_stale_fallback_analyses().await?;
+    tracing::info!("Cleared {} stale fallback analyses from cache", removed);
+    Ok(removed)
+}
+
 /// Infer basic file category from MIME type when AI is unavailable
 fn infer_basic_category(mime_type: &str) -> String {
     match mime_type {
@@ -1147,6 +1255,8 @@ pub async fn batch_analyze_files(
         });
     }
 
+    let paths = validate_paths(&paths)?;
+
     let operation_id = state.start_operation(
         crate::state::OperationType::FileAnalysis,
         format!("Batch analyzing {} files", paths.len()),
@@ -1157,45 +1267,34 @@ pub async fn batch_analyze_files(
         let progress = index as f32 / paths.len() as f32;
         state.update_progress(operation_id, progress, format!("Analyzing {}", path));
 
-        // Read file content with size limit
-        match tokio::fs::read_to_string(path).await {
-            Ok(content) => {
-                let mime_type = mime_guess::from_path(path)
-                    .first_or_octet_stream()
-                    .to_string();
-                match state.ai_service.analyze_file(&content, &mime_type).await {
-                    Ok(mut analysis) => {
-                        analysis.path = path.clone();
+        // Dispatch by file type so images go to vision, documents get
+        // text-extracted, and plain text uses analyze_file.
+        match state.ai_service.analyze_path_with_ai(path).await {
+            Ok(mut analysis) => {
+                analysis.path = path.clone();
 
-                        // Save to database
-                        let _ = state.database.save_analysis(&analysis).await;
+                let _ = state.database.save_analysis(&analysis).await;
 
-                        // Generate and save embeddings
-                        if let Ok(embedding) = state
-                            .ai_service
-                            .generate_embeddings(&format!(
-                                "{} {}",
-                                analysis.summary,
-                                analysis.tags.join(" ")
-                            ))
-                            .await
-                        {
-                            let model_name = state.config.read().ollama_embedding_model.clone();
-                            let _ = state
-                                .database
-                                .save_embedding(&analysis.path, &embedding, Some(&model_name))
-                                .await;
-                        }
-
-                        results.push(analysis);
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to analyze {}: {}", path, e);
-                    }
+                if let Ok(embedding) = state
+                    .ai_service
+                    .generate_embeddings(&format!(
+                        "{} {}",
+                        analysis.summary,
+                        analysis.tags.join(" ")
+                    ))
+                    .await
+                {
+                    let model_name = state.config.read().ollama_embedding_model.clone();
+                    let _ = state
+                        .database
+                        .save_embedding(&analysis.path, &embedding, Some(&model_name))
+                        .await;
                 }
+
+                results.push(analysis);
             }
             Err(e) => {
-                tracing::warn!("Failed to read file {}: {}", path, e);
+                tracing::warn!("Failed to analyze {}: {}", path, e);
             }
         }
     }

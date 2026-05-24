@@ -7,9 +7,12 @@ use tokio::sync::RwLock;
 
 /// Mock application handle for testing plugins
 pub struct MockAppHandle {
+    #[allow(dead_code)]
     pub temp_dir: TempDir,
     pub data_dir: PathBuf,
+    #[allow(dead_code)]
     pub config_dir: PathBuf,
+    #[allow(dead_code)]
     pub cache_dir: PathBuf,
 }
 
@@ -156,7 +159,9 @@ impl MockHttpResponse {
 #[derive(Debug, Clone)]
 pub struct MockUpdateInfo {
     pub version: String,
+    #[allow(dead_code)]
     pub notes: String,
+    #[allow(dead_code)]
     pub pub_date: String,
     pub download_url: String,
     pub signature: String,
@@ -203,8 +208,10 @@ impl MockLocalhostServer {
 }
 
 /// Test data generator for plugin tests
+#[allow(dead_code)]
 pub struct PluginTestDataGenerator;
 
+#[allow(dead_code)]
 impl PluginTestDataGenerator {
     pub fn sample_file_paths(count: usize) -> Vec<PathBuf> {
         (0..count)
