@@ -1,0 +1,23 @@
+- generic [ref=e2]:
+  - link "Skip to content" [ref=e3] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e4]:
+    - navigation "Primary" [ref=e5]:
+      - generic [ref=e6]:
+        - heading "StratoSort" [level=1] [ref=e7]
+        - paragraph [ref=e8]: Local AI file sort
+      - navigation [ref=e9]:
+        - button "Discover" [ref=e10] [cursor=pointer]
+        - button "Analyze" [ref=e11] [cursor=pointer]
+        - button "Organize" [ref=e12] [cursor=pointer]
+        - button "Settings" [active] [ref=e13] [cursor=pointer]
+      - generic [ref=e14]: v0.1.0 · local-first
+    - main [ref=e15]:
+      - button "Notifications (0 unread)" [ref=e18] [cursor=pointer]: 🔔
+      - generic [ref=e35]:
+        - heading "Settings" [level=1] [ref=e37]
+        - tablist [ref=e38]:
+          - tab "General" [selected] [ref=e39] [cursor=pointer]
+          - tab "AI" [ref=e40] [cursor=pointer]
+          - tab "Privacy" [ref=e41] [cursor=pointer]
+        - paragraph [ref=e42]: Loading settings…
