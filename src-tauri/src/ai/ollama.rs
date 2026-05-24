@@ -122,6 +122,102 @@ pub(crate) fn sanitize_prompt_content(input: &str) -> Result<String> {
     Ok(result)
 }
 
+/// Extracts the first complete JSON object from a noisy LLM response.
+///
+/// Local vision/text models routinely wrap their JSON in ```` ```json ... ``` ````
+/// fences or sandwich it between explanatory prose. Strict `serde_json::from_str`
+/// fails on either. This walks the string, finds the first `{`, then scans
+/// forward tracking brace depth (and skipping over string literals) until it
+/// finds the matching `}`. Returns the substring if found.
+pub(crate) fn extract_json_object(text: &str) -> Option<&str> {
+    extract_balanced(text, b'{', b'}')
+}
+
+/// Same as `extract_json_object` but for JSON arrays. Used for endpoints that
+/// return a `[ ... ]` list (e.g. organization suggestions).
+pub(crate) fn extract_json_array(text: &str) -> Option<&str> {
+    extract_balanced(text, b'[', b']')
+}
+
+fn extract_balanced(text: &str, open: u8, close: u8) -> Option<&str> {
+    let bytes = text.as_bytes();
+    let start = bytes.iter().position(|&b| b == open)?;
+
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape = false;
+    for (i, &b) in bytes[start..].iter().enumerate() {
+        if in_string {
+            if escape {
+                escape = false;
+            } else if b == b'\\' {
+                escape = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if b == b'"' {
+            in_string = true;
+        } else if b == open {
+            depth += 1;
+        } else if b == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(&text[start..=start + i]);
+            }
+        }
+    }
+    None
+}
+
+/// Tolerantly parse a vision model's response into the fields the dispatcher
+/// expects. Vision models (especially llava variants on local hardware) routinely:
+///   * wrap output in ```` ```json ... ``` ```` fences,
+///   * prefix the JSON with "Here is the analysis:" or similar prose,
+///   * emit only a subset of fields, or
+///   * return free-form prose with no JSON at all when confused.
+///
+/// Strict `serde_json::from_str` fails on every one of those and used to take
+/// down the whole vision pipeline. This helper:
+///   1. Tries to extract the first balanced JSON object via `extract_json_object`.
+///   2. Deserializes it into `VisionAnalysisResponse` (whose fields are
+///      `#[serde(default)]`, so missing keys don't kill the parse).
+///   3. If steps 1 or 2 fail, synthesizes a low-confidence "Images" result
+///      using the raw response as a summary so the file is still recorded.
+///   4. Clamps `confidence` to [0.0, 1.0] and forces a non-empty `category`.
+///
+/// Returns `(category, confidence, VisionAnalysisResponse)` — `category` and
+/// `confidence` are pre-normalized; the rest is in the struct.
+pub(crate) fn parse_vision_response(
+    response: &str,
+) -> (String, f32, VisionAnalysisResponse) {
+    let analysis = extract_json_object(response)
+        .and_then(|json| serde_json::from_str::<VisionAnalysisResponse>(json).ok())
+        .unwrap_or_else(|| {
+            warn!(
+                "Vision response was not valid JSON, synthesizing fallback. Response: {}",
+                response.chars().take(500).collect::<String>()
+            );
+            VisionAnalysisResponse {
+                category: "Images".to_string(),
+                tags: vec!["image".to_string()],
+                summary: response.chars().take(500).collect(),
+                confidence: 0.4,
+                ..Default::default()
+            }
+        });
+
+    let confidence = analysis.confidence.clamp(0.0, 1.0);
+    let category = if analysis.category.is_empty() {
+        "Images".to_string()
+    } else {
+        analysis.category.clone()
+    };
+
+    (category, confidence, analysis)
+}
+
 /// Case-insensitive string replacement
 fn replace_case_insensitive(text: &str, pattern: &str, replacement: &str) -> String {
     let pattern_lower = pattern.to_lowercase();
@@ -173,9 +269,33 @@ impl Default for ConnectionHealth {
     }
 }
 
+/// Default model names used when the caller does not provide one
+pub const DEFAULT_TEXT_MODEL: &str = "llama3.2:3b";
+pub const DEFAULT_VISION_MODEL: &str = "llava:7b";
+pub const DEFAULT_EMBEDDING_MODEL: &str = "nomic-embed-text";
+
 impl OllamaClient {
-    /// Creates a new OllamaClient with robust connection handling
+    /// Creates a new OllamaClient with default model names.
+    /// Prefer `new_with_models` so user-configured models are honored.
     pub async fn new(host: &str) -> Result<Self> {
+        Self::new_with_models(
+            host,
+            DEFAULT_TEXT_MODEL,
+            DEFAULT_VISION_MODEL,
+            DEFAULT_EMBEDDING_MODEL,
+        )
+        .await
+    }
+
+    /// Creates a new OllamaClient with explicit model names.
+    /// Empty model names fall back to the defaults so a partially-populated
+    /// `Config` cannot silently break inference.
+    pub async fn new_with_models(
+        host: &str,
+        text_model: &str,
+        vision_model: &str,
+        embedding_model: &str,
+    ) -> Result<Self> {
         // Validate input
         if host.is_empty() {
             return Err(AppError::InvalidInput {
@@ -224,8 +344,10 @@ impl OllamaClient {
 
         info!("Ollama server is reachable at {}:{}", hostname, port);
 
-        // Create Ollama client - simplified approach
-        let client = Ollama::new(hostname.to_string(), port);
+        // ollama-rs expects a full base URL (e.g. http://127.0.0.1:11434), not a bare hostname.
+        let client = Ollama::try_new(url.as_str()).map_err(|e| AppError::InvalidInput {
+            message: format!("Invalid Ollama host URL '{}': {}", parsed_host, e),
+        })?;
 
         // Validate the client by making a test request
         let test_result = timeout(Duration::from_secs(3), client.list_local_models()).await;
@@ -255,11 +377,32 @@ impl OllamaClient {
             }
         }
 
+        let resolved_text_model = if text_model.is_empty() {
+            DEFAULT_TEXT_MODEL.to_string()
+        } else {
+            text_model.to_string()
+        };
+        let resolved_vision_model = if vision_model.is_empty() {
+            DEFAULT_VISION_MODEL.to_string()
+        } else {
+            vision_model.to_string()
+        };
+        let resolved_embedding_model = if embedding_model.is_empty() {
+            DEFAULT_EMBEDDING_MODEL.to_string()
+        } else {
+            embedding_model.to_string()
+        };
+
+        info!(
+            "OllamaClient models: text={} vision={} embedding={}",
+            resolved_text_model, resolved_vision_model, resolved_embedding_model
+        );
+
         let ollama_client = Self {
             client,
-            text_model: "llama3.2:3b".to_string(),
-            vision_model: "llava:7b".to_string(),
-            embedding_model: "nomic-embed-text".to_string(),
+            text_model: resolved_text_model,
+            vision_model: resolved_vision_model,
+            embedding_model: resolved_embedding_model,
             max_retries: 3,
             initial_retry_delay: Duration::from_millis(100),
             connection_health: Arc::new(RwLock::new(ConnectionHealth {
@@ -551,6 +694,92 @@ impl OllamaClient {
         .await
     }
 
+    /// Analyzes file content using Ollama's text model
+    pub async fn analyze_file(&self, content: &str, file_type: &str) -> Result<FileAnalysis> {
+        // Create a comprehensive analysis prompt
+        let prompt = format!(
+            r#"You are a file organization assistant. Analyze this file content thoroughly and provide a structured JSON response.
+
+IMPORTANT: Base your analysis on the actual file content, not just the file type.
+
+Categories to choose from:
+- Documents: Text documents, PDFs, Word docs, notes, reports
+- Code: Source code, scripts, configuration files, development files
+- Data: Spreadsheets, CSVs, databases, JSON data files
+- Presentations: PowerPoint, slides, keynotes
+- Spreadsheets: Excel files, calculation sheets, financial data
+- Images: Photos, graphics, screenshots, diagrams
+- Videos: Movie files, recordings, clips
+- Audio: Music, podcasts, recordings
+- Archives: Compressed files, backups, zip files
+- 3D Print Files: STL, OBJ, 3MF, GCODE, CAD files
+- Other: Files that don't fit above categories
+
+File type hint: {}
+Content excerpt (first 10000 characters):
+---
+{}
+---
+
+Analyze the content above and respond with ONLY this JSON structure (no additional text):
+{{
+    "path": "",
+    "category": "<one category from the list above that best matches the content>",
+    "tags": ["<tag1>", "<tag2>", "<tag3>", "up to 10 relevant descriptive tags based on actual content"],
+    "summary": "<detailed 1-2 sentence description of what this file contains and its purpose>",
+    "confidence": <0.0 to 1.0 based on how certain you are about the categorization>,
+    "metadata": {{}}
+}}"#,
+            file_type,
+            &content.chars().take(10000).collect::<String>()
+        );
+
+        // Get completion from text model
+        let response = self.generate_completion(&prompt, &self.text_model).await?;
+
+        // Try to parse the JSON response. Strip prose/markdown fences first;
+        // fall back to the raw response if no `{...}` block is found.
+        let json_candidate = extract_json_object(&response).unwrap_or(response.as_str());
+        match serde_json::from_str::<FileAnalysis>(json_candidate) {
+            Ok(mut analysis) => {
+                analysis.confidence = analysis.confidence.clamp(0.0, 1.0);
+                Ok(analysis)
+            }
+            Err(e) => {
+                // If JSON parsing fails, create a basic analysis
+                warn!(
+                    "Failed to parse Ollama response as JSON: {} - Response: {}",
+                    e, response
+                );
+
+                // Try to extract useful information from the response anyway
+                let category = if file_type.contains("text") || file_type.contains("document") {
+                    "Documents"
+                } else if file_type.contains("code") || file_type.contains("script") {
+                    "Code"
+                } else if file_type.contains("data")
+                    || file_type.contains("json")
+                    || file_type.contains("csv")
+                {
+                    "Data"
+                } else {
+                    "Other"
+                };
+
+                Ok(FileAnalysis {
+                    path: String::new(),
+                    category: category.to_string(),
+                    tags: vec![file_type.to_string()],
+                    summary: response.chars().take(200).collect(),
+                    confidence: 0.5,
+                    extracted_text: None,
+                    detected_language: None,
+                    metadata: serde_json::Value::Object(serde_json::Map::new()),
+                })
+            }
+        }
+    }
+
     /// Analyzes an image file using Ollama's vision model (llava)
     pub async fn analyze_image(&self, image_path: &str) -> Result<FileAnalysis> {
         // Validate image path
@@ -638,24 +867,15 @@ Respond ONLY with valid JSON, no explanations."#,
             .generate_vision_completion(&prompt, &base64_image)
             .await?;
 
-        // Parse JSON response
-        let analysis: VisionAnalysisResponse = serde_json::from_str(&response).map_err(|e| {
-            error!(
-                "Failed to parse vision analysis JSON: {} - Response: {}",
-                e, response
-            );
-            AppError::ParseError {
-                message: format!("Invalid JSON response from vision model: {}", e),
-            }
-        })?;
+        let (category, confidence, analysis) = parse_vision_response(&response);
 
         // Convert to FileAnalysis
         Ok(FileAnalysis {
             path: image_path.to_string(),
-            category: analysis.category,
+            category,
             tags: analysis.tags,
             summary: analysis.summary,
-            confidence: analysis.confidence,
+            confidence,
             extracted_text: if analysis.text_detected.is_empty() {
                 None
             } else {
@@ -703,14 +923,21 @@ Respond ONLY with valid JSON, no explanations."#,
                 }
             });
 
-            // Make HTTP request directly since ollama-rs doesn't support vision yet
+            // Make HTTP request directly since ollama-rs doesn't support vision yet.
+            // Previously this used `format!("http://{}/api/generate", self.client.uri())`,
+            // which produced "http://http://localhost:11434/..." when uri() already
+            // contained a scheme — vision requests then failed silently.
+            let base = self.client.uri();
+            let base = base.trim_end_matches('/');
+            let url = if base.starts_with("http://") || base.starts_with("https://") {
+                format!("{}/api/generate", base)
+            } else {
+                format!("http://{}/api/generate", base)
+            };
             let client = reqwest::Client::new();
             let response_result = timeout(
                 Duration::from_secs(60), // Vision analysis can take longer
-                client
-                    .post(format!("http://{}/api/generate", self.client.uri()))
-                    .json(&request)
-                    .send(),
+                client.post(&url).json(&request).send(),
             )
             .await;
 
@@ -824,14 +1051,19 @@ Respond ONLY with valid JSON, no explanations."#,
         // Sanitize response to prevent XSS or injection through AI output
         let sanitized_response = sanitize_prompt_content(&response)?;
 
-        // Parse JSON response
-        let analysis: AnalysisResponse =
-            serde_json::from_str(&sanitized_response).map_err(|e| {
-                error!("Failed to parse AI response: {}", e);
-                AppError::ParseError {
-                    message: "Invalid AI response format".to_string(),
-                }
-            })?;
+        // Parse JSON response tolerantly — strip prose/fences then deserialize.
+        let json_candidate = extract_json_object(&sanitized_response)
+            .unwrap_or(sanitized_response.as_str());
+        let analysis: AnalysisResponse = serde_json::from_str(json_candidate).map_err(|e| {
+            error!(
+                "Failed to parse AI response: {} - Response: {}",
+                e,
+                sanitized_response.chars().take(300).collect::<String>()
+            );
+            AppError::ParseError {
+                message: "Invalid AI response format".to_string(),
+            }
+        })?;
 
         // Validate analysis content
         if analysis.category.len() > 100
@@ -869,55 +1101,92 @@ Respond ONLY with valid JSON, no explanations."#,
         let files_list = files
             .iter()
             .take(20) // Limit to prevent prompt overflow
-            .map(|f| format!("- {}", f))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        // Build available smart folders context for the LLM
-        let smart_folders_context = smart_folders
-            .iter()
-            .filter(|folder| folder.enabled)
-            .map(|folder| {
-                format!(
-                    "* {}: {}",
-                    folder.name,
-                    folder
-                        .description
-                        .as_deref()
-                        .unwrap_or("No description available")
-                )
+            .map(|f| {
+                let filename = std::path::Path::new(f)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(f);
+                let extension = std::path::Path::new(f)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                format!("- File: {} (type: {})", filename, extension)
             })
             .collect::<Vec<_>>()
             .join("\n");
 
+        // Build available smart folders context for the LLM with more detail
+        let smart_folders_context = smart_folders
+            .iter()
+            .filter(|folder| folder.enabled)
+            .map(|folder| {
+                let rules_summary = folder
+                    .rules
+                    .iter()
+                    .filter(|r| r.enabled)
+                    .map(|r| format!("{:?}", r.rule_type))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                format!(
+                    "* Folder: '{}'\n  Description: {}\n  Rules: [{}]\n  Target Path: {}",
+                    folder.name,
+                    folder
+                        .description
+                        .as_deref()
+                        .unwrap_or("General purpose folder"),
+                    if rules_summary.is_empty() {
+                        "No specific rules"
+                    } else {
+                        &rules_summary
+                    },
+                    folder.target_path
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
         let prompt = format!(
-            r#"Suggest organization for these files into the available smart folders.
+            r#"You are a file organization assistant. Analyze these files and match them to the most appropriate smart folders.
 
-Available Smart Folders:
+AVAILABLE SMART FOLDERS:
 {}
 
-Provide a JSON array where each item has:
-{{
-    "source_path": "original file path",
-    "target_folder": "folder name from available folders above",
-    "reason": "brief explanation based on folder description",
-    "confidence": 0.0 to 1.0
-}}
-
-Files to organize:
+FILES TO ORGANIZE:
 {}
 
-Match each file to the most appropriate folder based on the descriptions above. 
-If no folder fits perfectly, suggest the closest match with lower confidence.
-Respond ONLY with valid JSON array."#,
+INSTRUCTIONS:
+1. Read each file name and extension carefully
+2. Match files to folders based on:
+   - Folder name and description
+   - File type and extension
+   - Folder rules (if any)
+3. If a file clearly matches a folder's purpose, use high confidence (0.7-1.0)
+4. If unsure but there's a reasonable match, use medium confidence (0.4-0.6)
+5. If no good match exists, use low confidence (0.1-0.3) for the best available option
+
+Respond with ONLY a JSON array (no additional text):
+[
+  {{
+    "source_path": "<exact file path from the list>",
+    "target_folder": "<exact folder name from available folders>",
+    "reason": "<clear explanation why this file belongs in this folder>",
+    "confidence": <0.0 to 1.0>
+  }}
+]"#,
             smart_folders_context, files_list
         );
 
         let response = self.generate_completion(&prompt, &self.text_model).await?;
 
-        let suggestions: Vec<SuggestionResponse> =
-            serde_json::from_str(&response).map_err(|e| {
-                error!("Failed to parse suggestions: {}", e);
+        let json_candidate = extract_json_array(&response).unwrap_or(response.as_str());
+        let suggestions: Vec<SuggestionResponse> = serde_json::from_str(json_candidate)
+            .map_err(|e| {
+                error!(
+                    "Failed to parse suggestions: {} - Response: {}",
+                    e,
+                    response.chars().take(300).collect::<String>()
+                );
                 AppError::ParseError {
                     message: "Invalid suggestion format".to_string(),
                 }
@@ -948,7 +1217,11 @@ pub async fn setup_ollama() -> Result<()> {
     // Check for required models
     let model_names = client.list_models().await?;
 
-    let required_models = vec!["llama3.2:3b", "nomic-embed-text"];
+    let required_models = vec![
+        DEFAULT_TEXT_MODEL,
+        DEFAULT_VISION_MODEL,
+        DEFAULT_EMBEDDING_MODEL,
+    ];
 
     for model in required_models {
         if !model_names.iter().any(|m| m.starts_with(model)) {
@@ -984,14 +1257,22 @@ struct SuggestionResponse {
     confidence: f32,
 }
 
-#[derive(Debug, Deserialize)]
-struct VisionAnalysisResponse {
-    category: String,
-    tags: Vec<String>,
-    summary: String,
-    confidence: f32,
-    detected_objects: Vec<String>,
-    scene_type: String,
-    colors: Vec<String>,
-    text_detected: String,
+#[derive(Debug, Deserialize, Default)]
+pub(crate) struct VisionAnalysisResponse {
+    #[serde(default)]
+    pub(crate) category: String,
+    #[serde(default)]
+    pub(crate) tags: Vec<String>,
+    #[serde(default, alias = "description", alias = "content_summary")]
+    pub(crate) summary: String,
+    #[serde(default)]
+    pub(crate) confidence: f32,
+    #[serde(default)]
+    pub(crate) detected_objects: Vec<String>,
+    #[serde(default)]
+    pub(crate) scene_type: String,
+    #[serde(default)]
+    pub(crate) colors: Vec<String>,
+    #[serde(default, alias = "text", alias = "ocr_text")]
+    pub(crate) text_detected: String,
 }

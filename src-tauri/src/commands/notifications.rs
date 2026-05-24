@@ -149,7 +149,7 @@ pub async fn emit_progress_notification(
         "timestamp": chrono::Utc::now().timestamp(),
     });
 
-    let _ = app.emit("progress-notification", notification);
+    let _ = app.emit("notification-progress", notification);
     Ok(())
 }
 
@@ -169,7 +169,7 @@ pub async fn emit_file_operation_status(
         "timestamp": chrono::Utc::now().timestamp(),
     });
 
-    let _ = app.emit("file-operation-status", status_event);
+    let _ = app.emit("notification-file-operation-status", status_event);
 
     // Also emit a user-friendly notification for important status changes
     if status == "completed" || status == "failed" {
@@ -226,7 +226,7 @@ pub async fn emit_system_status(
         "timestamp": chrono::Utc::now().timestamp(),
     });
 
-    let _ = app.emit("system-status", status_event);
+    let _ = app.emit("notification-system-status", status_event);
 
     // Emit notification for critical system status changes
     if status == "error" || status == "critical" {

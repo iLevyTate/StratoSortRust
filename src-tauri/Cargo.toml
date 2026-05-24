@@ -5,6 +5,15 @@ description = "AI-powered file organization"
 authors = ["StratoSort Team"]
 edition = "2021"
 rust-version = "1.75"
+default-run = "stratosort-app"
+
+[lib]
+name = "stratosort"
+crate-type = ["lib", "cdylib"]
+
+[[bin]]
+name = "stratosort-app"
+path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -24,11 +33,9 @@ tauri-plugin-global-shortcut = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-process = "2"
 tauri-plugin-os = "2"
-tauri-plugin-updater = "2"
 tauri-plugin-window-state = "2"
 tauri-plugin-positioner = "2"
 tauri-plugin-localhost = "2"
-tauri-plugin-single-instance = "2"
 tauri-plugin-http = "2"
 
 # Async runtime
@@ -49,6 +56,9 @@ url = "2.5"
 anyhow = "1"
 thiserror = "1"
 
+# Environment configuration
+dotenv = "0.15"
+
 # Database & Embeddings
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono"] }
 libsqlite3-sys = { version = "*", features = ["bundled"] }
@@ -60,7 +70,7 @@ zerocopy = "0.7" # For efficient vector byte conversion
 ollama-rs = "0.3"
 
 # Random number generation for retry jitter
-rand = "0.8"
+rand = "0.9"
 
 # File system watching for real-time organization (using existing notify)
 crossbeam-channel = "0.5"
@@ -76,7 +86,7 @@ docx-rs = { version = "0.4", optional = true }      # Microsoft Word document pr
 # docx crate removed - using docx-rs instead
 # odf crate doesn't exist - consider calamine for spreadsheets, no direct ODF support
 rtf-parser = { version = "0.1", optional = true }   # RTF parsing
-calamine = { version = "0.26", optional = true }    # Excel files (xlsx, xls, ods)
+calamine = { version = "0.31", optional = true }    # Excel files (xlsx, xls, ods)
 csv = { version = "1.3", optional = true }          # CSV file processing
 xml-rs = { version = "0.8", optional = true }       # XML document parsing
 quick-xml = { version = "0.36", optional = true }   # Fast XML parser
@@ -93,7 +103,7 @@ json5 = { version = "0.4", optional = true }        # JSON5 format support
 # File processing - Images & Media
 image = { version = "0.25", features = ["jpeg", "png", "gif", "webp", "tiff", "bmp", "ico", "avif"] }
 imageproc = { version = "0.25", optional = true }   # Advanced image processing
-fast_image_resize = { version = "4.2", optional = true } # High-performance resizing (updated)
+fast_image_resize = { version = "5.3", optional = true } # High-performance resizing (updated)
 webp = { version = "0.3", optional = true }         # WebP format support
 # avif-decode = { version = "0.2", optional = true }  # AVIF support - removed due to security advisory in owning_ref
 kamadak-exif = { version = "0.5", optional = true } # EXIF metadata extraction
@@ -131,7 +141,7 @@ content_inspector = "0.2"                        # Binary vs text file detection
 async-stream = { version = "0.3", optional = true }  # Async streaming utilities
 futures-util = { version = "0.3", optional = true }  # Future utilities for streaming
 memmap2 = { version = "0.9", optional = true }      # Memory-mapped file I/O
-tempfile = "3.14"                                    # Temporary file management (updated)
+tempfile = "3.23"                                    # Temporary file management (updated)
 
 # Utils
 chrono = { version = "0.4", features = ["serde"] }
@@ -144,15 +154,16 @@ rayon = "1"  # Parallel processing
 once_cell = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
 directories = "5"
-dirs = "5"
+dirs = "6"
 bytesize = "1"
 sysinfo = "0.32"  # System information
 regex = "1"  # Regular expressions
 base64 = "0.22"  # Base64 encoding for backup data
 
 [features]
-default = ["custom-protocol", "sysinfo"]
+default = ["custom-protocol", "sysinfo", "documents-core", "pulldown-cmark"]
 custom-protocol = ["tauri/custom-protocol"]
 rusqlite-init = []  # Alternative rusqlite initialization method
 
@@ -203,13 +214,59 @@ opt-level = 0
 
 [dev-dependencies]
 mockito = "1.5"
-tempfile = "3.14"
+tempfile = "3.23"
 tokio-test = "0.4"
 num_cpus = "1.16"
 # Test dependencies for archive/compression handling
 zip = "2.2"
-tar = "0.4" 
+tar = "0.4"
 flate2 = "1.0"
+# Add tauri with test feature for security tests
+tauri = { version = "2", features = ["test"] }
+
+# CI test configuration
+[profile.ci]
+inherits = "dev"
+opt-level = 0
+codegen-units = 256
+lto = false
+incremental = false
+
+# All seven tests/security/*.rs files were written against an older API
+# (`search_files_by_content`, `get_all_files`, `store_file_analysis`,
+# direct `Database.pool` access, `AppState::with_config`, the old
+# `App<MockRuntime>` vs `AppHandle` shape). None compile against the
+# current code. Leaving the files on disk under tests/security/ as
+# scaffolding for whoever rewrites them against the current API, but
+# excluded from the build so the rest of the suite runs.
+#
+# [[test]]
+# name = "test_vector_ext_sql_injection"
+# path = "tests/security/test_vector_ext_sql_injection.rs"
+#
+# [[test]]
+# name = "test_files_command_security"
+# path = "tests/security/test_files_command_security.rs"
+#
+# [[test]]
+# name = "test_input_validation_security"
+# path = "tests/security/test_input_validation_security.rs"
+#
+# [[test]]
+# name = "test_memory_safety"
+# path = "tests/security/test_memory_safety.rs"
+#
+# [[test]]
+# name = "test_injection_prevention"
+# path = "tests/security/test_injection_prevention.rs"
+#
+# [[test]]
+# name = "test_path_traversal_comprehensive"
+# path = "tests/security/test_path_traversal_comprehensive.rs"
+#
+# [[test]]
+# name = "test_sql_injection_comprehensive"
+# path = "tests/security/test_sql_injection_comprehensive.rs"
 
 [profile.release]
 panic = "abort"  # Immediate abort prevents resource leaks and info disclosure
