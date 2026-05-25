@@ -17,6 +17,8 @@
 
 ---
 
+> **Project status:** The backend foundation is built and working — the AI dispatcher, embeddings, semantic search, watch mode, and storage are all functional and exercised by the test suite. Frontend integration (wiring these features into the Tauri desktop UI) is a work in progress.
+
 ## What it does
 
 Drop a folder of mixed files — images, PDFs, Word docs, spreadsheets, notes — into a watched directory. Stratosort routes each one through the right local model:
