@@ -6732,7 +6732,7 @@ dependencies = [
  "kamadak-exif",
  "libsqlite3-sys",
  "lopdf",
- "markup5ever 0.12.1",
+ "markup5ever 0.14.1",
  "memmap2",
  "metaflac",
  "mime_guess",

@@ -91,7 +91,7 @@ csv = { version = "1.3", optional = true }          # CSV file processing
 xml-rs = { version = "0.8", optional = true }       # XML document parsing
 quick-xml = { version = "0.36", optional = true }   # Fast XML parser
 html5ever = { version = "0.27", optional = true }   # HTML parsing
-markup5ever = { version = "0.12", optional = true } # Markup utilities
+markup5ever = { version = "0.14", optional = true } # Markup utilities
 # scraper = { version = "0.20", optional = true }     # HTML scraping - removed due to fxhash security advisory
 pulldown-cmark = { version = "0.11", optional = true } # Markdown parsing
 comrak = { version = "0.26", optional = true }      # CommonMark + GFM
